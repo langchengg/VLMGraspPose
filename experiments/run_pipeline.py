@@ -40,6 +40,7 @@ from stage5.select_best_grasp import select_best_grasp, save_selection
 def run_pipeline(
     split: str = "test_seen",
     scorer_name: str = "rule",
+    grounder_name: str = "gt",
     max_samples: int = None,
     use_extended_features: bool = False,
     view_stride: int = config.VIEW_STRIDE,
@@ -48,6 +49,7 @@ def run_pipeline(
     print(f"{'='*60}")
     print(f"VLMGraspPose Pipeline — Demo Run")
     print(f"  Split: {split}")
+    print(f"  Grounder: {grounder_name}")
     print(f"  Scorer: {scorer_name}")
     print(f"  Feature dim: {'extended (9)' if use_extended_features else 'core (5)'}")
     print(f"{'='*60}")
@@ -58,7 +60,8 @@ def run_pipeline(
         return
 
     # ── Initialise components ────────────────────────────────────────
-    grounder = get_grounder("gt")
+    grounder = get_grounder(grounder_name)
+    use_vlm = grounder_name != "gt"
     feature_extractor = FeatureExtractor(use_extended=use_extended_features)
 
     if scorer_name == "rule":
@@ -106,7 +109,7 @@ def run_pipeline(
             try:
                 result = _process_sample(
                     sample, scene_meta, grounder, feature_extractor,
-                    scorer, scorer_name, use_extended_features,
+                    scorer, scorer_name, use_extended_features, use_vlm,
                 )
             except Exception as e:
                 print(f"  [ERROR] {sample.sample_id}: {e}")
@@ -158,7 +161,7 @@ def run_pipeline(
 
 def _process_sample(
     sample, scene_meta, grounder, feature_extractor,
-    scorer, scorer_name, use_extended,
+    scorer, scorer_name, use_extended, use_vlm=False,
 ):
     """Process one sample through all 5 stages."""
 
@@ -173,24 +176,42 @@ def _process_sample(
     instance_id = sample.target_obj_id + 1
 
     # ── Stage 1: Target Grounding ────────────────────────────────────
-    grounding = grounder.ground(
-        rgb, sample.text_query,
-        label=label, instance_id=instance_id,
-    )
+    if use_vlm:
+        # VLM mode: Florence-2 detects target from RGB + text query only
+        grounding = grounder.ground(rgb, sample.text_query)
+    else:
+        # GT mode: use label mask as oracle for perfect grounding
+        grounding = grounder.ground(
+            rgb, sample.text_query,
+            label=label, instance_id=instance_id,
+        )
     if grounding is None:
         return None
 
     save_stage1_output(sample.sample_id, sample.text_query, grounding)
 
     # ── Stage 2: Grasp Candidate Generation ──────────────────────────
-    candidates = generate_target_grasps(
-        depth=depth,
-        intrinsics=intrinsics,
-        bbox=grounding.bbox,
-        label=label,
-        instance_id=instance_id,
-        top_k=config.GRASP_TOP_K,
-    )
+    if use_vlm:
+        # VLM mode: use ONLY the VLM bbox for point cloud cropping
+        # (no GT label leakage — fair evaluation)
+        candidates = generate_target_grasps(
+            depth=depth,
+            intrinsics=intrinsics,
+            bbox=grounding.bbox,
+            label=None,
+            instance_id=None,
+            top_k=config.GRASP_TOP_K,
+        )
+    else:
+        # GT mode: use label mask for precise cropping
+        candidates = generate_target_grasps(
+            depth=depth,
+            intrinsics=intrinsics,
+            bbox=grounding.bbox,
+            label=label,
+            instance_id=instance_id,
+            top_k=config.GRASP_TOP_K,
+        )
 
     if not candidates:
         return None
@@ -200,13 +221,20 @@ def _process_sample(
     # ── Stage 3: Feature Extraction ──────────────────────────────────
     # Get target point cloud for feature computation
     points, pixel_coords = backproject_depth(depth, intrinsics)
-    target_pts, _ = crop_point_cloud_by_mask(
-        points, pixel_coords, label, instance_id
-    )
-    if len(target_pts) < 5:
+    if use_vlm:
+        # VLM mode: crop by VLM bbox only (no GT mask)
         target_pts, _ = crop_point_cloud_by_bbox(
             points, pixel_coords, grounding.bbox
         )
+    else:
+        # GT mode: crop by GT instance mask
+        target_pts, _ = crop_point_cloud_by_mask(
+            points, pixel_coords, label, instance_id
+        )
+        if len(target_pts) < 5:
+            target_pts, _ = crop_point_cloud_by_bbox(
+                points, pixel_coords, grounding.bbox
+            )
 
     features = feature_extractor.extract(
         candidates=candidates,
@@ -246,6 +274,9 @@ def _process_sample(
 def main():
     parser = argparse.ArgumentParser(description="Run VLMGraspPose pipeline")
     parser.add_argument("--split", type=str, default="test_seen")
+    parser.add_argument("--grounder", type=str, default="gt",
+                        choices=["gt", "vlm"],
+                        help="Grounder: 'gt' (oracle labels) or 'vlm' (Florence-2)")
     parser.add_argument("--scorer", type=str, default="rule",
                         choices=["rule", "logistic", "mlp"])
     parser.add_argument("--max-samples", type=int, default=None)
@@ -257,6 +288,7 @@ def main():
     run_pipeline(
         split=args.split,
         scorer_name=args.scorer,
+        grounder_name=args.grounder,
         max_samples=args.max_samples,
         use_extended_features=args.extended,
         view_stride=args.view_stride,
