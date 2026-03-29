@@ -1,12 +1,18 @@
 """
-stage1/grounding.py — Target Grounding
-========================================
-Two implementations:
-  • GroundTruthGrounder  — uses GT label masks (for demo / sanity-check)
-  • VLMGrounder          — Florence-2 open-vocabulary grounding
+stage1/grounding.py — Target Grounding Branch
+================================================
+Branch A of the VLMGraspPose architecture.
+
+Implementations:
+  • GroundTruthGrounder  — uses GT label masks (oracle upper-bound)
+  • VLMGrounder          — Florence-2 lightweight VLM
+
+    Supported Florence-2 tasks:
+      - Open-vocabulary detection   (--grounder vlm)
+      - Phrase grounding            (--grounder phrase)
 
 Unified output:
-    {bbox: [x1,y1,x2,y2], mask: HxW or None, confidence: float}
+    GroundingResult {bbox, mask, confidence}
 """
 
 import abc
@@ -97,24 +103,37 @@ class GroundTruthGrounder(TargetGrounder):
 # ── VLM Grounder (Florence-2) ───────────────────────────────────────
 
 class VLMGrounder(TargetGrounder):
-    """Open-vocabulary grounding using Florence-2.
+    """Lightweight VLM grounding using Florence-2.
+
+    Supports multiple grounding tasks:
+      - 'open_vocab'  →  <OPEN_VOCABULARY_DETECTION>
+      - 'phrase'      →  <CAPTION_TO_PHRASE_GROUNDING>
 
     Weights are loaded from the local ``models/florence-2-base/`` directory
     (downloaded via ``scripts/download_weights.py``).
-
-    Falls back to the HuggingFace Hub ID if a local directory is absent,
-    but will warn loudly.
     """
+
+    # Florence-2 task prompts
+    TASK_PROMPTS = {
+        "open_vocab": "<OPEN_VOCABULARY_DETECTION>",
+        "phrase":     "<CAPTION_TO_PHRASE_GROUNDING>",
+    }
 
     def __init__(
         self,
         model_name: str = "florence-2",
+        task: str = "open_vocab",
         model_dir: Optional[Path] = None,
         device: Optional[str] = None,
     ):
         self.model_name = model_name
         self._model = None
         self._processor = None
+        self._task = task
+
+        if task not in self.TASK_PROMPTS:
+            raise ValueError(f"Unknown Florence-2 task: {task}. "
+                             f"Choose from {list(self.TASK_PROMPTS.keys())}")
 
         if model_dir is None:
             model_dir = config.FLORENCE2_MODEL_DIR
@@ -173,7 +192,7 @@ class VLMGrounder(TargetGrounder):
     ) -> Optional[GroundingResult]:
         """Detect the target object described by *text_query*.
 
-        Uses Florence-2 ``<OPEN_VOCABULARY_DETECTION>`` task.
+        Uses the Florence-2 task configured at init time.
         Returns the highest-confidence detection, or None if nothing found.
         """
         self._ensure_loaded()
@@ -183,7 +202,7 @@ class VLMGrounder(TargetGrounder):
         image = Image.fromarray(rgb) if isinstance(rgb, np.ndarray) else rgb
         W, H = image.size
 
-        task_prompt = "<OPEN_VOCABULARY_DETECTION>"
+        task_prompt = self.TASK_PROMPTS[self._task]
         prompt = task_prompt + text_query
 
         inputs = self._processor(
@@ -209,9 +228,18 @@ class VLMGrounder(TargetGrounder):
             image_size=(W, H),
         )
 
-        # Extract best detection
-        bboxes = parsed.get(task_prompt, {}).get("bboxes", [])
-        labels = parsed.get(task_prompt, {}).get("bboxes_labels", [])
+        # ── Extract bboxes (format differs per task) ─────────────────
+        task_result = parsed.get(task_prompt, {})
+        bboxes = task_result.get("bboxes", [])
+
+        # Phrase grounding nests bboxes differently
+        if not bboxes and "polygons" not in task_result:
+            # Try alternate key structures
+            for key in task_result:
+                if isinstance(task_result[key], list) and len(task_result[key]) > 0:
+                    if isinstance(task_result[key][0], list) and len(task_result[key][0]) == 4:
+                        bboxes = task_result[key]
+                        break
 
         if not bboxes:
             return None
@@ -240,13 +268,19 @@ class VLMGrounder(TargetGrounder):
 # ── Factory ──────────────────────────────────────────────────────────
 
 def get_grounder(name: str = "gt", **kwargs) -> TargetGrounder:
-    """Factory to get a grounder by name."""
+    """Factory to get a grounder by name.
+
+    Supported names:
+        'gt'      — Ground-truth oracle (uses label mask)
+        'vlm'     — Florence-2 open-vocabulary detection
+        'phrase'  — Florence-2 phrase grounding
+    """
     if name == "gt":
         return GroundTruthGrounder()
     elif name in ("vlm", "florence", "florence-2"):
-        return VLMGrounder(model_name="florence-2", **kwargs)
-    elif name in ("grounding_dino",):
-        return VLMGrounder(model_name=name, **kwargs)
+        return VLMGrounder(model_name="florence-2", task="open_vocab", **kwargs)
+    elif name == "phrase":
+        return VLMGrounder(model_name="florence-2", task="phrase", **kwargs)
     else:
-        raise ValueError(f"Unknown grounder: {name}")
+        raise ValueError(f"Unknown grounder: {name}. Choose from: gt, vlm, phrase")
 

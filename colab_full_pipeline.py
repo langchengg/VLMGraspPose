@@ -1,469 +1,341 @@
 """
 ==========================================================================
- VLMGraspPose — Complete Training & Evaluation Pipeline for Google Colab
+ VLMGraspPose — Complete Architecture Pipeline for Google Colab
 ==========================================================================
- 把这整个文件的内容复制粘贴到一个 Colab cell 里运行即可。
- 建议：Colab Pro ($10/月) + GPU T4 runtime（VLM 实验需要 GPU）
+ Copy-paste ALL of this into ONE Colab cell and run.
+ Requires: Colab Pro ($10/mo) + T4 GPU runtime (for VLM experiments)
 
- 预计总运行时间: ~5-7 小时 (含下载)
-   - 下载数据 + 模型:  ~30-60 分钟 (取决于网速)
-   - 训练特征生成:     ~2-3 小时 (100 scenes × 16 views)
-   - 训练 scorer:      ~10 秒
-   - GT 模式评估:      ~30 分钟
-   - VLM 模式评估:     ~1 小时 (Florence-2 推理)
-   - 可视化:           ~5 分钟
+ Architecture Flow:
+   ┌─ Branch A: Target Grounding (GT / VLM / Phrase Grounding) ──┐
+   │                                                              ├→ Association → Re-Ranking → Selection
+   └─ Branch B: Grasp Proposal (Antipodal Geometric Sampler) ────┘
+
+ Experiment Matrix (automatically runs all combinations):
+   ┌─────────────┬───────────┬───────────────┬────────────┐
+   │  Grounder   │  Scorer   │  Features     │   Split    │
+   ├─────────────┼───────────┼───────────────┼────────────┤
+   │  gt         │  rule     │  core (5-dim) │  test_seen │
+   │  gt         │  logistic │  core (5-dim) │  test_seen │
+   │  gt         │  mlp      │  core (5-dim) │  test_seen │
+   │  gt         │  mlp      │  ext  (9-dim) │  test_seen │
+   │  vlm        │  rule     │  core (5-dim) │  test_seen │  ← needs GPU
+   │  vlm        │  mlp      │  core (5-dim) │  test_seen │  ← needs GPU
+   │  phrase     │  rule     │  core (5-dim) │  test_seen │  ← needs GPU
+   └─────────────┴───────────┴───────────────┴────────────┘
+
+ Estimated time: ~5-7 hours (including data download)
 ==========================================================================
 """
 
-# ============================================================
-# 0. 挂载 Google Drive（数据持久化，断连后不丢失）
-# ============================================================
-import os
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 0 — ENVIRONMENT SETUP                                     ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+import os, json, glob, shutil
+
+# 0a. Mount Google Drive for persistence
 from google.colab import drive
 drive.mount('/content/drive')
 
-# 工作目录放在 Drive 上，断连后数据不丢
 WORK_DIR = '/content/drive/MyDrive/VLMGraspPose'
 os.makedirs(WORK_DIR, exist_ok=True)
 
-# ============================================================
-# 1. Clone 项目代码（首次运行才需要）
-# ============================================================
-REPO_URL = 'https://github.com/langchengg/VLMGraspPose.git'  # ← 改成你的 GitHub repo URL
+# 0b. Clone project code (first run only)
+REPO_URL = 'https://github.com/langchengg/VLMGraspPose.git'  # ← your repo URL
 
 if not os.path.exists(f'{WORK_DIR}/config.py'):
     print("=" * 60)
-    print("首次运行：克隆项目代码")
+    print("First run: cloning project code")
     print("=" * 60)
-    # 如果你还没 push 到 GitHub，可以手动上传整个项目文件夹到
-    # Google Drive 的 MyDrive/VLMGraspPose/ 目录
     os.system(f'git clone {REPO_URL} {WORK_DIR}')
 else:
-    print("[OK] 项目代码已存在，跳过克隆")
+    print("[OK] Project code exists, pulling latest...")
+    os.system(f'cd {WORK_DIR} && git pull --ff-only 2>/dev/null || true')
 
 os.chdir(WORK_DIR)
-print(f"工作目录: {os.getcwd()}")
+print(f"Working directory: {os.getcwd()}")
 
-# ============================================================
-# 2. 安装依赖
-# ============================================================
-print("\n" + "=" * 60)
-print("安装依赖...")
-print("=" * 60)
-os.system('pip install -q numpy scipy scikit-learn torch Pillow open3d tqdm matplotlib opencv-python-headless huggingface_hub transformers einops gdown')
+# 0c. Install dependencies
+print("\n[SETUP] Installing dependencies...")
+os.system('pip install -q numpy scipy scikit-learn torch Pillow open3d tqdm '
+          'matplotlib opencv-python-headless huggingface_hub transformers '
+          'einops timm gdown')
 
-# ============================================================
-# 3. 修改 config.py — 启用 train split
-# ============================================================
-print("\n" + "=" * 60)
-print("配置 train split...")
-print("=" * 60)
-
+# 0d. Enable train split in config
 config_path = f'{WORK_DIR}/config.py'
 with open(config_path, 'r') as f:
     config_content = f.read()
 
-# 取消注释 train split（如果还是注释状态）
-if '"train"' not in config_content or '# "train"' in config_content:
+if '# "train"' in config_content:
     config_content = config_content.replace(
         '    # "train": PROJECT_ROOT / "train",',
         '    "train": PROJECT_ROOT / "train",'
     )
     with open(config_path, 'w') as f:
         f.write(config_content)
-    print("[OK] 已启用 train split")
-else:
-    print("[OK] train split 已启用，跳过")
+    print("[OK] Enabled train split in config.py")
 
-# ============================================================
-# 4. 下载数据（Google Drive → 本地，有断点续传）
-# ============================================================
-print("\n" + "=" * 60)
-print("下载 GraspNet 数据...")
-print("=" * 60)
-
-# 检查是否已下载
-train_exists = os.path.exists(f'{WORK_DIR}/train') and len(os.listdir(f'{WORK_DIR}/train')) > 0
-test_exists = os.path.exists(f'{WORK_DIR}/test_seen') and len(os.listdir(f'{WORK_DIR}/test_seen')) > 0
-
-if not test_exists:
-    print("\n>>> 下载 test_seen (~7 GB)...")
-    os.system(f'cd {WORK_DIR} && python scripts/download_data.py --test-seen')
-else:
-    n = len([d for d in os.listdir(f'{WORK_DIR}/test_seen') if d.startswith('scene_')])
-    print(f"[SKIP] test_seen 已存在 ({n} scenes)")
-
-if not train_exists:
-    print("\n>>> 下载 train (~30 GB)...")
-    os.system(f'cd {WORK_DIR} && python scripts/download_data.py --train')
-else:
-    n = len([d for d in os.listdir(f'{WORK_DIR}/train') if d.startswith('scene_')])
-    print(f"[SKIP] train 已存在 ({n} scenes)")
-
-# 验证
-for split in ['test_seen', 'train']:
-    split_dir = f'{WORK_DIR}/{split}'
-    if os.path.exists(split_dir):
-        n = len([d for d in os.listdir(split_dir) if d.startswith('scene_')])
-        print(f"  ✓ {split}: {n} scenes")
-    else:
-        print(f"  ✗ {split}: 未找到！请检查下载")
-
-# ============================================================
-# 5. 预处理 — 生成 JSONL 索引
-# ============================================================
-print("\n" + "=" * 60)
-print("预处理数据...")
-print("=" * 60)
-
-if not os.path.exists(f'{WORK_DIR}/processed/test_seen.jsonl'):
-    os.system(f'cd {WORK_DIR} && python -m data.preprocess --split test_seen')
-else:
-    print("[SKIP] test_seen.jsonl 已存在")
-
-if not os.path.exists(f'{WORK_DIR}/processed/train.jsonl'):
-    os.system(f'cd {WORK_DIR} && python -m data.preprocess --split train')
-else:
-    print("[SKIP] train.jsonl 已存在")
-
-# ============================================================
-# 6. 基线实验 — Rule Scorer + test_seen
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 6: Rule Scorer 基线 (test_seen)")
-print("=" * 60)
-
-rule_result = f'{WORK_DIR}/results/pipeline_summary_test_seen_rule.json'
-if not os.path.exists(rule_result):
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split test_seen --scorer rule')
-else:
-    print("[SKIP] Rule scorer 结果已存在")
-
-# ============================================================
-# 7. ★ 核心步骤 — 在 train split 上生成训练特征
-#    这是最耗时的步骤: 100 scenes × 16 views ≈ 2-3 小时
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 7: ★ 生成训练特征 (train split, ~2-3 小时)")
-print("=" * 60)
-
-train_result = f'{WORK_DIR}/results/pipeline_summary_train_rule.json'
-if not os.path.exists(train_result):
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split train --scorer rule')
-else:
-    print("[SKIP] Train 特征已生成")
-
-# ============================================================
-# 8. 生成伪标签用于训练
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 8: 检查训练数据")
-print("=" * 60)
-
-ranking_file = f'{WORK_DIR}/ranking_data/train_rank.jsonl'
-if os.path.exists(ranking_file):
-    with open(ranking_file) as f:
-        n_lines = sum(1 for _ in f)
-    print(f"[OK] 训练数据: {n_lines} samples in train_rank.jsonl")
-else:
-    print("[INFO] train_rank.jsonl 将在 pipeline 运行时自动生成")
-    # 如果 pipeline 没有自动生成 ranking data，手动生成
-    print("手动生成 ranking data...")
-    os.system(f'''cd {WORK_DIR} && python -c "
-import json, numpy as np
-from pathlib import Path
-import config
-from stage4.label_generator import generate_pseudo_labels, save_ranking_data
-
-features_dir = config.FEATURES_DIR
-ranking_dir = config.RANKING_DATA_DIR
-ranking_dir.mkdir(parents=True, exist_ok=True)
-
-count = 0
-for npy_file in sorted(features_dir.glob('*.npy')):
-    sample_id = npy_file.stem
-    meta_file = features_dir / f'{npy_file.stem}_meta.json'
-    if not meta_file.exists():
-        continue
-
-    features = np.load(str(npy_file))
-    with open(meta_file) as f:
-        meta = json.load(f)
-
-    if len(features) == 0:
-        continue
-
-    labels = generate_pseudo_labels(features, [], None, np.eye(3))
-    save_ranking_data(sample_id, features, labels, meta['candidate_ids'], split='train')
-    count += 1
-
-print(f'Generated ranking data for {count} samples')
-"
-''')
-
-# ============================================================
-# 9. 训练 Logistic Regression Scorer
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 9: 训练 Logistic Regression Scorer")
-print("=" * 60)
-
-os.system(f'cd {WORK_DIR} && python -m experiments.train_ranker --mode pseudo --scorer logistic')
-
-# ============================================================
-# 10. 训练 MLP Scorer
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 10: 训练 MLP Scorer")
-print("=" * 60)
-
-os.system(f'cd {WORK_DIR} && python -m experiments.train_ranker --mode pseudo --scorer mlp')
-
-# ============================================================
-# 11. 用训练好的 Logistic Scorer 评估 test_seen
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 11: Logistic Scorer 评估 (test_seen)")
-print("=" * 60)
-
-logistic_result = f'{WORK_DIR}/results/pipeline_summary_test_seen_logistic.json'
-if not os.path.exists(logistic_result):
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split test_seen --scorer logistic')
-else:
-    print("[SKIP] Logistic scorer 结果已存在")
-
-# ============================================================
-# 12. 用训练好的 MLP Scorer 评估 test_seen
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 12: MLP Scorer 评估 (test_seen)")
-print("=" * 60)
-
-mlp_result = f'{WORK_DIR}/results/pipeline_summary_test_seen_mlp.json'
-if not os.path.exists(mlp_result):
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split test_seen --scorer mlp')
-else:
-    print("[SKIP] MLP scorer 结果已存在")
-
-# ============================================================
-# 13. ★ VLM (Florence-2) 实验 — 需要 GPU
-#     用 Florence-2 替代 GT 做目标检测
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 13: ★ VLM (Florence-2) 实验")
-print("=" * 60)
-
-# 13a: 下载 Florence-2 模型权重 (~450 MB)
+# 0e. Check GPU availability
 import torch
-if torch.cuda.is_available():
-    print(f"[GPU] 检测到 GPU: {torch.cuda.get_device_name(0)}")
-    print(f"[GPU] VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
+HAS_GPU = torch.cuda.is_available()
+if HAS_GPU:
+    print(f"[GPU] {torch.cuda.get_device_name(0)} "
+          f"({torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB VRAM)")
+else:
+    print("[WARN] No GPU — VLM experiments (Branch A: vlm/phrase) will be skipped")
 
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 1 — INPUT DATA (Architecture Block 1)                     ║
+# ║  Download: Text queries + RGB images + Depth maps + Point Clouds  ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+print("\n" + "═" * 60)
+print("  BLOCK 1 — INPUT: Download Scene Data")
+print("═" * 60)
+
+for split, size in [('test_seen', '~7 GB'), ('train', '~30 GB')]:
+    split_dir = f'{WORK_DIR}/{split}'
+    if os.path.exists(split_dir) and len([d for d in os.listdir(split_dir) if d.startswith('scene_')]) > 0:
+        n = len([d for d in os.listdir(split_dir) if d.startswith('scene_')])
+        print(f"  ✓ {split}: {n} scenes (already downloaded)")
+    else:
+        print(f"\n  >>> Downloading {split} ({size})...")
+        flag = '--test-seen' if split == 'test_seen' else '--train'
+        os.system(f'cd {WORK_DIR} && python scripts/download_data.py {flag}')
+
+# Download Florence-2 weights if GPU available
+if HAS_GPU:
     florence_dir = f'{WORK_DIR}/models/florence-2-base'
     if not os.path.exists(florence_dir) or not os.listdir(florence_dir):
-        print("\n>>> 下载 Florence-2 模型权重 (~450 MB)...")
+        print("\n  >>> Downloading Florence-2 model weights (~450 MB)...")
         os.system(f'cd {WORK_DIR} && python scripts/download_weights.py --florence2')
     else:
-        print("[SKIP] Florence-2 权重已存在")
+        print(f"  ✓ Florence-2 weights ready")
 
-    # 13b: 用 Florence-2 VLM 跑 test_seen (Rule scorer)
-    vlm_rule_result = f'{WORK_DIR}/results/pipeline_summary_test_seen_rule_vlm.json'
-    print("\n>>> VLM + Rule Scorer (test_seen)...")
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split test_seen --grounder vlm --scorer rule')
-    # 重命名结果以区分 GT vs VLM
-    import shutil
-    default_result = f'{WORK_DIR}/results/pipeline_summary_test_seen_rule.json'
-    if os.path.exists(default_result):
-        shutil.copy(default_result, vlm_rule_result)
+# Preprocess JSONL indices
+print("\n  Preprocessing data indices...")
+for split in ['test_seen', 'train']:
+    jsonl = f'{WORK_DIR}/processed/{split}.jsonl'
+    if not os.path.exists(jsonl):
+        os.system(f'cd {WORK_DIR} && python -m data.preprocess --split {split}')
+    else:
+        print(f"  ✓ {split}.jsonl exists")
 
-    # 13c: 用 Florence-2 VLM 跑 test_seen (MLP scorer)
-    print("\n>>> VLM + MLP Scorer (test_seen)...")
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split test_seen --grounder vlm --scorer mlp')
-    vlm_mlp_result = f'{WORK_DIR}/results/pipeline_summary_test_seen_mlp_vlm.json'
-    default_mlp = f'{WORK_DIR}/results/pipeline_summary_test_seen_mlp.json'
-    if os.path.exists(default_mlp):
-        shutil.copy(default_mlp, vlm_mlp_result)
 
-    print("[OK] VLM 实验完成")
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 2 — TRAINING                                              ║
+# ║  Branch B (Grasp Proposal) + Block 4 (Features) on TRAIN split    ║
+# ║  Then train Re-Ranking scorers (Block 5)                          ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+print("\n" + "═" * 60)
+print("  PHASE 2 — TRAINING: Generate features + Train scorers")
+print("═" * 60)
+
+# 2a. Generate training features (GT grounding + rule scorer on train split)
+#     This runs Blocks 1-4 on the train split (~2-3 hours)
+train_result = f'{WORK_DIR}/results/pipeline_summary_train_rule.json'
+if not os.path.exists(train_result):
+    print("\n  >>> Running pipeline on TRAIN split (~2-3 hours)...")
+    print("      Block 2: GT Grounding → Block 3: Grasp Proposal → Block 4: Features")
+    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline '
+              f'--split train --grounder gt --scorer rule')
 else:
-    print("[WARN] 未检测到 GPU，跳过 VLM 实验")
-    print("       要运行 VLM 实验，请在 Colab 中切换到 GPU runtime:")
-    print("       Runtime → Change runtime type → T4 GPU")
+    print("  ✓ Training features already generated")
 
-# ============================================================
-# 14. Extended Features (9-dim) 消融实验
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 14: Extended Features 训练 + 评估")
-print("=" * 60)
+# 2b. Train Logistic Regression scorer (Block 5)
+print("\n  >>> Training Logistic Regression scorer (Block 5)...")
+os.system(f'cd {WORK_DIR} && python -m experiments.train_ranker --mode pseudo --scorer logistic')
 
-# 14a: 在 train 上生成 extended features
-ext_train_result = f'{WORK_DIR}/results/pipeline_summary_train_rule_ext.json'
-if not os.path.exists(ext_train_result):
-    os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split train --scorer rule --extended')
-    # 重命名以区分
-    if os.path.exists(f'{WORK_DIR}/results/pipeline_summary_train_rule.json'):
-        shutil.copy(
-            f'{WORK_DIR}/results/pipeline_summary_train_rule.json',
-            ext_train_result
-        )
-
-# 14b: 重新训练 MLP (会自动用最新的 ranking data)
+# 2c. Train MLP scorer (Block 5)
+print("\n  >>> Training MLP scorer (Block 5)...")
 os.system(f'cd {WORK_DIR} && python -m experiments.train_ranker --mode pseudo --scorer mlp')
 
-# 14c: 评估 extended features
-os.system(f'cd {WORK_DIR} && python -m experiments.run_pipeline --split test_seen --scorer mlp --extended')
 
-# ============================================================
-# 15. ★ 核心输出 — GT vs VLM × 三种 Scorer 对比评估
-# ============================================================
-print("\n" + "=" * 60)
-print("=" * 60)
-print("   ★  FINAL EVALUATION — GT vs VLM × Scorer Comparison  ★")
-print("=" * 60)
-print("=" * 60)
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 3 — EVALUATION: Full Architecture on TEST_SEEN             ║
+# ║  Run all experiment combinations through Blocks 2→3→4→5→6        ║
+# ╚═══════════════════════════════════════════════════════════════════╝
 
+print("\n" + "═" * 60)
+print("  PHASE 3 — EVALUATION: Full Architecture Experiments")
+print("═" * 60)
+
+# Define experiment matrix
+experiments = [
+    # (grounder,  scorer,     extended, needs_gpu, description)
+    ("gt",       "rule",     False,    False,  "GT + Rule (baseline)"),
+    ("gt",       "logistic", False,    False,  "GT + Logistic"),
+    ("gt",       "mlp",      False,    False,  "GT + MLP"),
+    ("gt",       "mlp",      True,     False,  "GT + MLP + Extended Features"),
+    ("vlm",      "rule",     False,    True,   "VLM (open-vocab) + Rule"),
+    ("vlm",      "mlp",      False,    True,   "VLM (open-vocab) + MLP"),
+    ("phrase",   "rule",     False,    True,   "VLM (phrase grounding) + Rule"),
+]
+
+completed = []
+skipped = []
+
+for grounder, scorer, extended, needs_gpu, desc in experiments:
+    print(f"\n  ┌─ Experiment: {desc}")
+
+    if needs_gpu and not HAS_GPU:
+        print(f"  └─ [SKIP] Requires GPU")
+        skipped.append(desc)
+        continue
+
+    # Build command
+    cmd = (f'cd {WORK_DIR} && python -m experiments.run_pipeline '
+           f'--split test_seen --grounder {grounder} --scorer {scorer}')
+    if extended:
+        cmd += ' --extended'
+
+    print(f"  │  Branch A: {grounder:<8} Branch B: antipodal")
+    print(f"  │  Features: {'ext 9-dim' if extended else 'core 5-dim':<12} Re-Ranking: {scorer}")
+
+    os.system(cmd)
+
+    completed.append(desc)
+    print(f"  └─ [DONE] ✓")
+
+print(f"\n  Completed: {len(completed)} experiments")
+if skipped:
+    print(f"  Skipped (no GPU): {len(skipped)} experiments")
+
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 4 — BLOCK 7: EVALUATION METRICS                           ║
+# ║  Compute Hit@K, position error, angular error for all experiments ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+print("\n" + "═" * 60)
+print("═" * 60)
+print("  ★  BLOCK 7 — EVALUATION: Metric Comparison  ★")
+print("═" * 60)
+print("═" * 60)
+
+# 4a. Compare all GT-mode scorers
 os.system(f'cd {WORK_DIR} && python -m experiments.eval --compare')
 
-# 单独评估 VLM 结果
-for vlm_f in [f'{WORK_DIR}/results/pipeline_summary_test_seen_rule_vlm.json',
-              f'{WORK_DIR}/results/pipeline_summary_test_seen_mlp_vlm.json']:
-    if os.path.exists(vlm_f):
-        print(f"\n>>> 评估 VLM 结果: {os.path.basename(vlm_f)}")
-        os.system(f'cd {WORK_DIR} && python -m experiments.eval --results {vlm_f}')
+# 4b. Evaluate VLM results separately
+for vlm_result in sorted(glob.glob(f'{WORK_DIR}/results/pipeline_summary_test_seen_*_vlm.json')) + \
+                  sorted(glob.glob(f'{WORK_DIR}/results/pipeline_summary_test_seen_*_phrase.json')):
+    print(f"\n  >>> Evaluating: {os.path.basename(vlm_result)}")
+    os.system(f'cd {WORK_DIR} && python -m experiments.eval --results {vlm_result}')
 
-# ============================================================
-# 16. GT 对比分析 — 位置/角度误差
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 16: Grasp vs GT 对比分析")
-print("=" * 60)
-
-for scorer in ['rule', 'logistic', 'mlp']:
-    print(f"\n--- {scorer.upper()} Scorer vs GT ---")
+# 4c. GT comparison (position/angular error)
+print("\n  >>> Computing Grasp vs GT deviation metrics...")
+for scorer in ['rule', 'mlp']:
     os.system(f'cd {WORK_DIR} && python -m vis.compare_gt --scorer {scorer} --max-samples 100')
 
-# ============================================================
-# 17. 可视化 — 生成论文图表
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 17: 生成可视化图表")
-print("=" * 60)
 
-# 找到有效的 sample IDs 用于可视化
-import json
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 5 — VISUALIZATION: Generate Paper Figures                  ║
+# ║  2D overlay, 3D point cloud, GT comparison panels                 ║
+# ╚═══════════════════════════════════════════════════════════════════╝
 
+print("\n" + "═" * 60)
+print("  PHASE 5 — VISUALIZATION: Paper Figures")
+print("═" * 60)
+
+# Find the best samples for visualization
 results_file = f'{WORK_DIR}/results/pipeline_summary_test_seen_rule.json'
 sample_ids_to_vis = []
 if os.path.exists(results_file):
     with open(results_file) as f:
         data = json.load(f)
-    # 挑选 top-1 score 比较高的 samples，视觉效果好
     results_sorted = sorted(
         data.get('results', []),
         key=lambda r: r['selections'][0]['final_score'] if r.get('selections') else 0,
         reverse=True
     )
-    sample_ids_to_vis = [r['sample_id'] for r in results_sorted[:8]]
-    print(f"选择 {len(sample_ids_to_vis)} 个 samples 生成可视化:")
-    for sid in sample_ids_to_vis:
-        print(f"  - {sid}")
+    sample_ids_to_vis = [r['sample_id'] for r in results_sorted[:6]]
+    print(f"  Selected {len(sample_ids_to_vis)} samples for visualization")
 
 for sid in sample_ids_to_vis:
-    # 2D 可视化
+    # 2D: RGB + bbox + gripper overlay
     os.system(f'cd {WORK_DIR} && python -m vis.vis_2d --sample {sid} --scorer rule')
     os.system(f'cd {WORK_DIR} && python -m vis.vis_2d --sample {sid} --scorer mlp')
-    # 3D 可视化 (Matplotlib, headless)
+    # 3D: Point cloud + gripper skeleton
     os.system(f'cd {WORK_DIR} && python -m vis.vis_3d --sample {sid} --scorer rule')
-    # GT 对比图
+    # GT comparison panel
     os.system(f'cd {WORK_DIR} && python -m vis.compare_gt --sample {sid} --scorer rule --draw')
     os.system(f'cd {WORK_DIR} && python -m vis.compare_gt --sample {sid} --scorer mlp --draw')
 
-# ============================================================
-# 18. 在 Colab 中展示部分可视化结果
-# ============================================================
-print("\n" + "=" * 60)
-print("Step 18: 展示可视化结果")
-print("=" * 60)
-
+# Display in Colab
 from IPython.display import display, Image as IPImage
-import glob
 
-vis_files = sorted(glob.glob(f'{WORK_DIR}/vis_output/*_2d.png'))[:4]
-for vf in vis_files:
-    print(f"\n📸 {os.path.basename(vf)}")
-    display(IPImage(filename=vf, width=800))
+for pattern, label in [('*_2d.png', '2D Overlay'), ('*_3d.png', '3D Point Cloud'),
+                        ('*_compare.png', 'GT Comparison')]:
+    files = sorted(glob.glob(f'{WORK_DIR}/vis_output/{pattern}'))[:3]
+    for vf in files:
+        print(f"\n📸 [{label}] {os.path.basename(vf)}")
+        display(IPImage(filename=vf, width=900))
 
-vis_files_3d = sorted(glob.glob(f'{WORK_DIR}/vis_output/*_3d.png'))[:4]
-for vf in vis_files_3d:
-    print(f"\n📸 {os.path.basename(vf)}")
-    display(IPImage(filename=vf, width=800))
 
-compare_files = sorted(glob.glob(f'{WORK_DIR}/vis_output/*_compare.png'))[:4]
-for vf in compare_files:
-    print(f"\n📸 {os.path.basename(vf)}")
-    display(IPImage(filename=vf, width=1000))
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  PHASE 6 — FINAL REPORT                                          ║
+# ║  Print all paper-ready results                                    ║
+# ╚═══════════════════════════════════════════════════════════════════╝
 
-# ============================================================
-# 19. 最终报告 — 打印所有论文可用数据
-# ============================================================
 print("\n")
 print("█" * 60)
 print("█                                                          █")
-print("█          ★  COMPLETE — All Results Summary  ★           █")
+print("█     ★  COMPLETE — Paper Results Summary  ★              █")
 print("█                                                          █")
 print("█" * 60)
 
-# 打印所有 metrics 文件
+# Table 1: Scorer + Grounder comparison
 metrics_files = sorted(glob.glob(f'{WORK_DIR}/results/*.metrics.json'))
 if metrics_files:
-    print("\n📊 论文表格 1: Scorer Comparison")
-    print("-" * 70)
-    print(f"{'Scorer':<15} {'Hit@1':<10} {'Hit@5':<10} {'AvgScore':<12} {'Latency':<10}")
-    print("-" * 70)
+    print("\n📊 Table 1: Architecture Configuration Comparison")
+    print("─" * 75)
+    print(f"{'Grounder':<10} {'Scorer':<10} {'Hit@1':<10} {'Hit@5':<10} "
+          f"{'AvgScore':<12} {'Latency':<10}")
+    print("─" * 75)
     for mf in metrics_files:
         with open(mf) as f:
             m = json.load(f)
-        print(f"{m.get('scorer','?'):<15} "
+        print(f"{m.get('grounder','gt'):<10} "
+              f"{m.get('scorer','?'):<10} "
               f"{m.get('target_hit_at_1',0):<10.4f} "
               f"{m.get('target_hit_at_5',0):<10.4f} "
               f"{m.get('avg_top1_score',0):<12.4f} "
               f"{m.get('avg_latency',0):<10.3f}s")
-    print("-" * 70)
+    print("─" * 75)
 
-# 打印 GT 对比报告
+# Table 2: GT deviation
 compare_reports = sorted(glob.glob(f'{WORK_DIR}/vis_output/comparison_report_*.json'))
 if compare_reports:
-    print("\n📊 论文表格 2: Grasp vs GT Comparison")
-    print("-" * 70)
+    print("\n📊 Table 2: Grasp Pose vs Ground Truth")
+    print("─" * 75)
     for cr in compare_reports:
         with open(cr) as f:
             s = json.load(f)
         scorer = s.get('scorer', '?')
-        print(f"\n  Scorer: {scorer}")
-        print(f"  Samples:             {s['num_samples']}")
         pe = s.get('position_error_cm', {})
-        print(f"  Position Error:      {pe.get('mean',0):.2f} ± {pe.get('std',0):.2f} cm "
-              f"(median: {pe.get('median',0):.2f} cm)")
         ae = s.get('angular_error_deg', {})
-        print(f"  Angular Error:       {ae.get('mean',0):.1f} ± {ae.get('std',0):.1f} deg")
-        print(f"  Target Hit (mask):   {s.get('target_hit_rate_mask',0)*100:.1f}%")
-        print(f"  Target Hit (bbox):   {s.get('target_hit_rate_bbox',0)*100:.1f}%")
         wr = s.get('width_ratio', {})
-        print(f"  Width Ratio:         {wr.get('mean',0):.2f} ± {wr.get('std',0):.2f}")
+        print(f"\n  Scorer: {scorer}")
+        print(f"    Position Error:    {pe.get('mean',0):.2f} ± {pe.get('std',0):.2f} cm")
+        print(f"    Angular Error:     {ae.get('mean',0):.1f} ± {ae.get('std',0):.1f}°")
+        print(f"    Target Hit (mask): {s.get('target_hit_rate_mask',0)*100:.1f}%")
+        print(f"    Target Hit (bbox): {s.get('target_hit_rate_bbox',0)*100:.1f}%")
+        print(f"    Width Ratio:       {wr.get('mean',0):.2f} ± {wr.get('std',0):.2f}")
 
-# 列出所有输出文件
-print("\n\n📁 所有输出文件位置 (Google Drive 中永久保存):")
-print(f"  结果 JSON:    {WORK_DIR}/results/")
-print(f"  可视化图片:   {WORK_DIR}/vis_output/")
-print(f"  训练好的模型: {WORK_DIR}/models/")
-print(f"  特征文件:     {WORK_DIR}/features/")
+# File summary
+print(f"\n\n📁 All outputs saved to Google Drive:")
+print(f"  Results:     {WORK_DIR}/results/")
+print(f"  Figures:     {WORK_DIR}/vis_output/")
+print(f"  Models:      {WORK_DIR}/models/")
+print(f"  Features:    {WORK_DIR}/features/")
 
 results_count = len(glob.glob(f'{WORK_DIR}/results/*.json'))
 vis_count = len(glob.glob(f'{WORK_DIR}/vis_output/*.png'))
-print(f"\n  共生成 {results_count} 个结果文件, {vis_count} 张可视化图片")
+print(f"\n  Total: {results_count} result files, {vis_count} figure files")
 
 print("\n" + "█" * 60)
-print("  ✅ 全部完成！所有数据已保存在 Google Drive 中")
-print("  📝 可以直接用于论文写作")
+print("  ✅ All done! Results are permanently saved in Google Drive.")
+print("  📝 Ready for paper writing.")
 print("█" * 60)
