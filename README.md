@@ -77,7 +77,7 @@ VLMGraspPose/
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/VLMGraspPose.git
+git clone https://github.com/langchengg/VLMGraspPose.git
 cd VLMGraspPose
 
 # Create virtual environment (recommended)
