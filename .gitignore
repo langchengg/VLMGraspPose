@@ -1,0 +1,53 @@
+# ── Data (download via scripts/download_data.py) ────────────────────
+test_seen/
+train/
+test_similar/
+test_novel/
+
+# ── Download temp ────────────────────────────────────────────────────
+_download_tmp/
+
+# ── Model weights (download via scripts/download_weights.py) ────────
+models/
+
+# ── Generated outputs (reproducible from pipeline) ──────────────────
+processed/
+stage1_outputs/
+stage2_outputs/
+features/
+ranking_data/
+results/
+vis_output/
+
+# ── Trained scorer weights ───────────────────────────────────────────
+*.pkl
+*.pt
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.so
+
+# ── macOS ────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDE ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Jupyter ──────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Environment ──────────────────────────────────────────────────────
+.env
+venv/
+.venv/
