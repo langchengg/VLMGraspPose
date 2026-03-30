@@ -80,7 +80,7 @@ import torch
 HAS_GPU = torch.cuda.is_available()
 if HAS_GPU:
     print(f"[GPU] {torch.cuda.get_device_name(0)} "
-          f"({torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB VRAM)")
+          f"({torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB VRAM)")
 else:
     print("[WARN] No GPU — VLM experiments (Branch A: vlm/phrase) will be skipped")
 
