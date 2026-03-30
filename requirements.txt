@@ -7,8 +7,14 @@ open3d>=0.17
 tqdm>=4.60
 matplotlib>=3.7
 opencv-python>=4.8
+# Data handling
+pandas>=2.0
+pyarrow>=12.0
 # Model downloading & loading
 huggingface_hub>=0.20
 transformers>=4.40
 einops>=0.7
+timm>=0.9
 gdown>=5.0
+# GraspNet evaluation (optional — install from source if needed)
+# graspnetAPI

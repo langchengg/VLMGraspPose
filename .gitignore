@@ -1,29 +1,24 @@
-# ── Data (download via scripts/download_data.py) ────────────────────
-test_seen/
-train/
-test_similar/
-test_novel/
-
-# ── Download temp ────────────────────────────────────────────────────
+# ── Raw data (download via scripts/download_data.py) ────────────────
+data/raw/
 _download_tmp/
+
+# ── Derived outputs (reproducible from pipeline) ────────────────────
+derived/
 
 # ── Model weights (download via scripts/download_weights.py) ────────
 models/
 
-# ── Generated outputs (reproducible from pipeline) ──────────────────
-processed/
-stage1_outputs/
-stage2_outputs/
-features/
-ranking_data/
+# ── Results (reproducible from pipeline) ────────────────────────────
 results/
-vis_output/
 
-# ── Trained scorer weights ───────────────────────────────────────────
+# ── Trained scorer weights ──────────────────────────────────────────
 *.pkl
 *.pt
 
-# ── Python ───────────────────────────────────────────────────────────
+# ── Visualization output ────────────────────────────────────────────
+vis_output/
+
+# ── Python ──────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -32,22 +27,33 @@ dist/
 build/
 *.so
 
-# ── macOS ────────────────────────────────────────────────────────────
+# ── macOS ───────────────────────────────────────────────────────────
 .DS_Store
 .AppleDouble
 .LSOverride
 
-# ── IDE ──────────────────────────────────────────────────────────────
+# ── IDE ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# ── Jupyter ──────────────────────────────────────────────────────────
+# ── Jupyter ─────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 
-# ── Environment ──────────────────────────────────────────────────────
+# ── Environment ─────────────────────────────────────────────────────
 .env
 venv/
 .venv/
+
+# ── Old layout (kept temporarily during migration) ──────────────────
+test_seen/
+train/
+test_similar/
+test_novel/
+processed/
+stage1_outputs/
+stage2_outputs/
+features/
+ranking_data/

@@ -1,131 +1,204 @@
 """
-VLMGraspPose — Central Configuration
-=====================================
+VLMGraspPose — Central Configuration (v2: 12-step thesis pipeline)
+====================================================================
 All paths, hyperparameters, object mappings, and text templates
 are defined here so every module shares a single source of truth.
+
+Directory layout
+----------------
+project/
+  data/
+    raw/graspnet/scenes/  models/  grasp_label/  collision_label/
+    splits/               ← Step 1 output (JSONL view indexes)
+    metadata/             ← object_id_to_name.json, query_templates.json
+  derived/                ← Steps 2–8 intermediate outputs
+  models/                 ← downloaded / trained weights
+  results/                ← Steps 10–11 predictions and metrics
 """
 
-import os
+import json
 from pathlib import Path
 
 # ── Project Root ─────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# ── Data Paths ───────────────────────────────────────────────────────
-DATA_DIRS = {
-    "test_seen": PROJECT_ROOT / "test_seen",
-    # Future:
-    # "train": PROJECT_ROOT / "train",
-    # "test_similar": PROJECT_ROOT / "test_similar",
-    # "test_novel": PROJECT_ROOT / "test_novel",
+# ═════════════════════════════════════════════════════════════════════
+#  RAW DATA  (official GraspNet-1Billion layout)
+# ═════════════════════════════════════════════════════════════════════
+RAW_DATA_ROOT = PROJECT_ROOT / "data" / "raw" / "graspnet"
+
+SCENES_DIR       = RAW_DATA_ROOT / "scenes"
+OBJECT_MODELS_DIR = RAW_DATA_ROOT / "models"
+GRASP_LABEL_DIR  = RAW_DATA_ROOT / "grasp_label"
+COLLISION_LABEL_DIR = RAW_DATA_ROOT / "collision_label"
+DEX_MODELS_DIR   = RAW_DATA_ROOT / "dex_models"        # optional
+
+# ═════════════════════════════════════════════════════════════════════
+#  METADATA
+# ═════════════════════════════════════════════════════════════════════
+METADATA_DIR = PROJECT_ROOT / "data" / "metadata"
+OBJECT_ID_TO_NAME_PATH = METADATA_DIR / "object_id_to_name.json"
+QUERY_TEMPLATES_PATH   = METADATA_DIR / "query_templates.json"
+
+# ═════════════════════════════════════════════════════════════════════
+#  SPLITS  (Step 1 output)
+# ═════════════════════════════════════════════════════════════════════
+SPLITS_DIR = PROJECT_ROOT / "data" / "splits"
+
+# GraspNet official scene ranges
+SPLIT_SCENE_RANGES = {
+    "train":        (0, 90),       # scene_0000 – scene_0089
+    "val":          (90, 100),     # scene_0090 – scene_0099  (held-out)
+    "test_seen":    (100, 130),    # scene_0100 – scene_0129
+    "test_similar": (130, 160),    # scene_0130 – scene_0159
+    "test_novel":   (160, 190),    # scene_0160 – scene_0189
 }
 
-PROCESSED_DIR = PROJECT_ROOT / "processed"
-STAGE1_OUTPUT_DIR = PROJECT_ROOT / "stage1_outputs"
-STAGE2_OUTPUT_DIR = PROJECT_ROOT / "stage2_outputs"
-FEATURES_DIR = PROJECT_ROOT / "features"
-RANKING_DATA_DIR = PROJECT_ROOT / "ranking_data"
+ALL_SPLITS = list(SPLIT_SCENE_RANGES.keys())
+TRAIN_SPLITS = ["train"]
+VAL_SPLITS   = ["val"]
+TEST_SPLITS  = ["test_seen", "test_similar", "test_novel"]
+
+# ═════════════════════════════════════════════════════════════════════
+#  DERIVED OUTPUTS  (Steps 2–8)
+# ═════════════════════════════════════════════════════════════════════
+DERIVED_DIR = PROJECT_ROOT / "derived"
+
+QUERIES_DIR         = DERIVED_DIR / "queries"          # Step 2
+ORACLE_TARGETS_DIR  = DERIVED_DIR / "oracle_targets"   # Step 3
+GROUNDING_PRED_DIR  = DERIVED_DIR / "grounding_pred"   # Step 4
+POINTCLOUDS_DIR     = DERIVED_DIR / "pointclouds"      # Step 5
+GRASP_CANDIDATES_DIR = DERIVED_DIR / "grasp_candidates" # Step 6
+RANK_LABELS_DIR     = DERIVED_DIR / "rank_labels"      # Step 7
+RANK_FEATURES_DIR   = DERIVED_DIR / "rank_features"    # Step 8
+
+# ═════════════════════════════════════════════════════════════════════
+#  MODEL WEIGHTS
+# ═════════════════════════════════════════════════════════════════════
 MODELS_DIR = PROJECT_ROOT / "models"
 
-# ── Pre-trained Model Paths ──────────────────────────────────────────
-# Stage 1: Target Grounding
-FLORENCE2_MODEL_DIR = MODELS_DIR / "florence-2-base"      # HuggingFace
-GDINO_MODEL_DIR = MODELS_DIR / "grounding-dino-base"      # HuggingFace
-# Stage 2: Grasp Generation
-GRASPNET_CHECKPOINT_DIR = MODELS_DIR / "graspnet-baseline"
+# Stage 1: Florence-2 large (fine-tuned)
+FLORENCE2_MODEL_ID  = "microsoft/Florence-2-large-ft"
+FLORENCE2_MODEL_DIR = MODELS_DIR / "florence2"
 
-# Create output directories
-for d in [PROCESSED_DIR, STAGE1_OUTPUT_DIR, STAGE2_OUTPUT_DIR,
-          FEATURES_DIR, RANKING_DATA_DIR, MODELS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+# Stage 2: GraspNet baseline detector
+GRASP_DETECTOR_DIR  = MODELS_DIR / "grasp_detector"
 
-# ── Camera ───────────────────────────────────────────────────────────
-CAMERA_TYPE = "kinect"          # or "realsense"
-NUM_VIEWS = 256                 # views per scene
+# Stage 4: Trained rerankers
+RERANKER_LOGREG_PATH = MODELS_DIR / "reranker_logreg.pkl"
+RERANKER_MLP_PATH    = MODELS_DIR / "reranker_mlp.pt"
+
+# ═════════════════════════════════════════════════════════════════════
+#  RESULTS  (Steps 10–11)
+# ═════════════════════════════════════════════════════════════════════
+RESULTS_DIR = PROJECT_ROOT / "results"
+
+# ═════════════════════════════════════════════════════════════════════
+#  CAMERA & VIEW SETTINGS
+# ═════════════════════════════════════════════════════════════════════
+CAMERA_TYPE  = "realsense"         # use one camera consistently
+NUM_VIEWS    = 256                 # views per scene (0000–0255)
 IMAGE_HEIGHT = 720
-IMAGE_WIDTH = 1280
+IMAGE_WIDTH  = 1280
+VIEW_STRIDE  = 16                  # subsample: every Nth view
 
-# ── GraspNet Object Name → Friendly Name ────────────────────────────
-# Maps the raw .ply names (without extension) to human-readable names
-# used in text queries.  Keep this in sync with the actual dataset.
-OBJECT_NAME_MAP = {
-    "003_cracker_box":        "cracker box",
-    "005_tomato_soup_can":    "tomato soup can",
-    "011_banana":             "banana",
-    "012_strawberry":         "strawberry",
-    "015_peach":              "peach",
-    "018_plum":               "plum",
-    "025_mug":                "mug",
-    "032_knife":              "knife",
-    "035_power_drill":        "power drill",
-    "037_scissors":           "scissors",
-    "044_flat_screwdriver":   "flat screwdriver",
-    "057_racquetball":        "racquetball",
-    "065-b_cups":             "cups",
-    "072-d_toy_airplane":     "toy airplane",
-    "072-f_toy_airplane":     "toy airplane",
-    "072-i_toy_airplane":     "toy airplane",
-    "072-j_toy_airplane":     "toy airplane",
-    "dabao_sod":              "dabao sod cream",
-    "darlie_toothpaste":      "toothpaste",
-    "camel":                  "camel figurine",
-    "large_elephant":         "elephant figurine",
-    "rhinocero":              "rhinoceros figurine",
-    "darlie_box":             "toothpaste box",
-    "black_mouse":            "mouse",
-    "dabao_facewash":         "face wash",
-    "pantene":                "pantene bottle",
-    "head_shoulders_supreme": "shampoo bottle",
-    "head_shoulders_care":    "shampoo bottle",
-}
-
-# ── Text Query Templates ────────────────────────────────────────────
-TEXT_TEMPLATES = [
-    "pick the {obj}",
-    "grasp the {obj}",
-    "grab the {obj}",
-    "get the {obj}",
-]
-
-# ── Stage 2: Grasp Generation ────────────────────────────────────────
-GRASP_TOP_K = 50               # candidates per target
-GRASP_MIN_WIDTH = 0.02         # metres
+# ═════════════════════════════════════════════════════════════════════
+#  GRASP GENERATION
+# ═════════════════════════════════════════════════════════════════════
+GRASP_TOP_K     = 50               # candidates per scene view
+GRASP_MIN_WIDTH = 0.02             # metres
 GRASP_MAX_WIDTH = 0.10
-VOXEL_SIZE = 0.005             # for point-cloud down-sampling
-NORMAL_RADIUS = 0.02           # for surface-normal estimation
-NORMAL_MAX_NN = 30
+VOXEL_SIZE      = 0.005            # point-cloud down-sampling
+NORMAL_RADIUS   = 0.02
+NORMAL_MAX_NN   = 30
 
-# ── Stage 3: Feature Extraction ─────────────────────────────────────
-FEATURE_DIM_CORE = 5           # f1 – f5
-FEATURE_DIM_EXTENDED = 9       # f1 – f9
+# ═════════════════════════════════════════════════════════════════════
+#  FEATURE EXTRACTION  (Step 8)
+# ═════════════════════════════════════════════════════════════════════
+FEATURE_NAMES = [
+    "detector_score",          # f1
+    "dist_target_3d",          # f2
+    "proj_dist_2d",            # f3
+    "proj_overlap",            # f4
+    "target_points_ratio",     # f5
+    "nontarget_points_ratio",  # f6
+    "collision_risk",          # f7
+    "depth_consistency",       # f8
+    "florence_conf",           # f9
+]
+FEATURE_DIM = len(FEATURE_NAMES)   # 9
 
-# ── Stage 4: Scoring ────────────────────────────────────────────────
-# Rule-based weights  (α, β, γ, δ, ε)
+# ═════════════════════════════════════════════════════════════════════
+#  RERANKER TRAINING  (Step 9)
+# ═════════════════════════════════════════════════════════════════════
+# Rule-based weights
 RULE_WEIGHTS = {
-    "f1_grasp_score": 0.30,
-    "f2_in_target":   0.20,
-    "f3_distance":    0.20,    # applied as (1 − f3)
-    "f4_iou":         0.20,
-    "f5_vlm_conf":    0.10,
+    "detector_score":       0.25,
+    "dist_target_3d":       0.15,   # applied as (1 − f)
+    "proj_overlap":         0.20,
+    "target_points_ratio":  0.20,
+    "collision_risk":       0.10,   # applied as (1 − f)
+    "florence_conf":        0.10,
 }
 
-# Label generation thresholds
-LABEL_GRASP_SCORE_THRESH = 0.3   # candidate score ≥ this → potential positive
-LABEL_COLLISION_THRESH = 0.5     # collision risk < this → potential positive
-
-# ── Training ─────────────────────────────────────────────────────────
+# MLP architecture
 MLP_HIDDEN_DIMS = [64, 32]
-MLP_LR = 1e-3
-MLP_EPOCHS = 50
-MLP_BATCH_SIZE = 256
+MLP_LR          = 1e-3
+MLP_EPOCHS      = 50
+MLP_BATCH_SIZE  = 256
 
-# ── Preprocess ───────────────────────────────────────────────────────
-# Only use every N-th view to keep JSONL manageable during demo
-VIEW_STRIDE = 16               # use views 0, 16, 32, … (16 views per scene)
+# Label thresholds
+LABEL_COLLISION_THRESH = 0.5
 
-# ── Coordinate Frame Convention ──────────────────────────────────────
-# All intermediate products are stored in CAMERA FRAME unless noted.
-# depth + K  →  point cloud in camera frame
-# grasp pose →  camera frame
-# projection →  image frame (for f2, f4)
-COORD_FRAME = "camera"
+# ═════════════════════════════════════════════════════════════════════
+#  COORDINATE FRAME
+# ═════════════════════════════════════════════════════════════════════
+COORD_FRAME = "camera"             # all intermediates in camera frame
+
+# ═════════════════════════════════════════════════════════════════════
+#  GraspNet 88-object name map  (obj_id 0–87 → friendly name)
+#  Full map lives in data/metadata/object_id_to_name.json
+#  This is a convenience accessor loaded lazily.
+# ═════════════════════════════════════════════════════════════════════
+_OBJECT_NAME_CACHE = None
+
+def get_object_name_map() -> dict:
+    """Return {obj_id (int): friendly_name (str)} from the metadata JSON."""
+    global _OBJECT_NAME_CACHE
+    if _OBJECT_NAME_CACHE is None:
+        if OBJECT_ID_TO_NAME_PATH.exists():
+            with open(OBJECT_ID_TO_NAME_PATH) as f:
+                raw = json.load(f)
+            _OBJECT_NAME_CACHE = {int(k): v for k, v in raw.items()}
+        else:
+            # Fallback to inline minimal map
+            _OBJECT_NAME_CACHE = {}
+    return _OBJECT_NAME_CACHE
+
+
+def get_query_templates() -> dict:
+    """Return query templates from the metadata JSON."""
+    if QUERY_TEMPLATES_PATH.exists():
+        with open(QUERY_TEMPLATES_PATH) as f:
+            return json.load(f)
+    return {
+        "class": [
+            "pick the {obj}",
+            "grasp the {obj}",
+            "grab the {obj}",
+            "get the {obj}",
+        ]
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Ensure core directories exist
+# ═════════════════════════════════════════════════════════════════════
+for _d in [
+    SPLITS_DIR, METADATA_DIR,
+    QUERIES_DIR, ORACLE_TARGETS_DIR, GROUNDING_PRED_DIR,
+    POINTCLOUDS_DIR, GRASP_CANDIDATES_DIR,
+    RANK_LABELS_DIR, RANK_FEATURES_DIR,
+    MODELS_DIR, RESULTS_DIR,
+]:
+    _d.mkdir(parents=True, exist_ok=True)

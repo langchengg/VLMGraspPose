@@ -2,11 +2,43 @@
 
 **Semantic-Guided 6-DoF Robotic Grasping with Vision-Language Models**
 
-This repository contains a 5-stage pipeline for semantic-guided 6-DoF robotic grasping.
+A 12-step research pipeline for text-conditioned target grasp selection using
+GraspNet-1Billion and Florence-2.
 
-## 🚀 Quick Start: Local Reproduction
+**Thesis claim:** *A lightweight semantic-geometric reranker improves
+target-object grasp selection over a fixed generic grasp detector.*
 
-Follow these steps to reproduce the entire pipeline locally, from data preparation to final evaluation and visualisation.
+---
+
+## Architecture
+
+```
+Input (RGB + Depth + Text Query)
+  │
+  ├── Stage 1: Florence-2 grounds the target → bbox + optional mask
+  ├── Stage 2: Fixed grasp detector on full-scene point cloud → top-K candidates
+  ├── Stage 3: Each candidate → 9-dim semantic-geometric feature vector
+  └── Stage 4: Lightweight reranker scores candidates
+  │
+  Output: Ranked target-aware grasps + top-1 grasp pose
+```
+
+## Data Requirements
+
+| File | Required | Size |
+|------|----------|------|
+| `train_1.zip` – `train_4.zip` | Yes (training) | ~30 GB |
+| `test_seen.zip`, `test_similar.zip`, `test_novel.zip` | Yes | ~7 GB |
+| `grasp_label.zip` | Yes | ~2 GB |
+| `collision_label.zip` | Yes | ~1 GB |
+| `models.zip` | Yes | ~1 GB |
+| `dex_models.zip` | Optional (faster eval) | ~1 GB |
+
+Source: [graspnet.net](https://graspnet.net/datasets.html)
+
+---
+
+## Quick Start
 
 ### 1. Environment Setup
 
@@ -14,89 +46,111 @@ Follow these steps to reproduce the entire pipeline locally, from data preparati
 git clone https://github.com/langchengg/VLMGraspPose.git
 cd VLMGraspPose
 
-# Create and activate virtual environment
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
 ```
-*(Requires: Python ≥ 3.9, PyTorch ≥ 2.0)*
 
 ### 2. Download Data & Models
-Download the required dataset split (`test_seen`) and pre-trained model weights (for VLM grounding).
 
 ```bash
-# Download GraspNet test_seen data (~7 GB)
-python scripts/download_data.py --test-seen
+# Download GraspNet data to data/raw/graspnet/
+python scripts/download_data.py --all
 
-# Download Florence-2 and other model weights (Required for VLM modes)
+# Download Florence-2-large-ft and GraspNet checkpoint
 python scripts/download_weights.py --all
-
-# Preprocess the data index
-python -m data.preprocess --split test_seen
 ```
 
-### 3. Run the Pipeline
-Execute the grasping pipeline with different grounders and scorers. Results are saved to `results/`.
+### 3. Run the 12-Step Pipeline
 
 ```bash
-# Baseline (Ground Truth + Rule-based Scorer)
-python -m experiments.run_pipeline --split test_seen --grounder gt --scorer rule
+# Step 1: Build view-level index
+python scripts/step01_build_index.py
 
-# VLM Open-Vocabulary Mode (Requires GPU)
-python -m experiments.run_pipeline --split test_seen --grounder vlm --scorer rule
+# Step 2: Generate text queries
+python scripts/step02_create_queries.py
 
-# VLM Phrase Grounding Mode (Requires GPU)
-python -m experiments.run_pipeline --split test_seen --grounder phrase --scorer rule
-```
+# Step 3: Build oracle (GT) target annotations
+python scripts/step03_oracle_targets.py
 
-### 4. Evaluate Metrics
-Compare the performance of different pipeline configurations (Hit@1, Hit@5, latency, errors).
+# Step 4: Run Florence-2 grounding (requires GPU)
+python scripts/step04_florence_grounding.py --splits test_seen
 
-```bash
-# Compare metrics across all run results
-python -m experiments.eval --compare
+# Step 5: Convert depth to point clouds
+python scripts/step05_depth_to_pcd.py
 
-# Compute Grasp vs Ground Truth deviation metrics (Position/Angular errors)
-python -m vis.compare_gt --scorer rule --max-samples 100
-```
+# Step 6: Generate grasp candidates (full-scene)
+python scripts/step06_grasp_candidates.py
 
-### 5. Visualisation
-Generate 2D overlays, 3D point clouds, and Grasp vs GT comparison panels. Outputs are saved to `vis_output/`.
+# Step 7: Build target-aware training labels (train/val only)
+python scripts/step07_build_labels.py --splits train val
 
-```bash
-# Define a sample ID for visualization
-export SAMPLE="scene_0100_0000_012_strawberry"
+# Step 8: Extract candidate features
+python scripts/step08_extract_features.py
 
-# 2D RGB Overlay with BBox + Grasp Candidates
-python -m vis.vis_2d --sample $SAMPLE --scorer rule
+# Step 9: Train reranker
+python scripts/step09_train_reranker.py --model mlp
 
-# 3D Point Cloud with Gripper Poses (Static PNG)
-python -m vis.vis_3d --sample $SAMPLE --scorer rule
+# Step 10: Full inference on test sets
+python scripts/step10_inference.py --splits test_seen test_similar test_novel
 
-# Ground Truth Comparison Panel
-python -m vis.compare_gt --sample $SAMPLE --scorer rule --draw
+# Step 11: Evaluate
+python scripts/step11_evaluate.py
 ```
 
 ---
 
-## 🛠️ Advanced: Train Custom Scorers
-If you want to train the learning-based scorers (Logistic Regression or MLP):
+## Project Layout
 
-```bash
-# 1. Download and preprocess training data (~30 GB)
-python scripts/download_data.py --train
-python -m data.preprocess --split train
-
-# 2. Generate training features
-# NOTE: Ensure '"train": PROJECT_ROOT / "train"' is uncommented in config.py
-python -m experiments.run_pipeline --split train --grounder gt --scorer rule
-
-# 3. Train the scorers
-python -m experiments.train_ranker --mode pseudo --scorer logistic
-python -m experiments.train_ranker --mode pseudo --scorer mlp
-
-# 4. Evaluate with the trained MLP scorer
-python -m experiments.run_pipeline --split test_seen --grounder gt --scorer mlp
 ```
+project/
+├── config.py                    # Central configuration
+├── src/                         # Core library
+│   ├── data_utils.py            #   Scene loading, image/depth/label loaders
+│   ├── point_cloud.py           #   3D geometry utilities
+│   ├── grounding.py             #   GT + Florence-2 grounders
+│   ├── grasp_detector.py        #   GraspNet detector wrapper
+│   ├── feature_extractor.py     #   9-dim candidate features
+│   ├── label_builder.py         #   Target-aware label generation
+│   ├── reranker.py              #   Rule / Logistic / MLP / Pairwise rerankers
+│   └── evaluation.py            #   Metrics (AP, Success@K, breakdowns)
+├── scripts/                     # CLI step scripts
+│   ├── step01–step11            #   Pipeline steps
+│   ├── download_data.py         #   GraspNet data download
+│   └── download_weights.py      #   Model weight download
+├── data/
+│   ├── raw/graspnet/            #   Official GraspNet layout (gitignored)
+│   ├── splits/                  #   View-level JSONL indexes
+│   └── metadata/                #   Object names, query templates
+├── derived/                     #   Pipeline intermediate outputs
+├── models/                      #   Downloaded/trained weights
+├── results/                     #   Predictions and metrics
+└── vis/                         #   Visualization utilities
+```
+
+---
+
+## Reranker Variants
+
+| Model | Description | Training |
+|-------|-------------|----------|
+| `detector` | Raw detector score (no reranking) | None |
+| `rule` | Deterministic weighted-sum | None |
+| `logistic` | Logistic regression | Fast |
+| `mlp` | 2-layer MLP (main model) | ~1 min |
+| `pairwise` | Pairwise MLP (strongest) | ~5 min |
+
+---
+
+## Evaluation Metrics
+
+- **Target Success@1 / @5** — is the grasped object the target?
+- **GraspNet AP / Precision@K** — grasp quality
+- **Per-split breakdowns** — seen / similar / novel objects
+- **Ablation** — oracle vs predicted grounding
+
+---
+
+## License
+
+MIT
