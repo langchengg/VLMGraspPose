@@ -62,15 +62,18 @@ class GraspDetectorBase(abc.ABC):
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  GraspNet Baseline Detector (main)
+#  GraspNet Baseline Detector
 # ═════════════════════════════════════════════════════════════════════
 
 class GraspNetDetector(GraspDetectorBase):
     """Wrapper around pretrained GraspNet baseline checkpoint.
 
-    Loads the official checkpoint and runs inference on the full-scene
-    point cloud.  The grasp detector is kept FIXED — the thesis
-    contribution is the target-aware reranking layer, not the detector.
+    The grasp detector is kept FIXED — the thesis contribution is the
+    target-aware reranking layer, not the detector itself.
+
+    This class attempts to load the official GraspNet baseline model.
+    If the model cannot be loaded (missing deps / checkpoint), it
+    raises an error — use AntipodalSampler explicitly as a fallback.
 
     Checkpoint should be at: models/grasp_detector/
     """
@@ -82,6 +85,7 @@ class GraspNetDetector(GraspDetectorBase):
     ):
         self._checkpoint_dir = checkpoint_dir or config.GRASP_DETECTOR_DIR
         self._model = None
+        self._net = None
 
         if device is None:
             import torch
@@ -97,42 +101,57 @@ class GraspNetDetector(GraspDetectorBase):
         ckpt_dir = self._checkpoint_dir
         if not ckpt_dir.exists():
             raise FileNotFoundError(
-                f"GraspNet checkpoint not found at {ckpt_dir}. "
-                f"Run: python scripts/download_weights.py --graspnet"
+                f"GraspNet checkpoint not found at {ckpt_dir}.\n"
+                f"  Run: python scripts/download_weights.py --graspnet\n"
+                f"  Or use AntipodalSampler / PrecomputedGraspLoader instead."
             )
 
-        # Try to load the official graspnet-baseline model
-        try:
-            self._load_graspnet_baseline(ckpt_dir)
-        except Exception as e:
-            print(f"[GraspNetDetector] Could not load official baseline: {e}")
-            print("[GraspNetDetector] Falling back to antipodal sampler.")
-            self._model = "FALLBACK"
-
-    def _load_graspnet_baseline(self, ckpt_dir: Path):
-        """Load the official GraspNet baseline model.
-
-        This expects the graspnet-baseline repo structure with
-        checkpoint files (checkpoint-*.tar or *.pth).
-        """
-        import torch
-
-        # Look for checkpoint files
         ckpt_files = list(ckpt_dir.glob("*.tar")) + list(ckpt_dir.glob("*.pth"))
         if not ckpt_files:
-            raise FileNotFoundError(f"No checkpoint files in {ckpt_dir}")
+            raise FileNotFoundError(
+                f"No checkpoint files (*.tar, *.pth) in {ckpt_dir}.\n"
+                f"  Run: python scripts/download_weights.py --graspnet"
+            )
 
-        # Try importing graspnet baseline
-        try:
-            from graspnetAPI import GraspGroup
-            self._has_graspnet_api = True
-        except ImportError:
-            self._has_graspnet_api = False
-
-        # Store checkpoint path for inference
         self._ckpt_path = ckpt_files[0]
-        self._model = "LOADED"
-        print(f"[GraspNetDetector] Checkpoint: {self._ckpt_path}")
+
+        # Try to import and build the real model
+        try:
+            import torch
+            from graspnetAPI import GraspGroup  # noqa: F401
+
+            # Attempt to import the baseline model architecture
+            # (user must have cloned graspnet-baseline and installed deps)
+            try:
+                from models.graspnet import GraspNet as GraspNetModel
+                from utils.collision_detector import ModelFreeCollisionDetector  # noqa: F401
+
+                net = GraspNetModel(
+                    input_feature_dim=0, num_view=300, num_angle=12,
+                    num_depth=4, cylinder_radius=0.05, hmin=-0.02,
+                    hmax_list=[0.01, 0.02, 0.03, 0.04],
+                    is_training=False,
+                )
+                ckpt = torch.load(str(self._ckpt_path), map_location=self._device)
+                net.load_state_dict(ckpt["model_state_dict"])
+                net.to(self._device)
+                net.eval()
+                self._net = net
+                self._model = "REAL"
+                print(f"[GraspNetDetector] Loaded real model from {self._ckpt_path}")
+            except ImportError:
+                raise ImportError(
+                    "GraspNet baseline model code not found.\n"
+                    "  Clone https://github.com/graspnet/graspnet-baseline "
+                    "and add to PYTHONPATH,\n"
+                    "  or use AntipodalSampler / PrecomputedGraspLoader."
+                )
+        except ImportError as e:
+            raise ImportError(
+                f"Cannot load GraspNet detector: {e}\n"
+                f"  Install: pip install graspnetAPI\n"
+                f"  Or use AntipodalSampler / PrecomputedGraspLoader."
+            )
 
     def detect(
         self,
@@ -140,52 +159,114 @@ class GraspNetDetector(GraspDetectorBase):
         colors: Optional[np.ndarray] = None,
         top_k: int = config.GRASP_TOP_K,
     ) -> List[GraspCandidate]:
-        """Run grasp detection on full-scene point cloud.
-
-        If the official model can't be loaded, falls back to
-        the antipodal sampler.
-        """
+        """Run grasp detection on full-scene point cloud."""
         self._ensure_loaded()
 
-        if self._model == "FALLBACK":
-            sampler = AntipodalSampler(top_k=top_k)
-            return sampler.detect(point_cloud, colors, top_k)
+        import torch
+        from graspnetAPI import GraspGroup
 
-        # Official GraspNet baseline inference
-        return self._run_graspnet_inference(point_cloud, colors, top_k)
+        # Prepare input
+        N = len(point_cloud)
+        if N > 20000:
+            idx = np.random.choice(N, 20000, replace=False)
+            pc_input = point_cloud[idx]
+        else:
+            pc_input = point_cloud
 
-    def _run_graspnet_inference(
+        pc_tensor = torch.tensor(
+            pc_input, dtype=torch.float32
+        ).unsqueeze(0).to(self._device)
+
+        with torch.no_grad():
+            end_points = self._net(pc_tensor)
+            grasp_preds = end_points["grasp_preds"]  # (B, Ns, 17)
+
+        # Parse predictions
+        preds_np = grasp_preds[0].cpu().numpy()
+        gg = GraspGroup(preds_np)
+        gg = gg.nms().sort_by_score()
+
+        # Convert to GraspCandidate
+        candidates = []
+        for i, g in enumerate(gg):
+            if i >= top_k:
+                break
+            candidates.append(GraspCandidate(
+                candidate_id=i,
+                position=g.translation.tolist(),
+                rotation=g.rotation_matrix.flatten().tolist(),
+                width=float(g.width),
+                detector_score=float(np.clip(g.score, 0, 1)),
+                source="graspnet",
+            ))
+
+        return candidates
+
+
+class PrecomputedGraspLoader(GraspDetectorBase):
+    """Load pre-computed grasp predictions from GraspNet baseline outputs.
+
+    The official baseline saves predictions as .npy files. This class
+    loads those files directly, avoiding the need for model inference.
+
+    Expected layout: {precomputed_dir}/{scene_id}/{camera}/{frame_id:04d}.npy
+    """
+
+    def __init__(self, precomputed_dir: Optional[Path] = None):
+        self._dir = precomputed_dir or config.DERIVED_DIR / "precomputed_grasps"
+
+    def detect(
         self,
         point_cloud: np.ndarray,
-        colors: Optional[np.ndarray],
-        top_k: int,
+        colors: Optional[np.ndarray] = None,
+        top_k: int = config.GRASP_TOP_K,
     ) -> List[GraspCandidate]:
-        """Run official GraspNet inference pipeline.
+        raise NotImplementedError(
+            "PrecomputedGraspLoader.detect() should not be called directly. "
+            "Use load_from_file() instead."
+        )
 
-        This wraps the standard inference flow:
-        1. Prepare input (down-sample, normalize)
-        2. Forward pass through the network
-        3. Post-process grasp predictions
-        4. Return top-K candidates
-        """
-        import torch
+    def load_from_file(
+        self,
+        scene_id: int,
+        camera: str,
+        frame_id: int,
+        top_k: int = config.GRASP_TOP_K,
+    ) -> List[GraspCandidate]:
+        """Load pre-computed grasps for a specific view."""
+        npy_path = (
+            self._dir
+            / f"scene_{scene_id:04d}"
+            / camera
+            / f"{frame_id:04d}.npy"
+        )
+        if not npy_path.exists():
+            return []
 
-        # For now, use the GraspNet API if available
         try:
             from graspnetAPI import GraspGroup
         except ImportError:
-            print("[GraspNetDetector] graspnetAPI not installed, "
-                  "falling back to antipodal sampler")
-            sampler = AntipodalSampler(top_k=top_k)
-            return sampler.detect(point_cloud, colors, top_k)
+            print("[PrecomputedGraspLoader] graspnetAPI not installed")
+            return []
 
-        # The actual inference depends on the specific checkpoint format.
-        # This is a template that should be adapted to the actual model.
-        # For now, fall back to antipodal if we can't run the real model.
-        print("[GraspNetDetector] Using antipodal fallback "
-              "(integrate real model later)")
-        sampler = AntipodalSampler(top_k=top_k)
-        return sampler.detect(point_cloud, colors, top_k)
+        preds = np.load(str(npy_path))
+        gg = GraspGroup(preds)
+        gg = gg.nms().sort_by_score()
+
+        candidates = []
+        for i, g in enumerate(gg):
+            if i >= top_k:
+                break
+            candidates.append(GraspCandidate(
+                candidate_id=i,
+                position=g.translation.tolist(),
+                rotation=g.rotation_matrix.flatten().tolist(),
+                width=float(g.width),
+                detector_score=float(np.clip(g.score, 0, 1)),
+                source="graspnet_precomputed",
+            ))
+
+        return candidates
 
 
 # ═════════════════════════════════════════════════════════════════════

@@ -67,9 +67,12 @@ def compute_target_metrics(predictions: List[dict]) -> dict:
 def precision_at_k(
     predictions: List[dict],
     k: int = 1,
-    score_threshold: float = 0.3,
 ) -> float:
-    """Precision@K: fraction of top-K grasps with score above threshold."""
+    """Precision@K: fraction of top-K grasps that are on the target object.
+
+    Uses the `is_on_target` GT annotation (set by step10 using GT label),
+    NOT the reranker's own score — that would be self-referential.
+    """
     if not predictions:
         return 0.0
 
@@ -82,7 +85,7 @@ def precision_at_k(
             continue
         good = sum(
             1 for g in top_k
-            if g.get("rerank_score", 0) > score_threshold
+            if g.get("is_on_target", False)
         )
         precisions.append(good / len(top_k))
 
@@ -91,9 +94,11 @@ def precision_at_k(
 
 def average_precision(
     predictions: List[dict],
-    score_threshold: float = 0.3,
 ) -> float:
-    """Simplified AP over all predictions."""
+    """Average Precision over all predictions.
+
+    Uses `is_on_target` as the relevance signal (from GT labels).
+    """
     if not predictions:
         return 0.0
 
@@ -107,8 +112,8 @@ def average_precision(
         relevant = 0
         precision_sum = 0.0
         for rank, g in enumerate(grasps, 1):
-            is_good = g.get("rerank_score", 0) > score_threshold
-            if is_good:
+            is_relevant = g.get("is_on_target", False)
+            if is_relevant:
                 relevant += 1
                 precision_sum += relevant / rank
 

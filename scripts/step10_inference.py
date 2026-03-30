@@ -78,7 +78,8 @@ def run_inference(
             print(f"  [SKIP] {split}: missing queries")
             continue
 
-        # Load oracle for GT evaluation
+        # Load oracle map — ONLY used for evaluation (is_on_target check),
+        # NOT for features or point-cloud cropping.
         oracle_map = {}
         if oracle_path.exists():
             with open(oracle_path) as f:
@@ -115,13 +116,15 @@ def run_inference(
                 rgb = load_rgb(scene_dir, frame_id, camera)
                 factor = get_factor_depth(scene_dir, camera)
                 depth = load_depth(scene_dir, frame_id, camera, factor)
-                label = load_label(scene_dir, frame_id, camera)
                 K = load_camera_intrinsics(scene_dir, camera)
 
-                # ── 2. Florence-2 grounding ──────────────────────────
+                # GT label loaded ONLY for evaluation, never for features
+                gt_label = load_label(scene_dir, frame_id, camera)
+
+                # ── 2. Grounding ─────────────────────────────────────
                 if grounder_name == "gt":
                     grounding = grounder.ground(
-                        rgb, text_query, label=label, mask_val=target_mask_val,
+                        rgb, text_query, label=gt_label, mask_val=target_mask_val,
                     )
                 else:
                     grounding = grounder.ground(rgb, text_query)
@@ -149,18 +152,29 @@ def run_inference(
                 else:
                     scene_points, scene_pixel_coords = backproject_depth(depth, K)
 
-                # Target points
-                target_mask = (label == target_mask_val) if grounder_name == "gt" else grounding.mask
+                # ── 5. Build target_mask from GROUNDING source ───────
+                # Oracle mode: use GT label mask
+                # Predicted mode: use Florence-2 predicted mask or bbox
+                # IMPORTANT: features must NOT use GT when running
+                # in predicted mode — that would be GT leakage.
+                if grounder_name == "gt":
+                    target_mask = (gt_label == target_mask_val)
+                else:
+                    target_mask = grounding.mask  # may be None (phrase task)
+
+                # Crop target points using the grounding-consistent mask
                 if target_mask is not None and target_mask.any():
-                    target_pts, _ = crop_point_cloud_by_mask(
-                        scene_points, scene_pixel_coords, label, target_mask_val,
+                    # Use mask from grounding (GT or predicted)
+                    target_pts = _crop_points_by_binary_mask(
+                        scene_points, scene_pixel_coords, target_mask,
                     )
                 else:
+                    # Fallback: use predicted bbox
                     target_pts, _ = crop_point_cloud_by_bbox(
                         scene_points, scene_pixel_coords, grounding.bbox,
                     )
 
-                # ── 5. Extract features ──────────────────────────────
+                # ── 6. Extract features (NO GT label passed) ─────────
                 features = extractor.extract_batch(
                     candidates=candidates,
                     target_bbox=grounding.bbox,
@@ -168,23 +182,21 @@ def run_inference(
                     target_points=target_pts,
                     scene_points=scene_points,
                     scene_pixel_coords=scene_pixel_coords,
-                    label=label,
-                    target_mask_val=target_mask_val,
                     florence_conf=grounding.confidence,
                     depth=depth,
                     intrinsics=K,
                 )
 
-                # ── 6. Rerank ────────────────────────────────────────
+                # ── 7. Rerank ────────────────────────────────────────
                 ranked = reranker.select_top_k(features, candidates, k=5)
 
-                # ── 7. Evaluate on-target ────────────────────────────
+                # ── 8. Evaluate on-target using GT label ─────────────
+                # This is the ONLY place GT label is used: for evaluation
                 for g in ranked:
-                    # Check if this grasp is on the target object
                     cid = g["candidate_id"]
                     c = candidates[cid]
                     assoc = associate_grasp_to_object(
-                        c, scene_points, scene_pixel_coords, label,
+                        c, scene_points, scene_pixel_coords, gt_label,
                     )
                     g["is_on_target"] = (assoc == target_mask_val)
 
@@ -209,12 +221,30 @@ def run_inference(
             }
             predictions.append(pred)
 
-        # Save predictions
-        out_path = config.RESULTS_DIR / f"predictions_{split}.json"
+        # ── Save with grounder+reranker in filename ──────────────
+        out_path = config.RESULTS_DIR / (
+            f"predictions_{split}_{grounder_name}_{reranker_name}.json"
+        )
         with open(out_path, "w") as f:
             json.dump(predictions, f, indent=2)
 
         print(f"  [{split}] {len(predictions)} predictions → {out_path}")
+
+
+def _crop_points_by_binary_mask(
+    points: np.ndarray,
+    pixel_coords: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Crop points by a binary HxW mask (works with both GT and predicted masks)."""
+    u, v = pixel_coords[:, 0], pixel_coords[:, 1]
+    H, W = mask.shape[:2]
+    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    u_valid = u[valid]
+    v_valid = v[valid]
+    on_mask = mask[v_valid, u_valid]
+    idx = np.where(valid)[0][on_mask]
+    return points[idx]
 
 
 def main():

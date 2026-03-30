@@ -311,43 +311,79 @@ class PairwiseMLPReranker(Reranker):
         self,
         X: np.ndarray,
         y: np.ndarray,
+        sample_ids: Optional[np.ndarray] = None,
         epochs: int = config.MLP_EPOCHS,
         lr: float = config.MLP_LR,
         batch_size: int = config.MLP_BATCH_SIZE,
-        max_pairs_per_sample: int = 50,
+        max_pairs_per_query: int = 50,
     ):
         """Train on pairwise comparisons.
 
-        Generates pairs from within each sample group:
+        Generates pairs WITHIN each query/sample group:
         (positive, negative) → label = 1 (positive is better).
+
+        If sample_ids is provided, pairs are only formed between
+        candidates from the same query. Otherwise falls back to
+        global pairing (less correct but still functional).
         """
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset
 
-        # Generate pairs: (feat_pos, feat_neg) → 1
-        pos_idx = np.where(y == 1)[0]
-        neg_idx = np.where(y == 0)[0]
+        rng = np.random.RandomState(42)
+        pairs_feat, pair_labels = [], []
 
-        if len(pos_idx) == 0 or len(neg_idx) == 0:
-            print("[PairwiseMLP] Need both positive and negative samples")
+        if sample_ids is not None:
+            # ── Query-wise pairing (correct) ─────────────────────────
+            unique_ids = np.unique(sample_ids)
+            for sid in unique_ids:
+                mask = sample_ids == sid
+                X_q = X[mask]
+                y_q = y[mask]
+
+                pos_idx = np.where(y_q == 1)[0]
+                neg_idx = np.where(y_q == 0)[0]
+
+                if len(pos_idx) == 0 or len(neg_idx) == 0:
+                    continue
+
+                n_pairs = min(
+                    len(pos_idx) * len(neg_idx),
+                    max_pairs_per_query,
+                )
+                for _ in range(n_pairs):
+                    pi = rng.choice(pos_idx)
+                    ni = rng.choice(neg_idx)
+                    pairs_feat.append(np.concatenate([X_q[pi], X_q[ni]]))
+                    pair_labels.append(1.0)
+                    pairs_feat.append(np.concatenate([X_q[ni], X_q[pi]]))
+                    pair_labels.append(0.0)
+        else:
+            # ── Global pairing (fallback) ────────────────────────────
+            pos_idx = np.where(y == 1)[0]
+            neg_idx = np.where(y == 0)[0]
+
+            if len(pos_idx) == 0 or len(neg_idx) == 0:
+                print("[PairwiseMLP] Need both positive and negative samples")
+                return
+
+            n_pairs = min(len(pos_idx) * len(neg_idx),
+                          max_pairs_per_query * 100)
+            for _ in range(n_pairs):
+                pi = rng.choice(pos_idx)
+                ni = rng.choice(neg_idx)
+                pairs_feat.append(np.concatenate([X[pi], X[ni]]))
+                pair_labels.append(1.0)
+                pairs_feat.append(np.concatenate([X[ni], X[pi]]))
+                pair_labels.append(0.0)
+
+        if not pairs_feat:
+            print("[PairwiseMLP] No pairs generated")
             return
 
-        rng = np.random.RandomState(42)
-        pairs_a, pairs_b, pair_labels = [], [], []
-
-        n_pairs = min(len(pos_idx) * len(neg_idx), max_pairs_per_sample * 100)
-        for _ in range(n_pairs):
-            pi = rng.choice(pos_idx)
-            ni = rng.choice(neg_idx)
-            pairs_a.append(np.concatenate([X[pi], X[ni]]))
-            pair_labels.append(1.0)
-            # Also add reverse pair
-            pairs_a.append(np.concatenate([X[ni], X[pi]]))
-            pair_labels.append(0.0)
-
-        X_pairs = np.array(pairs_a, dtype=np.float32)
+        X_pairs = np.array(pairs_feat, dtype=np.float32)
         y_pairs = np.array(pair_labels, dtype=np.float32)
+        print(f"  [PairwiseMLP] {len(X_pairs)} training pairs")
 
         self._model = self._build_model().to(self._device)
 

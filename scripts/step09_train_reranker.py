@@ -99,8 +99,10 @@ def train_reranker(model_name: str = "logistic"):
         print(f"  Model saved → {config.RERANKER_MLP_PATH}")
 
     elif model_name == "pairwise":
+        # Load sample_ids for query-wise pair construction
+        sample_ids = _load_sample_ids("train")
         reranker = PairwiseMLPReranker(feature_dim=len(config.FEATURE_NAMES))
-        reranker.train(X_train, y_train)
+        reranker.train(X_train, y_train, sample_ids=sample_ids)
         reranker.save()
         print(f"  Model saved → {config.MODELS_DIR / 'reranker_pairwise.pt'}")
 
@@ -114,6 +116,23 @@ def train_reranker(model_name: str = "logistic"):
         preds = (scores > 0.5).astype(int)
         acc = float((preds == y_val).mean())
         print(f"  Val accuracy: {acc:.4f}")
+
+
+def _load_sample_ids(split: str):
+    """Load sample_ids from the training feature parquet for pair grouping."""
+    import pandas as pd
+    # Try grounding-aware filename first
+    for grounding in ["oracle", "predicted"]:
+        path = config.RANK_FEATURES_DIR / f"{split}_{grounding}_features.parquet"
+        if path.exists():
+            df = pd.read_parquet(path, columns=["sample_id"])
+            return df["sample_id"].values
+    # Fallback to old naming
+    path = config.RANK_FEATURES_DIR / f"{split}_features.parquet"
+    if path.exists():
+        df = pd.read_parquet(path, columns=["sample_id"])
+        return df["sample_id"].values
+    return None
 
 
 def main():

@@ -44,12 +44,9 @@ class FeatureExtractor:
         target_points: np.ndarray,
         scene_points: np.ndarray,
         scene_pixel_coords: np.ndarray,
-        label: np.ndarray,
-        target_mask_val: int,
         florence_conf: float,
         depth: np.ndarray,
         intrinsics: np.ndarray,
-        collision_labels: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Compute features for all candidates.
 
@@ -115,8 +112,6 @@ class FeatureExtractor:
                 target_points=target_points,
                 scene_points=scene_points,
                 scene_pixel_coords=scene_pixel_coords,
-                label=label,
-                target_mask_val=target_mask_val,
                 florence_conf=florence_conf,
                 depth=depth,
                 intrinsics=intrinsics,
@@ -124,7 +119,6 @@ class FeatureExtractor:
                 target_depth_mean=target_depth_mean,
                 target_depth_max=target_depth_max,
                 img_diag=img_diag,
-                collision_labels=collision_labels,
             )
             features.append(feat)
 
@@ -141,8 +135,6 @@ class FeatureExtractor:
         target_points,
         scene_points,
         scene_pixel_coords,
-        label,
-        target_mask_val,
         florence_conf,
         depth,
         intrinsics,
@@ -150,7 +142,6 @@ class FeatureExtractor:
         target_depth_mean,
         target_depth_max,
         img_diag,
-        collision_labels,
     ) -> List[float]:
         pos_3d = np.array(c.position)
 
@@ -172,24 +163,24 @@ class FeatureExtractor:
         )
 
         # ── f5: target_points_ratio ──────────────────────────────────
+        # Uses target_mask (GT in oracle mode, predicted in VLM mode)
         f5 = self._target_points_in_gripper(
             pos_3d, c.width, scene_points, scene_pixel_coords,
-            label, target_mask_val, is_target=True,
+            target_mask, is_target=True,
         )
 
         # ── f6: nontarget_points_ratio ───────────────────────────────
         f6 = self._target_points_in_gripper(
             pos_3d, c.width, scene_points, scene_pixel_coords,
-            label, target_mask_val, is_target=False,
+            target_mask, is_target=False,
         )
 
-        # ── f7: collision_risk ───────────────────────────────────────
-        if collision_labels is not None:
-            f7 = self._collision_from_labels(c.candidate_id, collision_labels)
-        else:
-            f7 = self._collision_heuristic(
-                pos_3d, c.width, scene_points,
-            )
+        # ── f7: collision_risk (always geometry heuristic) ───────────
+        # Note: official collision labels are per-grasp-configuration
+        # and can't be indexed by candidate_id. Use heuristic instead.
+        f7 = self._collision_heuristic(
+            pos_3d, c.width, scene_points,
+        )
 
         # ── f8: depth_consistency ────────────────────────────────────
         d_cand = pos_3d[2]
@@ -234,9 +225,15 @@ class FeatureExtractor:
 
     def _target_points_in_gripper(
         self, pos_3d, width, scene_points, scene_pixel_coords,
-        label, target_mask_val, is_target: bool,
+        target_mask: Optional[np.ndarray], is_target: bool,
     ) -> float:
-        """Fraction of target (or non-target) points inside gripper."""
+        """Fraction of target (or non-target) points inside gripper.
+
+        Uses `target_mask` (HxW bool) which can be either:
+          - GT mask (oracle mode)
+          - Florence-2 predicted mask (predicted mode)
+          - None → fall back to 0.0 / 1.0 defaults
+        """
         if len(scene_points) == 0:
             return 0.0
 
@@ -247,14 +244,18 @@ class FeatureExtractor:
         if not np.any(inside):
             return 0.0
 
+        # If no mask available, we can't distinguish target/non-target
+        if target_mask is None:
+            return 0.5 if is_target else 0.5
+
         inside_idx = np.where(inside)[0]
         inside_px = scene_pixel_coords[inside_idx]
 
-        H, W = label.shape[:2]
+        H, W = target_mask.shape[:2]
         u = np.clip(inside_px[:, 0], 0, W - 1)
         v = np.clip(inside_px[:, 1], 0, H - 1)
 
-        on_target = label[v, u] == target_mask_val
+        on_target = target_mask[v, u]
 
         if is_target:
             return float(np.sum(on_target)) / max(float(np.sum(inside)), 1.0)
@@ -264,23 +265,10 @@ class FeatureExtractor:
     def _collision_heuristic(
         self, pos_3d, width, scene_points,
     ) -> float:
-        """Estimate collision risk from non-target points near gripper."""
+        """Estimate collision risk from point density near gripper."""
         if len(scene_points) == 0:
             return 0.0
         dists = np.linalg.norm(scene_points - pos_3d, axis=1)
         collision_radius = width * 0.6
         nearby = np.sum(dists < collision_radius)
         return min(float(nearby) / max(len(scene_points) * 0.01, 1), 1.0)
-
-    def _collision_from_labels(
-        self, candidate_id: int, collision_labels,
-    ) -> float:
-        """Extract collision flag from GraspNet collision labels."""
-        # collision_labels format depends on GraspNet version
-        try:
-            if isinstance(collision_labels, np.ndarray):
-                if candidate_id < len(collision_labels):
-                    return float(collision_labels[candidate_id])
-            return 0.0
-        except (IndexError, TypeError):
-            return 0.0

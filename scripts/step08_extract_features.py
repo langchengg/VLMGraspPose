@@ -43,11 +43,31 @@ def _load_candidates(view_sample_id: str):
     return candidates
 
 
+def _crop_points_by_binary_mask(
+    points: np.ndarray,
+    pixel_coords: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Crop points by a binary HxW mask."""
+    u, v = pixel_coords[:, 0], pixel_coords[:, 1]
+    H, W = mask.shape[:2]
+    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    u_valid = u[valid]
+    v_valid = v[valid]
+    on_mask = mask[v_valid, u_valid]
+    idx = np.where(valid)[0][on_mask]
+    return points[idx]
+
+
 def extract_features(
     splits: list = None,
     grounding: str = "oracle",
 ):
-    """Extract features for all candidates."""
+    """Extract features for all candidates.
+
+    IMPORTANT: When grounding='predicted', features are derived ONLY
+    from the predicted bbox/mask. GT label is NOT used for features.
+    """
     if splits is None:
         splits = config.ALL_SPLITS
 
@@ -57,13 +77,16 @@ def extract_features(
         queries_path = config.QUERIES_DIR / f"{split}_queries.jsonl"
         oracle_path = config.ORACLE_TARGETS_DIR / f"{split}_oracle.jsonl"
 
-        if not queries_path.exists() or not oracle_path.exists():
-            print(f"  [SKIP] {split}: missing queries or oracle")
+        if not queries_path.exists():
+            print(f"  [SKIP] {split}: missing queries")
             continue
 
         # Load grounding targets
         target_map = {}
         if grounding == "oracle":
+            if not oracle_path.exists():
+                print(f"  [SKIP] {split}: missing oracle (run step03)")
+                continue
             with open(oracle_path) as f:
                 for line in f:
                     rec = json.loads(line)
@@ -119,34 +142,40 @@ def extract_features(
             scene_points = pcd_data["points"]
             scene_pixel_coords = pcd_data["pixel_coords"]
 
-            # Load depth and label
+            # Load depth + intrinsics (needed for f8)
             scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
             try:
                 factor = get_factor_depth(scene_dir, camera)
                 depth = load_depth(scene_dir, frame_id, camera, factor)
-                label = load_label(scene_dir, frame_id, camera)
                 K = load_camera_intrinsics(scene_dir, camera)
             except Exception:
                 continue
 
-            # Get target mask
+            # ── Build target_mask from the correct source ────────────
+            # Oracle: use GT label
+            # Predicted: use Florence-2 mask or None (bbox fallback)
+            # This is the key fix: NO GT leakage in predicted mode
             target_mask = None
             if grounding == "oracle":
-                target_mask = (label == target_mask_val)
+                try:
+                    label = load_label(scene_dir, frame_id, camera)
+                    target_mask = (label == target_mask_val)
+                except Exception:
+                    continue
             elif target.get("mask_path") and Path(target["mask_path"]).exists():
                 target_mask = np.load(target["mask_path"])
 
-            # Get target points
+            # Get target points using the grounding-consistent mask
             if target_mask is not None and target_mask.any():
-                target_pts, _ = crop_point_cloud_by_mask(
-                    scene_points, scene_pixel_coords, label, target_mask_val,
+                target_pts = _crop_points_by_binary_mask(
+                    scene_points, scene_pixel_coords, target_mask,
                 )
             else:
                 target_pts, _ = crop_point_cloud_by_bbox(
                     scene_points, scene_pixel_coords, target["bbox"],
                 )
 
-            # Extract features
+            # Extract features (NO GT label passed)
             features = extractor.extract_batch(
                 candidates=candidates,
                 target_bbox=target["bbox"],
@@ -154,8 +183,6 @@ def extract_features(
                 target_points=target_pts,
                 scene_points=scene_points,
                 scene_pixel_coords=scene_pixel_coords,
-                label=label,
-                target_mask_val=target_mask_val,
                 florence_conf=target["confidence"],
                 depth=depth,
                 intrinsics=K,
@@ -177,7 +204,7 @@ def extract_features(
 
         if all_records:
             df = pd.DataFrame(all_records)
-            out_path = config.RANK_FEATURES_DIR / f"{split}_features.parquet"
+            out_path = config.RANK_FEATURES_DIR / f"{split}_{grounding}_features.parquet"
             df.to_parquet(out_path, index=False)
             print(f"  [{split}] {len(df)} feature vectors → {out_path}")
         else:

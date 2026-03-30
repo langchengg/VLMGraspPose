@@ -132,21 +132,26 @@ def generate_labels_for_sample(
 ) -> List[dict]:
     """Generate labels for all candidates in a sample.
 
+    NOTE on collision_labels: Official GraspNet collision labels are indexed
+    by pre-defined grasp configurations (object × angle × depth), NOT by
+    detector candidate_id.  We cannot directly index them by candidate_id.
+
+    Two approaches:
+      1. If candidates come from the official grasp set with matching indices,
+         collision_labels can be used (not implemented — needs grasp matching).
+      2. Otherwise (antipodal sampler / GraspNet detector output after NMS),
+         we use the detector score as a quality proxy instead.
+
     Returns list of label dicts, one per candidate.
     """
     results = []
     for i, c in enumerate(candidates):
-        coll = None
-        if collision_labels is not None:
-            try:
-                coll = float(collision_labels[i])
-            except (IndexError, TypeError):
-                coll = None
-
+        # Collision labels cannot be naively indexed by candidate_id.
+        # Use detector score as proxy for grasp quality / collision-safety.
         lbl = generate_candidate_label(
             c, target_mask_val,
             scene_points, scene_pixel_coords, label,
-            collision_label=coll,
+            collision_label=None,  # don't index by candidate_id
         )
         results.append(lbl)
 
