@@ -209,6 +209,7 @@ def run_inference(
                 "sample_id": sample_id,
                 "scene_id": scene_id,
                 "frame_id": frame_id,
+                "target_object_id": obj_id,
                 "target_class": query["object_name"],
                 "text_query": text_query,
                 "grounder": grounder_name,

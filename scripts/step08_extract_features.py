@@ -97,8 +97,23 @@ def extract_features(
                         "mask_path": None,
                     }
         else:
-            pred_path = config.GROUNDING_PRED_DIR / f"{split}_grounding_pred.jsonl"
-            if pred_path.exists():
+            # Search for task-specific grounding files from step04
+            # New naming: {split}_grounding_{task}.jsonl
+            # Old naming: {split}_grounding_pred.jsonl (fallback)
+            pred_path = None
+            for task_name in ["seg", "phrase"]:
+                candidate = config.GROUNDING_PRED_DIR / f"{split}_grounding_{task_name}.jsonl"
+                if candidate.exists():
+                    pred_path = candidate
+                    break
+            if pred_path is None:
+                # Backward compat: old naming
+                old_path = config.GROUNDING_PRED_DIR / f"{split}_grounding_pred.jsonl"
+                if old_path.exists():
+                    pred_path = old_path
+
+            if pred_path is not None:
+                print(f"  [{split}] Loading predicted grounding: {pred_path.name}")
                 with open(pred_path) as f:
                     for line in f:
                         rec = json.loads(line)

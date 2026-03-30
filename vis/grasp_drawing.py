@@ -3,15 +3,18 @@ vis/grasp_drawing.py — Core drawing primitives for grasp visualisation
 =======================================================================
 Low-level helpers to:
   • Draw 2D gripper footprints on RGB images
-  • Convert quaternion orientation to a 3×3 rotation matrix
+  • Convert rotation representations to 3×3 matrices
   • Build 3D gripper meshes for Open3D / Matplotlib
+
+The pipeline stores rotation as flattened 3×3: [r11..r33] (9 floats).
+Legacy quaternion [qx, qy, qz, qw] support is kept for backward compat.
 """
 
 import numpy as np
 from typing import List, Tuple, Optional
 
 
-# ── Quaternion → Rotation Matrix ────────────────────────────────────
+# ── Rotation Helpers ────────────────────────────────────────────────
 
 def quat_to_rotation_matrix(q: List[float]) -> np.ndarray:
     """Convert quaternion [qx, qy, qz, qw] → 3×3 rotation matrix."""
@@ -22,6 +25,21 @@ def quat_to_rotation_matrix(q: List[float]) -> np.ndarray:
         [2*(qx*qz - qw*qy),       2*(qy*qz + qw*qx),      1 - 2*(qx**2 + qy**2)],
     ])
     return R
+
+
+def to_rotation_matrix(rot: List[float]) -> np.ndarray:
+    """Convert any rotation list to 3×3.
+
+    Auto-detects format:
+      - len == 9  → flattened 3×3 (pipeline default)
+      - len == 4  → quaternion [qx, qy, qz, qw]
+    """
+    if len(rot) == 9:
+        return np.array(rot).reshape(3, 3)
+    elif len(rot) == 4:
+        return quat_to_rotation_matrix(rot)
+    else:
+        raise ValueError(f"Expected 4 or 9 elements for rotation, got {len(rot)}")
 
 
 # ── Gripper Keypoints (in gripper-local frame) ──────────────────────
@@ -63,21 +81,21 @@ def gripper_keypoints(width: float, depth: float = 0.04,
     return pts
 
 
-def transform_gripper(position: List[float], orientation: List[float],
+def transform_gripper(position: List[float], rotation: List[float],
                       width: float) -> np.ndarray:
     """Get gripper keypoints transformed to camera frame.
 
     Parameters
     ----------
     position : [x, y, z] in camera frame
-    orientation : [qx, qy, qz, qw] quaternion
+    rotation : flattened 3×3 [r11..r33] or quaternion [qx,qy,qz,qw]
     width : gripper opening width in metres
 
     Returns
     -------
     (8, 3) keypoints in camera frame
     """
-    R = quat_to_rotation_matrix(orientation)
+    R = to_rotation_matrix(rotation)
     pts_local = gripper_keypoints(width)
     pts_world = (R @ pts_local.T).T + np.array(position)
     return pts_world
@@ -87,15 +105,16 @@ def transform_gripper(position: List[float], orientation: List[float],
 
 def project_gripper_to_image(
     position: List[float],
-    orientation: List[float],
+    rotation: List[float],
     width: float,
     intrinsics: np.ndarray,
 ) -> np.ndarray:
     """Project gripper keypoints onto the image plane.
 
+    Accepts both 9-element (flat rotmat) and 4-element (quaternion) rotation.
     Returns (8, 2) pixel coordinates (u, v).
     """
-    pts_3d = transform_gripper(position, orientation, width)
+    pts_3d = transform_gripper(position, rotation, width)
     fx, fy = intrinsics[0, 0], intrinsics[1, 1]
     cx, cy = intrinsics[0, 2], intrinsics[1, 2]
 

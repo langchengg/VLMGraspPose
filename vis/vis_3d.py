@@ -5,11 +5,12 @@ Uses Matplotlib for 3D scatter plots with gripper frames.
 Optionally uses Open3D for interactive viewing if installed.
 
 Usage:
-    python -m vis.vis_3d --sample scene_0100_0000_012_strawberry
-    python -m vis.vis_3d --sample scene_0100_0000_012_strawberry --backend open3d
+    python -m vis.vis_3d --sample <sample_id>
+    python -m vis.vis_3d --sample <sample_id> --backend open3d
 """
 
 import argparse
+import glob
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,14 +20,16 @@ import numpy as np
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
-from data.dataset import load_scene, load_rgb, load_depth, load_label
-from data.point_cloud import (
-    backproject_depth, crop_point_cloud_by_mask,
-    crop_point_cloud_by_bbox, voxel_downsample,
+from src.data_utils import (
+    load_rgb, load_depth, load_label,
+    load_camera_intrinsics, get_factor_depth,
+)
+from src.point_cloud import (
+    backproject_depth, crop_point_cloud_by_bbox,
+    crop_point_cloud_by_mask, voxel_downsample,
 )
 from vis.grasp_drawing import (
-    quat_to_rotation_matrix, gripper_keypoints, transform_gripper,
-    rank_colour,
+    to_rotation_matrix, gripper_keypoints, transform_gripper, rank_colour,
 )
 
 
@@ -44,29 +47,26 @@ def visualise_3d_matplotlib(
     max_scene_pts: int = 8000,
     max_target_pts: int = 3000,
 ):
-    """Create a 3D scatter plot with gripper poses using Matplotlib.
-
-    Saves as a high-resolution PNG.
-    """
+    """Create a 3D scatter plot with gripper poses using Matplotlib."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
     fig = plt.figure(figsize=(16, 10), facecolor="#1a1a2e")
-
-    # Main 3D plot
     ax = fig.add_subplot(111, projection="3d", facecolor="#1a1a2e")
 
     # ── Scene point cloud (subsampled, grey) ─────────────────────────
     if len(scene_points) > max_scene_pts:
         idx = np.random.choice(len(scene_points), max_scene_pts, replace=False)
         scene_sub = scene_points[idx]
-        if scene_rgb is not None and scene_pixel_coords is not None and rgb_image is not None:
+        # Try to colour from RGB image if available
+        if (scene_rgb is not None and scene_pixel_coords is not None
+                and rgb_image is not None):
             px = scene_pixel_coords[idx]
             H, W = rgb_image.shape[:2]
-            valid_px = (px[:, 0] >= 0) & (px[:, 0] < W) & (px[:, 1] >= 0) & (px[:, 1] < H)
+            valid_px = ((px[:, 0] >= 0) & (px[:, 0] < W)
+                        & (px[:, 1] >= 0) & (px[:, 1] < H))
             colours = np.full((len(scene_sub), 3), 0.5)
             colours[valid_px] = rgb_image[
                 px[valid_px, 1].astype(int),
@@ -95,7 +95,7 @@ def visualise_3d_matplotlib(
     for sel in selections:
         rank = sel["rank"]
         pos = sel["position"]
-        ori = sel["orientation"]
+        rot = sel["rotation"]  # flattened 3×3 or quaternion
         width = sel["width"]
 
         # Get colour — convert BGR to RGB
@@ -103,27 +103,23 @@ def visualise_3d_matplotlib(
         rgb_col = (bgr[2] / 255, bgr[1] / 255, bgr[0] / 255)
 
         # Transform gripper keypoints to camera frame
-        pts = transform_gripper(pos, ori, width)
+        pts = transform_gripper(pos, rot, width)
 
         # Draw gripper skeleton
-        # Left finger: 0─1
-        ax.plot3D(*zip(pts[0], pts[1]), color=rgb_col, linewidth=2.5 if rank == 1 else 1.5)
-        # Right finger: 2─3
-        ax.plot3D(*zip(pts[2], pts[3]), color=rgb_col, linewidth=2.5 if rank == 1 else 1.5)
-        # Palm bar: 4─5
-        ax.plot3D(*zip(pts[4], pts[5]), color=rgb_col, linewidth=2.5 if rank == 1 else 1.5)
-        # Wrist stem
+        ax.plot3D(*zip(pts[0], pts[1]), color=rgb_col,
+                  linewidth=2.5 if rank == 1 else 1.5)
+        ax.plot3D(*zip(pts[2], pts[3]), color=rgb_col,
+                  linewidth=2.5 if rank == 1 else 1.5)
+        ax.plot3D(*zip(pts[4], pts[5]), color=rgb_col,
+                  linewidth=2.5 if rank == 1 else 1.5)
         mid = (pts[4] + pts[5]) / 2
         ax.plot3D(*zip(mid, pts[6]), color=rgb_col, linewidth=1.5)
 
         # Draw approach axis
-        R = quat_to_rotation_matrix(ori)
-        approach = R[:, 0]  # x-axis = closing direction
+        R = to_rotation_matrix(rot)
         binormal = R[:, 2]  # z-axis = approach direction
-
         p = np.array(pos)
-        # Approach arrow (blue-ish)
-        _draw_arrow_3d(ax, p, p - binormal * 0.03, rgb_col, linewidth=1.0)
+        ax.plot3D(*zip(p, p - binormal * 0.03), color=rgb_col, linewidth=1.0)
 
         # Label
         ax.text(pos[0], pos[1], pos[2] - 0.01,
@@ -135,7 +131,6 @@ def visualise_3d_matplotlib(
     ax.set_zlabel("Z (m)", color="white", fontsize=10)
     ax.tick_params(colors="white", labelsize=7)
 
-    # Set axis limits based on target region
     if len(target_points) > 0:
         center = target_points.mean(axis=0)
         radius = max(np.ptp(target_points, axis=0).max() * 1.5, 0.15)
@@ -146,13 +141,10 @@ def visualise_3d_matplotlib(
     ax.set_title(sample_id, color="white", fontsize=13, pad=15, fontweight="bold")
     ax.legend(loc="upper left", fontsize=9, facecolor="#2a2a4e",
               edgecolor="#444", labelcolor="white")
-
-    # View angle — look slightly from above
     ax.view_init(elev=-60, azim=-90)
 
     plt.tight_layout()
 
-    # Save
     if output_dir is None:
         output_dir = config.PROJECT_ROOT / "vis_output"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -192,7 +184,6 @@ def visualise_3d_open3d(
 
     geometries = []
 
-    # Scene point cloud
     pcd_scene = o3d.geometry.PointCloud()
     pcd_scene.points = o3d.utility.Vector3dVector(scene_points)
     if scene_colours is not None:
@@ -201,35 +192,30 @@ def visualise_3d_open3d(
         pcd_scene.paint_uniform_color([0.6, 0.6, 0.6])
     geometries.append(pcd_scene)
 
-    # Target point cloud
     pcd_target = o3d.geometry.PointCloud()
     pcd_target.points = o3d.utility.Vector3dVector(target_points)
     pcd_target.paint_uniform_color([0.0, 1.0, 0.5])
     geometries.append(pcd_target)
 
-    # Gripper meshes
     for sel in selections:
         rank = sel["rank"]
-        pts = transform_gripper(sel["position"], sel["orientation"], sel["width"])
+        pts = transform_gripper(sel["position"], sel["rotation"], sel["width"])
 
         bgr = rank_colour(rank)
         rgb_col = [bgr[2] / 255, bgr[1] / 255, bgr[0] / 255]
 
-        # Create line set for gripper
-        lines = [[0, 1], [2, 3], [4, 5]]  # fingers + palm
+        lines = [[0, 1], [2, 3], [4, 5]]
         line_set = o3d.geometry.LineSet()
         line_set.points = o3d.utility.Vector3dVector(pts[:6])
         line_set.lines = o3d.utility.Vector2iVector(lines)
         line_set.colors = o3d.utility.Vector3dVector([rgb_col] * 3)
         geometries.append(line_set)
 
-        # Grasp centre sphere
         sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.003)
         sphere.translate(np.array(sel["position"]))
         sphere.paint_uniform_color(rgb_col)
         geometries.append(sphere)
 
-    # Coordinate frame
     coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05)
     geometries.append(coord_frame)
 
@@ -245,68 +231,58 @@ def visualise_3d_open3d(
 
 def visualise_sample_3d(
     sample_id: str,
+    grounder: str = "phrase",
+    reranker: str = "rule",
     output_dir: Path = None,
     backend: str = "matplotlib",
-    scorer: str = "rule",
 ) -> Optional[Path]:
     """Load data and create 3D visualisation for a pipeline sample."""
     # Parse sample_id
     parts = sample_id.split("_")
-    scene_id = f"{parts[0]}_{parts[1]}"
-    view_id = int(parts[2])
-    obj_name = "_".join(parts[3:])
+    scene_id = int(parts[1])
+    camera = parts[2]
+    frame_id = int(parts[3])
 
-    scene_dir = config.DATA_DIRS["test_seen"] / scene_id
+    scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
     if not scene_dir.exists():
-        raise FileNotFoundError(f"Scene directory not found: {scene_dir}")
+        raise FileNotFoundError(f"Scene not found: {scene_dir}")
 
-    scene_meta = load_scene(scene_dir)
-    rgb = load_rgb(scene_dir, view_id, scene_meta.camera_type)
-    depth = load_depth(scene_dir, view_id, scene_meta.camera_type,
-                       scene_meta.factor_depth)
-    label = load_label(scene_dir, view_id, scene_meta.camera_type)
-    intrinsics = scene_meta.intrinsics
+    factor = get_factor_depth(scene_dir, camera)
+    rgb = load_rgb(scene_dir, frame_id, camera)
+    depth = load_depth(scene_dir, frame_id, camera, factor)
+    K = load_camera_intrinsics(scene_dir, camera)
 
-    # Find target object
-    target_obj = None
-    for obj in scene_meta.objects:
-        if obj.obj_name == obj_name:
-            target_obj = obj
+    scene_points, scene_px = backproject_depth(depth, K)
+
+    # Find prediction
+    pred_files = glob.glob(
+        str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}.json")
+    )
+
+    pred = None
+    for pf in pred_files:
+        with open(pf) as f:
+            preds = json.load(f)
+        for p in preds:
+            if p.get("sample_id") == sample_id:
+                pred = p
+                break
+        if pred:
             break
 
-    instance_id = target_obj.obj_id + 1 if target_obj else 1
+    selections = pred.get("ranked_grasps", []) if pred else []
 
-    # Back-project full scene
-    scene_points, scene_px = backproject_depth(depth, intrinsics)
+    # Target points from predicted bbox
+    target_points = np.zeros((0, 3))
+    if pred and pred.get("pred_bbox"):
+        target_points, _ = crop_point_cloud_by_bbox(
+            scene_points, scene_px, pred["pred_bbox"],
+        )
 
-    # Crop target region
-    target_points, _ = crop_point_cloud_by_mask(
-        scene_points, scene_px, label, instance_id
-    )
-    if len(target_points) < 10:
-        gt_bbox = bbox_from_mask(label, instance_id) if target_obj else [0, 0, 100, 100]
-        if gt_bbox:
-            target_points, _ = crop_point_cloud_by_bbox(
-                scene_points, scene_px, gt_bbox
-            )
-
-    # Downsample scene for viz
     scene_viz = voxel_downsample(scene_points, 0.005)
 
-    # Load selections
-    result_path = config.PROJECT_ROOT / "results" / f"{sample_id}_{scorer}.json"
-    selections = []
-    if result_path.exists():
-        with open(result_path) as f:
-            result = json.load(f)
-        selections = result.get("selections", [])
-
     if backend == "open3d":
-        # RGB colours for scene points
-        H, W = rgb.shape[:2]
-        scene_colours = np.full((len(scene_viz), 3), 0.6)
-        visualise_3d_open3d(scene_viz, target_points, selections,
-                            sample_id, scene_colours)
+        visualise_3d_open3d(scene_viz, target_points, selections, sample_id)
         return None
     else:
         return visualise_3d_matplotlib(
@@ -322,7 +298,8 @@ def visualise_sample_3d(
 def main():
     parser = argparse.ArgumentParser(description="3D Grasp Visualisation")
     parser.add_argument("--sample", type=str, required=True)
-    parser.add_argument("--scorer", type=str, default="rule")
+    parser.add_argument("--grounder", type=str, default="phrase")
+    parser.add_argument("--reranker", type=str, default="rule")
     parser.add_argument("--backend", type=str, default="matplotlib",
                         choices=["matplotlib", "open3d"])
     parser.add_argument("--output-dir", type=str, default=None)
@@ -331,9 +308,10 @@ def main():
     out_dir = Path(args.output_dir) if args.output_dir else None
     visualise_sample_3d(
         sample_id=args.sample,
+        grounder=args.grounder,
+        reranker=args.reranker,
         output_dir=out_dir,
         backend=args.backend,
-        scorer=args.scorer,
     )
 
 

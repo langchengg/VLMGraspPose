@@ -30,6 +30,8 @@ def find_prediction_files(
 
     File naming convention:
         predictions_{split}_{grounder}_{reranker}.json
+
+    Returns a list of (path, grounder, reranker) tuples.
     """
     found_files = []
     for split in splits:
@@ -37,7 +39,7 @@ def find_prediction_files(
         if grounder and reranker:
             path = config.RESULTS_DIR / f"predictions_{split}_{grounder}_{reranker}.json"
             if path.exists():
-                found_files.append(path)
+                found_files.append((path, grounder, reranker))
                 continue
 
         # Fallback: search for any matching pattern
@@ -47,7 +49,17 @@ def find_prediction_files(
             candidates = [c for c in candidates if f"_{grounder}_" in c.name]
         if reranker:
             candidates = [c for c in candidates if c.name.endswith(f"_{reranker}.json")]
-        found_files.extend(candidates)
+
+        for c in candidates:
+            # Parse grounder and reranker from filename
+            # Format: predictions_{split}_{grounder}_{reranker}.json
+            stem = c.stem  # e.g. predictions_test_seen_phrase_rule
+            rest = stem.replace(f"predictions_{split}_", "")
+            parts = rest.rsplit("_", 1)
+            if len(parts) == 2:
+                found_files.append((c, parts[0], parts[1]))
+            else:
+                found_files.append((c, "unknown", "unknown"))
 
     return found_files
 
@@ -57,13 +69,17 @@ def evaluate(
     grounder: str = None,
     reranker: str = None,
 ):
-    """Run evaluation on test prediction files."""
+    """Run evaluation on test prediction files.
+
+    When no grounder/reranker is specified and multiple configs exist,
+    evaluates each configuration separately to avoid mixing results.
+    """
     if splits is None:
         splits = config.TEST_SPLITS
 
-    pred_files = find_prediction_files(splits, grounder, reranker)
+    file_entries = find_prediction_files(splits, grounder, reranker)
 
-    if not pred_files:
+    if not file_entries:
         print("[ERROR] No prediction files found.")
         print(f"  Looked in: {config.RESULTS_DIR}")
         if grounder:
@@ -73,36 +89,40 @@ def evaluate(
         print("  Run step10 first.")
         return
 
-    all_predictions = []
-    for pf in pred_files:
-        with open(pf) as f:
-            preds = json.load(f)
-        all_predictions.extend(preds)
-        print(f"  Loaded {len(preds)} predictions from {pf.name}")
+    # Group by (grounder, reranker) config
+    from collections import defaultdict
+    config_groups = defaultdict(list)
+    for path, g, r in file_entries:
+        config_groups[(g, r)].append(path)
 
-    if not all_predictions:
-        print("[ERROR] No predictions found.")
-        return
+    if len(config_groups) > 1 and not (grounder and reranker):
+        print(f"  Found {len(config_groups)} configurations — evaluating each separately.")
 
-    # Build output name
-    tag = ""
-    if grounder:
-        tag += f"_{grounder}"
-    if reranker:
-        tag += f"_{reranker}"
-    out_path = config.RESULTS_DIR / f"evaluation_report{tag}.json"
-    full_evaluation(all_predictions, output_path=out_path)
+    for (g, r), paths in sorted(config_groups.items()):
+        all_predictions = []
+        for pf in paths:
+            with open(pf) as f:
+                preds = json.load(f)
+            all_predictions.extend(preds)
+            print(f"  Loaded {len(preds)} predictions from {pf.name}")
+
+        if not all_predictions:
+            continue
+
+        tag = f"_{g}_{r}"
+        out_path = config.RESULTS_DIR / f"evaluation_report{tag}.json"
+        print(f"  → Evaluating: grounder={g}, reranker={r}, N={len(all_predictions)}")
+        full_evaluation(all_predictions, output_path=out_path)
 
 
 def run_ablation(reranker: str = "rule"):
     """Compare oracle (GT) vs predicted (Florence-2) grounding.
 
-    Looks for:
-        predictions_{split}_gt_{reranker}.json       (oracle)
-        predictions_{split}_phrase_{reranker}.json   (predicted)
+    Evaluates each predicted grounder (phrase, seg) separately
+    to avoid mixing their results.
     """
     oracle_preds = []
-    predicted_preds = []
+    predicted_by_grounder = {}  # {"phrase": [...], "seg": [...]}
 
     for split in config.TEST_SPLITS:
         # Oracle predictions (grounder=gt)
@@ -111,54 +131,53 @@ def run_ablation(reranker: str = "rule"):
             with open(oracle_path) as f:
                 oracle_preds.extend(json.load(f))
 
-        # Predicted predictions (grounder=phrase)
-        pred_path = config.RESULTS_DIR / f"predictions_{split}_phrase_{reranker}.json"
-        if pred_path.exists():
-            with open(pred_path) as f:
-                predicted_preds.extend(json.load(f))
+        # Predicted predictions — load each grounder separately
+        for grounder in ["phrase", "seg"]:
+            pred_path = config.RESULTS_DIR / f"predictions_{split}_{grounder}_{reranker}.json"
+            if pred_path.exists():
+                with open(pred_path) as f:
+                    preds = json.load(f)
+                predicted_by_grounder.setdefault(grounder, []).extend(preds)
 
-        # Also try grounder=seg
-        seg_path = config.RESULTS_DIR / f"predictions_{split}_seg_{reranker}.json"
-        if seg_path.exists():
-            with open(seg_path) as f:
-                predicted_preds.extend(json.load(f))
-
-    if not oracle_preds and not predicted_preds:
+    if not oracle_preds and not predicted_by_grounder:
         print("[ERROR] No predictions found for ablation.")
         print(f"  Expected files like: predictions_*_gt_{reranker}.json")
         print(f"                   and: predictions_*_phrase_{reranker}.json")
         print("  Run step10 with both --grounder gt and --grounder phrase")
         return
 
-    if oracle_preds and predicted_preds:
-        result = ablation_grounding(oracle_preds, predicted_preds)
+    # Ablation for each predicted grounder vs oracle
+    for grounder, preds in predicted_by_grounder.items():
+        if oracle_preds and preds:
+            result = ablation_grounding(oracle_preds, preds)
 
-        print(f"\n{'═' * 60}")
-        print(f"  Grounding Ablation  (reranker={reranker})")
-        print(f"{'═' * 60}")
-        print(f"  Oracle S@1:    {result['oracle_grounding']['target_success_at_1']:.4f}")
-        print(f"  Predicted S@1: {result['predicted_grounding']['target_success_at_1']:.4f}")
-        print(f"  Δ S@1:         {result['delta_success_at_1']:.4f}")
-        print(f"  Oracle S@5:    {result['oracle_grounding']['target_success_at_5']:.4f}")
-        print(f"  Predicted S@5: {result['predicted_grounding']['target_success_at_5']:.4f}")
-        print(f"  Δ S@5:         {result['delta_success_at_5']:.4f}")
-        print(f"{'═' * 60}")
+            print(f"\n{'═' * 60}")
+            print(f"  Grounding Ablation: GT vs {grounder}  (reranker={reranker})")
+            print(f"{'═' * 60}")
+            print(f"  Oracle S@1:    {result['oracle_grounding']['target_success_at_1']:.4f}")
+            print(f"  {grounder:8s} S@1: {result['predicted_grounding']['target_success_at_1']:.4f}")
+            print(f"  Δ S@1:         {result['delta_success_at_1']:.4f}")
+            print(f"  Oracle S@5:    {result['oracle_grounding']['target_success_at_5']:.4f}")
+            print(f"  {grounder:8s} S@5: {result['predicted_grounding']['target_success_at_5']:.4f}")
+            print(f"  Δ S@5:         {result['delta_success_at_5']:.4f}")
+            print(f"{'═' * 60}")
 
-        # Save
-        out_path = config.RESULTS_DIR / f"ablation_grounding_{reranker}.json"
-        with open(out_path, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"  Saved → {out_path}")
-    else:
-        print("[WARN] Need both oracle and predicted predictions for ablation")
-        if oracle_preds:
-            print(f"  Oracle:    {len(oracle_preds)} predictions")
-            full_evaluation(oracle_preds,
-                            config.RESULTS_DIR / f"eval_oracle_{reranker}.json")
-        if predicted_preds:
-            print(f"  Predicted: {len(predicted_preds)} predictions")
-            full_evaluation(predicted_preds,
-                            config.RESULTS_DIR / f"eval_predicted_{reranker}.json")
+            # Save per-grounder ablation
+            out_path = config.RESULTS_DIR / f"ablation_{grounder}_vs_gt_{reranker}.json"
+            with open(out_path, "w") as f:
+                json.dump(result, f, indent=2)
+            print(f"  Saved → {out_path}")
+        else:
+            # Only one side available — just run full eval
+            if preds:
+                print(f"\n  {grounder}: {len(preds)} predictions (no oracle for comparison)")
+                full_evaluation(preds,
+                                config.RESULTS_DIR / f"eval_{grounder}_{reranker}.json")
+
+    if oracle_preds and not predicted_by_grounder:
+        print(f"\n  Oracle: {len(oracle_preds)} predictions (no predicted for comparison)")
+        full_evaluation(oracle_preds,
+                        config.RESULTS_DIR / f"eval_oracle_{reranker}.json")
 
 
 def main():

@@ -41,7 +41,7 @@ def run_grounding(
             print(f"  [SKIP] {queries_path} not found (run step02 first)")
             continue
 
-        out_path = config.GROUNDING_PRED_DIR / f"{split}_grounding_pred.jsonl"
+        out_path = config.GROUNDING_PRED_DIR / f"{split}_grounding_{task}.jsonl"
         config.GROUNDING_PRED_DIR.mkdir(parents=True, exist_ok=True)
 
         total = 0
@@ -77,7 +77,7 @@ def run_grounding(
                 # Save mask separately if available
                 pred_mask_path = None
                 if result.mask is not None:
-                    mask_dir = config.GROUNDING_PRED_DIR / "pred_masks"
+                    mask_dir = config.GROUNDING_PRED_DIR / f"pred_masks_{task}"
                     mask_dir.mkdir(parents=True, exist_ok=True)
                     mask_fn = f"{query['sample_id']}_mask.npy"
                     pred_mask_path = str(mask_dir / mask_fn)
