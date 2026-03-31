@@ -26,7 +26,7 @@ from src.grounding import get_grounder
 
 def run_grounding(
     splits: list = None,
-    task: str = "phrase",
+    task: str = "seg",
     max_samples: int = None,
 ):
     """Run Florence-2 grounding on all queries."""
@@ -109,9 +109,9 @@ def main():
         help="Splits to process (default: test splits)"
     )
     parser.add_argument(
-        "--task", type=str, default="phrase",
+        "--task", type=str, default="seg",
         choices=["phrase", "seg"],
-        help="Florence-2 task: phrase (box) or seg (mask)"
+        help="Florence-2 task: seg (mask, default — activates all features) or phrase (box only)"
     )
     parser.add_argument("--max-samples", type=int, default=None)
     args = parser.parse_args()

@@ -45,8 +45,8 @@ def _find_feature_file(split: str, grounding: str = None) -> Path:
         return None
 
     if grounding == "predicted":
-        # Try task-specific new naming first (phrase > seg)
-        for task in ["phrase", "seg"]:
+        # Try task-specific new naming first (seg > phrase, matching default)
+        for task in ["seg", "phrase"]:
             path = config.RANK_FEATURES_DIR / f"{split}_predicted_{task}_features.parquet"
             if path.exists():
                 return path
@@ -57,10 +57,10 @@ def _find_feature_file(split: str, grounding: str = None) -> Path:
         print(f"  [WARN] Requested predicted features not found in {config.RANK_FEATURES_DIR}")
         return None
 
-    # Auto-detect: prefer predicted (matches default inference grounder=phrase)
+    # Auto-detect: prefer predicted (matches default inference grounder=seg)
     for pattern in [
-        f"{split}_predicted_phrase_features.parquet",
         f"{split}_predicted_seg_features.parquet",
+        f"{split}_predicted_phrase_features.parquet",
         f"{split}_predicted_features.parquet",
         f"{split}_oracle_features.parquet",
         f"{split}_features.parquet",  # legacy

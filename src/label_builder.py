@@ -5,11 +5,18 @@ Rewritten from stage4/label_generator.py.
 
 A candidate is POSITIVE only if:
   1. It is associated with the TARGET object, AND
-  2. It is geometrically valid / collision-safe.
+  2. Its detector score >= 0.3 (proxy for grasp quality).
+
+NOTE on collision labels: Official GraspNet collision labels exist but
+are indexed by (object × angle × depth) grasp configurations, NOT by
+detector candidate_id.  Implementing a matching step would require
+nearest-neighbour search in SE(3) grasp space.  Until that is done,
+detector score serves as a quality proxy. This means the supervision
+signal captures "target + high detector confidence", not "target +
+physically collision-free".
 
 Object association uses the official GraspNet evaluator logic:
-identify which object occupies the points inside the gripper,
-then judge validity using grasp quality / collision labels.
+identify which object occupies the points inside the gripper.
 """
 
 from pathlib import Path

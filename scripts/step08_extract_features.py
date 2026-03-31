@@ -25,8 +25,13 @@ from src.grasp_detector import GraspCandidate
 from src.feature_extractor import FeatureExtractor
 
 
-def _load_candidates(view_sample_id: str):
-    path = config.GRASP_CANDIDATES_DIR / f"{view_sample_id}.npz"
+def _load_candidates(view_sample_id: str, detector: str = "antipodal"):
+    """Load cached grasp candidates, searching detector-specific dir first."""
+    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
+    path = config.GRASP_CANDIDATES_DIR / detector / f"{view_sample_id}.npz"
+    if not path.exists():
+        # Legacy fallback
+        path = config.GRASP_CANDIDATES_DIR / f"{view_sample_id}.npz"
     if not path.exists():
         return []
     data = np.load(str(path), allow_pickle=True)
@@ -62,7 +67,8 @@ def _crop_points_by_binary_mask(
 def extract_features(
     splits: list = None,
     grounding: str = "oracle",
-    grounding_task: str = "phrase",
+    grounding_task: str = "seg",
+    detector: str = "antipodal",
 ):
     """Extract features for all candidates.
 
@@ -150,7 +156,7 @@ def extract_features(
             target_mask_val = obj_id + 1
 
             # Load candidates
-            candidates = _load_candidates(view_sample_id)
+            candidates = _load_candidates(view_sample_id, detector)
             if not candidates:
                 continue
 
@@ -248,10 +254,15 @@ def main():
         help="Use oracle (GT) or predicted (Florence-2) grounding",
     )
     parser.add_argument(
-        "--task", type=str, default="phrase",
+        "--task", type=str, default="seg",
         choices=["phrase", "seg"],
         help="Florence-2 task for predicted grounding (must match step04)."
-             " Only used when --grounding=predicted.",
+             " Default: seg (activates all 9 features). Only used when --grounding=predicted.",
+    )
+    parser.add_argument(
+        "--detector", type=str, default="antipodal",
+        choices=["antipodal", "graspnet", "precomputed"],
+        help="Which detector's candidates to use (must match step06).",
     )
     args = parser.parse_args()
 
@@ -259,6 +270,7 @@ def main():
         splits=args.splits,
         grounding=args.grounding,
         grounding_task=args.task,
+        detector=args.detector,
     )
 
 

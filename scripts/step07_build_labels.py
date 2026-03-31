@@ -31,9 +31,17 @@ from src.grasp_detector import GraspCandidate
 from src.label_builder import generate_labels_for_sample
 
 
-def _load_candidates(sample_id: str):
-    """Load saved grasp candidates for a view."""
-    path = config.GRASP_CANDIDATES_DIR / f"{sample_id}.npz"
+def _load_candidates(sample_id: str, detector: str = "antipodal"):
+    """Load saved grasp candidates for a view.
+
+    Searches detector-specific subdirectory first (new layout),
+    then falls back to flat layout (legacy).
+    """
+    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
+    path = config.GRASP_CANDIDATES_DIR / detector / f"{sample_id}.npz"
+    if not path.exists():
+        # Legacy fallback: derived/grasp_candidates/{sample_id}.npz
+        path = config.GRASP_CANDIDATES_DIR / f"{sample_id}.npz"
     if not path.exists():
         return []
     data = np.load(str(path), allow_pickle=True)
@@ -52,7 +60,7 @@ def _load_candidates(sample_id: str):
     return candidates
 
 
-def build_labels(splits: list = None):
+def build_labels(splits: list = None, detector: str = "antipodal"):
     """Build training labels for all candidates."""
     if splits is None:
         splits = config.TRAIN_SPLITS + config.VAL_SPLITS
@@ -93,7 +101,7 @@ def build_labels(splits: list = None):
             target_mask_val = oracle["gt_mask_val"]
 
             # Load candidates for this view
-            candidates = _load_candidates(view_sample_id)
+            candidates = _load_candidates(view_sample_id, detector)
             if not candidates:
                 continue
 
@@ -146,8 +154,13 @@ def main():
         description="Step 7: Build target-aware training labels"
     )
     parser.add_argument("--splits", nargs="+", default=None)
+    parser.add_argument(
+        "--detector", type=str, default="antipodal",
+        choices=["antipodal", "graspnet", "precomputed"],
+        help="Which detector's candidates to use (must match step06).",
+    )
     args = parser.parse_args()
-    build_labels(splits=args.splits)
+    build_labels(splits=args.splits, detector=args.detector)
 
 
 if __name__ == "__main__":

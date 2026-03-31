@@ -1,13 +1,18 @@
 """
 scripts/step06_grasp_candidates.py — Generate 6-DoF grasp candidates
 ======================================================================
-Step 6: Run a FIXED pretrained grasp detector on FULL-SCENE point clouds.
+Step 6: Run a FIXED grasp detector on FULL-SCENE point clouds.
 Do NOT crop to target region — grounding is used for reranking only.
+
+Detector types:
+  antipodal    — geometry-based antipodal sampler (default, no external deps)
+  graspnet     — official GraspNet baseline (requires graspnetAPI + checkpoint)
+  precomputed  — load pre-generated .npy files from GraspNet baseline output
 
 Usage:
     python scripts/step06_grasp_candidates.py
     python scripts/step06_grasp_candidates.py --splits test_seen --top-k 50
-    python scripts/step06_grasp_candidates.py --detector antipodal
+    python scripts/step06_grasp_candidates.py --detector graspnet
 """
 
 import argparse
@@ -24,11 +29,11 @@ from src.grasp_detector import GraspNetDetector, AntipodalSampler, PrecomputedGr
 
 
 def _create_detector(detector_type: str, top_k: int):
-    """Create a grasp detector, with graceful fallback.
+    """Create a grasp detector.
 
     Detector types:
-        graspnet   — official GraspNet baseline (requires checkpoint + deps)
-        antipodal  — geometry-based antipodal sampler (no external deps)
+        antipodal   — geometry-based antipodal sampler (default, no external deps)
+        graspnet    — official GraspNet baseline (requires checkpoint + deps)
         precomputed — load pre-generated .npy files
     """
     if detector_type == "antipodal":
@@ -39,25 +44,23 @@ def _create_detector(detector_type: str, top_k: int):
         print("[step06] Using PrecomputedGraspLoader")
         return PrecomputedGraspLoader()
 
-    # Default: try GraspNetDetector, fall back to Antipodal
-    try:
+    if detector_type == "graspnet":
+        # No silent fallback — if deps are missing, raise a clear error
         det = GraspNetDetector()
-        # Force lazy load to check deps now
-        det._ensure_loaded()
+        det._ensure_loaded()  # will raise FileNotFoundError or ImportError
         print("[step06] Using GraspNetDetector (official baseline)")
         return det
-    except (FileNotFoundError, ImportError) as e:
-        print(f"[step06] GraspNetDetector unavailable: {e}")
-        print("[step06] Falling back to AntipodalSampler.")
-        print("         To use the official detector, install graspnetAPI and")
-        print("         clone graspnet-baseline. See README for details.")
-        return AntipodalSampler(top_k=top_k)
+
+    raise ValueError(
+        f"Unknown detector type: {detector_type}. "
+        f"Choose from: antipodal, graspnet, precomputed"
+    )
 
 
 def generate_candidates(
     splits: list = None,
     top_k: int = config.GRASP_TOP_K,
-    detector_type: str = "graspnet",
+    detector_type: str = "antipodal",
 ):
     """Run grasp detection on all indexed views."""
     if splits is None:
@@ -68,13 +71,28 @@ def generate_candidates(
     # PrecomputedGraspLoader needs special handling
     is_precomputed = isinstance(detector, PrecomputedGraspLoader)
 
+    # Use detector-specific subdirectory to avoid cache pollution
+    # e.g. derived/grasp_candidates/antipodal/
+    candidates_dir = config.GRASP_CANDIDATES_DIR / detector_type
+    candidates_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save metadata for downstream verification
+    import json
+    meta_path = candidates_dir / "metadata.json"
+    meta = {
+        "detector_type": detector_type,
+        "top_k": top_k,
+        "source": detector.__class__.__name__,
+    }
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
     for split in splits:
         views_path = config.SPLITS_DIR / f"{split}_views.jsonl"
         if not views_path.exists():
             print(f"  [SKIP] {views_path} not found (run step01 first)")
             continue
 
-        config.GRASP_CANDIDATES_DIR.mkdir(parents=True, exist_ok=True)
         total = 0
 
         with open(views_path) as fin:
@@ -84,7 +102,7 @@ def generate_candidates(
             view = json.loads(line)
             sample_id = view["sample_id"]
 
-            out_path = config.GRASP_CANDIDATES_DIR / f"{sample_id}.npz"
+            out_path = candidates_dir / f"{sample_id}.npz"
             if out_path.exists():
                 total += 1
                 continue
@@ -134,7 +152,7 @@ def generate_candidates(
             )
             total += 1
 
-        print(f"  [{split}] {total} candidate sets → {config.GRASP_CANDIDATES_DIR}")
+        print(f"  [{split}] {total} candidate sets → {candidates_dir}")
 
 
 def main():
@@ -144,10 +162,10 @@ def main():
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument("--top-k", type=int, default=config.GRASP_TOP_K)
     parser.add_argument(
-        "--detector", type=str, default="graspnet",
-        choices=["graspnet", "antipodal", "precomputed"],
-        help="Detector type: graspnet (try official, fall back to antipodal), "
-             "antipodal (geometry-based), precomputed (load .npy files)",
+        "--detector", type=str, default="antipodal",
+        choices=["antipodal", "graspnet", "precomputed"],
+        help="Detector type. Default: antipodal (no external deps). "
+             "Use 'graspnet' for official baseline (requires graspnetAPI + checkpoint).",
     )
     args = parser.parse_args()
 

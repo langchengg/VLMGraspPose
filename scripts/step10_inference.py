@@ -36,8 +36,13 @@ from src.reranker import get_reranker
 from src.label_builder import associate_grasp_to_object
 
 
-def _load_candidates(view_sample_id: str):
-    path = config.GRASP_CANDIDATES_DIR / f"{view_sample_id}.npz"
+def _load_candidates(view_sample_id: str, detector: str = "antipodal"):
+    """Load cached grasp candidates, searching detector-specific dir first."""
+    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
+    path = config.GRASP_CANDIDATES_DIR / detector / f"{view_sample_id}.npz"
+    if not path.exists():
+        # Legacy fallback
+        path = config.GRASP_CANDIDATES_DIR / f"{view_sample_id}.npz"
     if not path.exists():
         return []
     data = np.load(str(path), allow_pickle=True)
@@ -56,10 +61,11 @@ def _load_candidates(view_sample_id: str):
 
 def run_inference(
     splits: list = None,
-    grounder_name: str = "phrase",
+    grounder_name: str = "seg",
     reranker_name: str = "rule",
     max_samples: int = None,
     use_cached_grasps: bool = True,
+    detector_type: str = "antipodal",
 ):
     """Run full inference chain on test splits."""
     if splits is None:
@@ -137,7 +143,7 @@ def run_inference(
                 else:
                     # ── 3. Load / generate grasp candidates ──────────
                     if use_cached_grasps:
-                        candidates = _load_candidates(view_sample_id)
+                        candidates = _load_candidates(view_sample_id, detector_type)
                     else:
                         points, px = backproject_depth(depth, K)
                         colors = add_colors(rgb, px)
@@ -209,6 +215,7 @@ def run_inference(
                 "text_query": text_query,
                 "grounder": grounder_name,
                 "reranker": reranker_name,
+                "detector": detector_type,
                 "pred_bbox": grounding.bbox if grounding else None,
                 "ranked_grasps": ranked,
                 "best_grasp": ranked[0] if ranked else None,
@@ -250,7 +257,7 @@ def main():
     )
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument(
-        "--grounder", type=str, default="phrase",
+        "--grounder", type=str, default="seg",
         choices=["gt", "phrase", "seg"],
     )
     parser.add_argument(
@@ -260,6 +267,11 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--no-cache", action="store_true",
                         help="Don't use cached candidates, run detector live")
+    parser.add_argument(
+        "--detector", type=str, default="antipodal",
+        choices=["antipodal", "graspnet", "precomputed"],
+        help="Which detector's cached candidates to use (must match step06).",
+    )
     args = parser.parse_args()
 
     run_inference(
@@ -268,6 +280,7 @@ def main():
         reranker_name=args.reranker,
         max_samples=args.max_samples,
         use_cached_grasps=not args.no_cache,
+        detector_type=args.detector,
     )
 
 
