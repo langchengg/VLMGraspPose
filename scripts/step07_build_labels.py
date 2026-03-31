@@ -1,8 +1,15 @@
 """
 scripts/step07_build_labels.py — Build target-aware training labels
 =====================================================================
-Step 7: For each candidate, determine associated object using GraspNet
-grasp_label + collision_label. Positive = on target AND collision-free.
+Step 7: For each candidate, determine the associated object using the
+scene label image.  A candidate is positive if it is on the target
+object AND has a sufficiently high detector score (>= 0.3 threshold).
+
+NOTE: GraspNet collision_labels are loaded and passed through, but
+cannot be directly indexed by detector candidate_id (they are indexed
+by pre-defined grasp configurations: object × angle × depth).  Until
+a grasp-matching step is implemented, the detector score is used as
+a quality/collision proxy.  See src/label_builder.py for details.
 
 Usage:
     python scripts/step07_build_labels.py --splits train val
@@ -19,7 +26,7 @@ from tqdm import tqdm
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
-from src.data_utils import load_label, load_collision_labels
+from src.data_utils import load_label
 from src.grasp_detector import GraspCandidate
 from src.label_builder import generate_labels_for_sample
 
@@ -105,14 +112,15 @@ def build_labels(splits: list = None):
             except Exception:
                 continue
 
-            # Load collision labels if available
-            collision_labels = load_collision_labels(scene_id, camera, frame_id)
+            # NOTE: Collision labels are NOT loaded here.
+            # Official GraspNet collision labels are indexed by
+            # (object × angle × depth), not by detector candidate_id.
+            # See src/label_builder.py for details on the proxy used.
 
             # Generate labels
             labels = generate_labels_for_sample(
                 candidates, target_mask_val,
                 scene_points, scene_pixel_coords, label,
-                collision_labels=collision_labels,
             )
 
             for lbl in labels:

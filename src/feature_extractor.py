@@ -6,13 +6,19 @@ Migrated + rewritten from stage3/feature_extractor.py.
 9 candidate-specific features for ranking:
     f1  detector_score         raw grasp quality
     f2  dist_target_3d         3D distance: grasp centre → target centroid
-    f3  proj_dist_2d           2D distance: grasp projection → target mask centre
-    f4  proj_overlap           projected overlap of grasp region with target mask
-    f5  target_points_ratio    fraction of target points inside gripper region
-    f6  nontarget_points_ratio fraction of non-target points inside gripper region
-    f7  collision_risk         collision indicator from labels or heuristic
+    f3  proj_dist_2d           2D distance: grasp projection → target centre
+    f4  proj_overlap           projected overlap (IoU) with target region
+    f5  target_points_ratio    fraction of target points inside gripper
+    f6  nontarget_points_ratio fraction of non-target points inside gripper
+    f7  collision_risk         collision indicator (detector score proxy)
     f8  depth_consistency      how close grasp depth matches target depth
-    f9  florence_conf          VLM grounding confidence (auxiliary)
+    f9  florence_conf          VLM grounding confidence (placeholder)
+
+Informative features by grounding mode:
+    Mode           Informative         Constant / degraded
+    oracle (GT)    f1–f8               f9=1.0
+    seg (mask)     f1–f8               f9=1.0
+    phrase (bbox)  f1–f4, f7, f8       f5=f6=0.5, f9=1.0
 
 All spatial computations use **camera frame**.
 """
@@ -190,6 +196,11 @@ class FeatureExtractor:
         )
 
         # ── f9: florence_conf ────────────────────────────────────────
+        # NOTE: Currently non-informative (constant 1.0).
+        # Florence-2 does not output per-prediction confidence scores.
+        # This feature channel is kept as a placeholder for future
+        # grounding models that do provide confidence.  It currently
+        # acts as a bias term and has zero predictive contribution.
         f9 = florence_conf
 
         return [f1, f2, f3, f4, f5, f6, f7, f8, f9]
@@ -199,7 +210,12 @@ class FeatureExtractor:
     def _compute_proj_overlap(
         self, pos_3d, width, intrinsics, bbox, mask,
     ) -> float:
-        """Approximate overlap of gripper projection with target region."""
+        """Approximate overlap of gripper projection with target region.
+
+        When a binary mask is available, computes the fraction of the
+        gripper's circular footprint that overlaps with the mask pixels.
+        Falls back to bbox-vs-bbox IoU when no mask is provided.
+        """
         uv = project_to_image(pos_3d.reshape(1, 3), intrinsics)[0]
         u, v = uv[0], uv[1]
 
@@ -207,6 +223,32 @@ class FeatureExtractor:
         z = max(pos_3d[2], 0.01)
         radius_px = (width / 2.0) * fx / z
 
+        # ── Mask-based overlap (when available) ─────────────────────
+        if mask is not None:
+            H, W = mask.shape[:2]
+            # Create gripper footprint region
+            gx1 = int(max(0, u - radius_px))
+            gy1 = int(max(0, v - radius_px))
+            gx2 = int(min(W, u + radius_px))
+            gy2 = int(min(H, v + radius_px))
+
+            if gx2 <= gx1 or gy2 <= gy1:
+                return 0.0
+
+            gripper_patch = mask[gy1:gy2, gx1:gx2]
+            mask_area = float(gripper_patch.sum())
+            gripper_area = max(1.0, (gx2 - gx1) * (gy2 - gy1))
+            total_mask = float(mask.sum())
+
+            if total_mask < 1:
+                return 0.0
+
+            # IoU: intersection / union
+            inter = mask_area
+            union = gripper_area + total_mask - inter
+            return float(inter / max(union, 1e-6))
+
+        # ── Bbox-based overlap (fallback) ───────────────────────────
         gx1, gy1 = u - radius_px, v - radius_px
         gx2, gy2 = u + radius_px, v + radius_px
 

@@ -110,6 +110,9 @@ def run_inference(
             scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
 
             t0 = time.time()
+            failure_reason = None
+            grounding = None
+            ranked = []
 
             try:
                 # ── 1. Load data ─────────────────────────────────────
@@ -130,78 +133,70 @@ def run_inference(
                     grounding = grounder.ground(rgb, text_query)
 
                 if grounding is None:
-                    continue
-
-                # ── 3. Load / generate grasp candidates ──────────────
-                if use_cached_grasps:
-                    candidates = _load_candidates(view_sample_id)
+                    failure_reason = "grounding_failed"
                 else:
-                    points, px = backproject_depth(depth, K)
-                    colors = add_colors(rgb, px)
-                    candidates = detector.detect(points, colors)
+                    # ── 3. Load / generate grasp candidates ──────────
+                    if use_cached_grasps:
+                        candidates = _load_candidates(view_sample_id)
+                    else:
+                        points, px = backproject_depth(depth, K)
+                        colors = add_colors(rgb, px)
+                        candidates = detector.detect(points, colors)
 
-                if not candidates:
-                    continue
+                    if not candidates:
+                        failure_reason = "no_candidates"
+                    else:
+                        # ── 4. Point cloud for features ──────────────
+                        pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
+                        if pcd_path.exists():
+                            pcd_data = np.load(str(pcd_path))
+                            scene_points = pcd_data["points"]
+                            scene_pixel_coords = pcd_data["pixel_coords"]
+                        else:
+                            scene_points, scene_pixel_coords = backproject_depth(depth, K)
 
-                # ── 4. Point cloud for features ──────────────────────
-                pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
-                if pcd_path.exists():
-                    pcd_data = np.load(str(pcd_path))
-                    scene_points = pcd_data["points"]
-                    scene_pixel_coords = pcd_data["pixel_coords"]
-                else:
-                    scene_points, scene_pixel_coords = backproject_depth(depth, K)
+                        # ── 5. Build target_mask from GROUNDING source
+                        if grounder_name == "gt":
+                            target_mask = (gt_label == target_mask_val)
+                        else:
+                            target_mask = grounding.mask
 
-                # ── 5. Build target_mask from GROUNDING source ───────
-                # Oracle mode: use GT label mask
-                # Predicted mode: use Florence-2 predicted mask or bbox
-                # IMPORTANT: features must NOT use GT when running
-                # in predicted mode — that would be GT leakage.
-                if grounder_name == "gt":
-                    target_mask = (gt_label == target_mask_val)
-                else:
-                    target_mask = grounding.mask  # may be None (phrase task)
+                        if target_mask is not None and target_mask.any():
+                            target_pts = _crop_points_by_binary_mask(
+                                scene_points, scene_pixel_coords, target_mask,
+                            )
+                        else:
+                            target_pts, _ = crop_point_cloud_by_bbox(
+                                scene_points, scene_pixel_coords, grounding.bbox,
+                            )
 
-                # Crop target points using the grounding-consistent mask
-                if target_mask is not None and target_mask.any():
-                    # Use mask from grounding (GT or predicted)
-                    target_pts = _crop_points_by_binary_mask(
-                        scene_points, scene_pixel_coords, target_mask,
-                    )
-                else:
-                    # Fallback: use predicted bbox
-                    target_pts, _ = crop_point_cloud_by_bbox(
-                        scene_points, scene_pixel_coords, grounding.bbox,
-                    )
+                        # ── 6. Extract features (NO GT label passed) ─
+                        features = extractor.extract_batch(
+                            candidates=candidates,
+                            target_bbox=grounding.bbox,
+                            target_mask=target_mask,
+                            target_points=target_pts,
+                            scene_points=scene_points,
+                            scene_pixel_coords=scene_pixel_coords,
+                            florence_conf=grounding.confidence,
+                            depth=depth,
+                            intrinsics=K,
+                        )
 
-                # ── 6. Extract features (NO GT label passed) ─────────
-                features = extractor.extract_batch(
-                    candidates=candidates,
-                    target_bbox=grounding.bbox,
-                    target_mask=target_mask,
-                    target_points=target_pts,
-                    scene_points=scene_points,
-                    scene_pixel_coords=scene_pixel_coords,
-                    florence_conf=grounding.confidence,
-                    depth=depth,
-                    intrinsics=K,
-                )
+                        # ── 7. Rerank ────────────────────────────────
+                        ranked = reranker.select_top_k(features, candidates, k=5)
 
-                # ── 7. Rerank ────────────────────────────────────────
-                ranked = reranker.select_top_k(features, candidates, k=5)
-
-                # ── 8. Evaluate on-target using GT label ─────────────
-                # This is the ONLY place GT label is used: for evaluation
-                for g in ranked:
-                    cid = g["candidate_id"]
-                    c = candidates[cid]
-                    assoc = associate_grasp_to_object(
-                        c, scene_points, scene_pixel_coords, gt_label,
-                    )
-                    g["is_on_target"] = (assoc == target_mask_val)
+                        # ── 8. Evaluate on-target using GT label ─────
+                        for g in ranked:
+                            cid = g["candidate_id"]
+                            c = candidates[cid]
+                            assoc = associate_grasp_to_object(
+                                c, scene_points, scene_pixel_coords, gt_label,
+                            )
+                            g["is_on_target"] = (assoc == target_mask_val)
 
             except Exception as e:
-                continue
+                failure_reason = f"exception: {type(e).__name__}: {e}"
 
             elapsed = time.time() - t0
 
@@ -214,11 +209,12 @@ def run_inference(
                 "text_query": text_query,
                 "grounder": grounder_name,
                 "reranker": reranker_name,
-                "pred_bbox": grounding.bbox,
+                "pred_bbox": grounding.bbox if grounding else None,
                 "ranked_grasps": ranked,
                 "best_grasp": ranked[0] if ranked else None,
                 "latency": elapsed,
                 "split": split,
+                "failure_reason": failure_reason,
             }
             predictions.append(pred)
 

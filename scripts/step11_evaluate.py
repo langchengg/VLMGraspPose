@@ -151,9 +151,21 @@ def run_ablation(reranker: str = "rule"):
         if oracle_preds and preds:
             result = ablation_grounding(oracle_preds, preds)
 
+            n_paired = result["paired_samples"]
+            n_oracle_only = result["oracle_only_samples"]
+            n_pred_only = result["predicted_only_samples"]
+
             print(f"\n{'═' * 60}")
             print(f"  Grounding Ablation: GT vs {grounder}  (reranker={reranker})")
             print(f"{'═' * 60}")
+            print(f"  Paired samples:  {n_paired}")
+            if n_oracle_only or n_pred_only:
+                print(f"    oracle-only:   {n_oracle_only}")
+                print(f"    {grounder}-only: {n_pred_only}")
+            oracle_fail = result['paired_oracle'].get('failure_rate', 0)
+            pred_fail = result['paired_predicted'].get('failure_rate', 0)
+            if oracle_fail or pred_fail:
+                print(f"  Failure rates:   oracle={oracle_fail:.1%}  {grounder}={pred_fail:.1%}")
             print(f"  Oracle S@1:    {result['oracle_grounding']['target_success_at_1']:.4f}")
             print(f"  {grounder:8s} S@1: {result['predicted_grounding']['target_success_at_1']:.4f}")
             print(f"  Δ S@1:         {result['delta_success_at_1']:.4f}")

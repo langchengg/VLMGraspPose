@@ -62,11 +62,18 @@ def _crop_points_by_binary_mask(
 def extract_features(
     splits: list = None,
     grounding: str = "oracle",
+    grounding_task: str = "phrase",
 ):
     """Extract features for all candidates.
 
     IMPORTANT: When grounding='predicted', features are derived ONLY
     from the predicted bbox/mask. GT label is NOT used for features.
+
+    Args:
+        grounding_task: which Florence-2 task to use when grounding='predicted'.
+                        Must be 'phrase' or 'seg'. This must match the task
+                        used when running step04 and the grounder used at
+                        inference (step10, default: phrase).
     """
     if splits is None:
         splits = config.ALL_SPLITS
@@ -97,32 +104,30 @@ def extract_features(
                         "mask_path": None,
                     }
         else:
-            # Search for task-specific grounding files from step04
+            # Load the specific grounding task file
             # New naming: {split}_grounding_{task}.jsonl
-            # Old naming: {split}_grounding_pred.jsonl (fallback)
-            pred_path = None
-            for task_name in ["seg", "phrase"]:
-                candidate = config.GROUNDING_PRED_DIR / f"{split}_grounding_{task_name}.jsonl"
-                if candidate.exists():
-                    pred_path = candidate
-                    break
-            if pred_path is None:
+            pred_path = config.GROUNDING_PRED_DIR / f"{split}_grounding_{grounding_task}.jsonl"
+            if not pred_path.exists():
                 # Backward compat: old naming
                 old_path = config.GROUNDING_PRED_DIR / f"{split}_grounding_pred.jsonl"
                 if old_path.exists():
                     pred_path = old_path
+                    print(f"  [WARN] Using legacy grounding file: {old_path.name}")
+                    print(f"         Re-run step04 with --task {grounding_task} for explicit control.")
+                else:
+                    print(f"  [SKIP] {split}: no grounding file for task={grounding_task}")
+                    continue
 
-            if pred_path is not None:
-                print(f"  [{split}] Loading predicted grounding: {pred_path.name}")
-                with open(pred_path) as f:
-                    for line in f:
-                        rec = json.loads(line)
-                        target_map[rec["sample_id"]] = {
-                            "bbox": rec["pred_bbox"],
-                            "mask_val": None,
-                            "confidence": rec.get("florence_confidence", 1.0),
-                            "mask_path": rec.get("pred_mask_path"),
-                        }
+            print(f"  [{split}] Loading predicted grounding: {pred_path.name}")
+            with open(pred_path) as f:
+                for line in f:
+                    rec = json.loads(line)
+                    target_map[rec["sample_id"]] = {
+                        "bbox": rec["pred_bbox"],
+                        "mask_val": None,
+                        "confidence": rec.get("florence_confidence", 1.0),
+                        "mask_path": rec.get("pred_mask_path"),
+                    }
 
         config.RANK_FEATURES_DIR.mkdir(parents=True, exist_ok=True)
         all_records = []
@@ -219,7 +224,13 @@ def extract_features(
 
         if all_records:
             df = pd.DataFrame(all_records)
-            out_path = config.RANK_FEATURES_DIR / f"{split}_{grounding}_features.parquet"
+            # Include task in filename for predicted mode to avoid
+            # seg/phrase overwriting each other
+            if grounding == "predicted":
+                fname = f"{split}_predicted_{grounding_task}_features.parquet"
+            else:
+                fname = f"{split}_{grounding}_features.parquet"
+            out_path = config.RANK_FEATURES_DIR / fname
             df.to_parquet(out_path, index=False)
             print(f"  [{split}] {len(df)} feature vectors → {out_path}")
         else:
@@ -236,9 +247,19 @@ def main():
         choices=["oracle", "predicted"],
         help="Use oracle (GT) or predicted (Florence-2) grounding",
     )
+    parser.add_argument(
+        "--task", type=str, default="phrase",
+        choices=["phrase", "seg"],
+        help="Florence-2 task for predicted grounding (must match step04)."
+             " Only used when --grounding=predicted.",
+    )
     args = parser.parse_args()
 
-    extract_features(splits=args.splits, grounding=args.grounding)
+    extract_features(
+        splits=args.splits,
+        grounding=args.grounding,
+        grounding_task=args.task,
+    )
 
 
 if __name__ == "__main__":

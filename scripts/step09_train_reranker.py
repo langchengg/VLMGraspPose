@@ -27,30 +27,47 @@ from src.reranker import (
 def _find_feature_file(split: str, grounding: str = None) -> Path:
     """Find the feature parquet for a split.
 
-    step08 now writes: {split}_{grounding}_features.parquet
-    e.g. train_oracle_features.parquet, train_predicted_features.parquet
+    step08 now writes:
+      - oracle:    {split}_oracle_features.parquet
+      - predicted: {split}_predicted_{task}_features.parquet  (new)
+                   {split}_predicted_features.parquet          (old)
 
     Args:
         split: split name (train, val, ...)
         grounding: explicit grounding mode ('oracle' or 'predicted').
                    If None, auto-detect with preference: predicted > oracle.
     """
-    if grounding is not None:
-        path = config.RANK_FEATURES_DIR / f"{split}_{grounding}_features.parquet"
+    if grounding == "oracle":
+        path = config.RANK_FEATURES_DIR / f"{split}_oracle_features.parquet"
         if path.exists():
             return path
-        print(f"  [WARN] Requested {grounding} features not found: {path.name}")
+        print(f"  [WARN] Requested oracle features not found: {path.name}")
+        return None
+
+    if grounding == "predicted":
+        # Try task-specific new naming first (phrase > seg)
+        for task in ["phrase", "seg"]:
+            path = config.RANK_FEATURES_DIR / f"{split}_predicted_{task}_features.parquet"
+            if path.exists():
+                return path
+        # Fallback to old predicted naming
+        path = config.RANK_FEATURES_DIR / f"{split}_predicted_features.parquet"
+        if path.exists():
+            return path
+        print(f"  [WARN] Requested predicted features not found in {config.RANK_FEATURES_DIR}")
         return None
 
     # Auto-detect: prefer predicted (matches default inference grounder=phrase)
-    for g in ["predicted", "oracle"]:
-        path = config.RANK_FEATURES_DIR / f"{split}_{g}_features.parquet"
+    for pattern in [
+        f"{split}_predicted_phrase_features.parquet",
+        f"{split}_predicted_seg_features.parquet",
+        f"{split}_predicted_features.parquet",
+        f"{split}_oracle_features.parquet",
+        f"{split}_features.parquet",  # legacy
+    ]:
+        path = config.RANK_FEATURES_DIR / pattern
         if path.exists():
             return path
-    # Fallback to old naming
-    path = config.RANK_FEATURES_DIR / f"{split}_features.parquet"
-    if path.exists():
-        return path
     return None
 
 
@@ -59,6 +76,11 @@ def load_train_val_data(grounding: str = None):
 
     Args:
         grounding: 'oracle' or 'predicted'. If None, auto-detect.
+
+    Returns:
+        X_train, y_train, sample_ids_train, X_val, y_val
+        sample_ids_train comes from the MERGED table (features ∩ labels),
+        guaranteeing exact row-correspondence with X_train/y_train.
     """
     # Training data
     feat_path = _find_feature_file("train", grounding)
@@ -69,7 +91,7 @@ def load_train_val_data(grounding: str = None):
         print(f"  Features dir: {config.RANK_FEATURES_DIR}")
         print(f"  Labels:       {label_path}")
         print("  Run step07 and step08 first.")
-        return None, None, None, None
+        return None, None, None, None, None
 
     print(f"  Loading features: {feat_path.name}")
     feat_df = pd.read_parquet(feat_path)
@@ -85,6 +107,7 @@ def load_train_val_data(grounding: str = None):
     feature_cols = config.FEATURE_NAMES
     X_train = merged[feature_cols].values.astype(np.float32)
     y_train = merged["label"].values.astype(np.int32)
+    sample_ids_train = merged["sample_id"].values
 
     # Validation data
     val_feat_path = _find_feature_file("val", grounding)
@@ -103,7 +126,7 @@ def load_train_val_data(grounding: str = None):
         X_val = vm[feature_cols].values.astype(np.float32)
         y_val = vm["label"].values.astype(np.int32)
 
-    return X_train, y_train, X_val, y_val
+    return X_train, y_train, sample_ids_train, X_val, y_val
 
 
 def train_reranker(model_name: str = "logistic", grounding: str = None):
@@ -119,7 +142,7 @@ def train_reranker(model_name: str = "logistic", grounding: str = None):
     print(f"  Training reranker: {model_name}")
     print(f"{'=' * 60}")
 
-    X_train, y_train, X_val, y_val = load_train_val_data(grounding)
+    X_train, y_train, sample_ids_train, X_val, y_val = load_train_val_data(grounding)
     if X_train is None:
         return
 
@@ -151,10 +174,10 @@ def train_reranker(model_name: str = "logistic", grounding: str = None):
         print(f"  Model saved → {config.RERANKER_MLP_PATH}")
 
     elif model_name == "pairwise":
-        # Load sample_ids for query-wise pair construction
-        sample_ids = _load_sample_ids("train")
+        # sample_ids_train comes from the MERGED table, guaranteeing
+        # exact row-correspondence with X_train/y_train.
         reranker = PairwiseMLPReranker(feature_dim=len(config.FEATURE_NAMES))
-        reranker.train(X_train, y_train, sample_ids=sample_ids)
+        reranker.train(X_train, y_train, sample_ids=sample_ids_train)
         reranker.save()
         print(f"  Model saved → {config.MODELS_DIR / 'reranker_pairwise.pt'}")
 
@@ -169,15 +192,6 @@ def train_reranker(model_name: str = "logistic", grounding: str = None):
         acc = float((preds == y_val).mean())
         print(f"  Val accuracy: {acc:.4f}")
 
-
-def _load_sample_ids(split: str, grounding: str = None):
-    """Load sample_ids from the training feature parquet for pair grouping."""
-    import pandas as pd
-    path = _find_feature_file(split, grounding)
-    if path is not None:
-        df = pd.read_parquet(path, columns=["sample_id"])
-        return df["sample_id"].values
-    return None
 
 
 def main():

@@ -145,7 +145,7 @@ project/
 ## Evaluation Metrics
 
 - **Target Success@1 / @5** — is the grasped object the target?
-- **GraspNet AP / Precision@K** — grasp quality
+- **Target-ranking Precision@K / AP** — how well does the reranker place target grasps at the top? (uses `is_on_target`, not physical grasp quality)
 - **Per-split breakdowns** — seen / similar / novel objects
 - **Ablation** — oracle vs predicted grounding
 
