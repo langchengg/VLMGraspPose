@@ -139,7 +139,7 @@ def build_labels(splits: list = None, detector: str = "antipodal"):
 
         if all_records:
             df = pd.DataFrame(all_records)
-            out_path = config.RANK_LABELS_DIR / f"{split}_labels.parquet"
+            out_path = config.RANK_LABELS_DIR / f"{split}_{detector}_labels.parquet"
             df.to_parquet(out_path, index=False)
 
             n_pos = int(df["label"].sum())

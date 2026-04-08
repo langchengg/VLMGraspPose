@@ -88,28 +88,26 @@ python scripts/step02_create_queries.py
 # Step 3: Build oracle (GT) target annotations
 python scripts/step03_oracle_targets.py
 
-# Step 4: Run Florence-2 grounding (requires GPU)
-# Use --task seg for mask-based grounding (activates all 9 features)
-python scripts/step04_florence_grounding.py --splits test_seen --task seg
+# Step 4: Run Florence-2 grounding (requires GPU, default: seg for mask output)
+python scripts/step04_florence_grounding.py --splits train val test_seen
 
 # Step 5: Convert depth to point clouds
 python scripts/step05_depth_to_pcd.py
 
-# Step 6: Generate grasp candidates (default: antipodal sampler)
+# Step 6: Generate grasp candidates (default: antipodal → derived/grasp_candidates/antipodal/)
 python scripts/step06_grasp_candidates.py
-# For GraspNet baseline: python scripts/step06_grasp_candidates.py --detector graspnet
 
 # Step 7: Build target-aware training labels (train/val only)
 python scripts/step07_build_labels.py --splits train val
 
-# Step 8: Extract candidate features (use --task seg to match step04)
-python scripts/step08_extract_features.py
-# For predicted features: python scripts/step08_extract_features.py --grounding predicted --task seg
+# Step 8: Extract candidate features (default: predicted+seg, matching step10's grounder)
+python scripts/step08_extract_features.py --splits train val
+# For oracle upper-bound: python scripts/step08_extract_features.py --grounding oracle
 
-# Step 9: Train reranker
+# Step 9: Train reranker (auto-detects matching features/labels)
 python scripts/step09_train_reranker.py --model mlp
 
-# Step 10: Full inference on test sets
+# Step 10: Full inference on test sets (default: grounder=seg, detector=antipodal)
 python scripts/step10_inference.py --splits test_seen test_similar test_novel
 
 # Step 11: Evaluate
@@ -118,7 +116,8 @@ python scripts/step11_evaluate.py
 
 > **Note:** Steps 6–10 accept a `--detector` flag (`antipodal`, `graspnet`, `precomputed`)
 > to specify which detector's candidates to use. All steps in a run must use the
-> same detector type.
+> same detector type. Labels, features, and trained models include the detector
+> tag in their filenames to prevent cross-configuration contamination.
 
 ---
 

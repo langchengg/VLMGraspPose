@@ -30,7 +30,7 @@ from src.point_cloud import (
     crop_point_cloud_by_mask, crop_point_cloud_by_bbox,
 )
 from src.grounding import get_grounder
-from src.grasp_detector import GraspNetDetector, GraspCandidate
+from src.grasp_detector import GraspNetDetector, GraspCandidate, AntipodalSampler
 from src.feature_extractor import FeatureExtractor
 from src.reranker import get_reranker
 from src.label_builder import associate_grasp_to_object
@@ -74,7 +74,18 @@ def run_inference(
     grounder = get_grounder(grounder_name)
     reranker = get_reranker(reranker_name)
     extractor = FeatureExtractor()
-    detector = None if use_cached_grasps else GraspNetDetector()
+    # Create detector for live inference (--no-cache)
+    detector = None
+    if not use_cached_grasps:
+        if detector_type == "antipodal":
+            detector = AntipodalSampler(top_k=config.GRASP_TOP_K)
+        elif detector_type == "graspnet":
+            detector = GraspNetDetector()
+        else:
+            raise ValueError(
+                f"--no-cache requires detector type 'antipodal' or 'graspnet', "
+                f"got '{detector_type}'. Use cached candidates for 'precomputed'."
+            )
 
     for split in splits:
         queries_path = config.QUERIES_DIR / f"{split}_queries.jsonl"

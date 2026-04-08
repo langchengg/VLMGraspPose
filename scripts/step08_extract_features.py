@@ -66,7 +66,7 @@ def _crop_points_by_binary_mask(
 
 def extract_features(
     splits: list = None,
-    grounding: str = "oracle",
+    grounding: str = "predicted",
     grounding_task: str = "seg",
     detector: str = "antipodal",
 ):
@@ -75,11 +75,14 @@ def extract_features(
     IMPORTANT: When grounding='predicted', features are derived ONLY
     from the predicted bbox/mask. GT label is NOT used for features.
 
+    Default: predicted+seg, matching the default inference grounder (seg).
+    Use --grounding oracle for upper-bound experiments.
+
     Args:
         grounding_task: which Florence-2 task to use when grounding='predicted'.
                         Must be 'phrase' or 'seg'. This must match the task
                         used when running step04 and the grounder used at
-                        inference (step10, default: phrase).
+                        inference (step10, default: seg).
     """
     if splits is None:
         splits = config.ALL_SPLITS
@@ -230,12 +233,12 @@ def extract_features(
 
         if all_records:
             df = pd.DataFrame(all_records)
-            # Include task in filename for predicted mode to avoid
-            # seg/phrase overwriting each other
+            # Include grounding, task, AND detector in filename
+            # to prevent overwriting across any configuration axis
             if grounding == "predicted":
-                fname = f"{split}_predicted_{grounding_task}_features.parquet"
+                fname = f"{split}_predicted_{grounding_task}_{detector}_features.parquet"
             else:
-                fname = f"{split}_{grounding}_features.parquet"
+                fname = f"{split}_{grounding}_{detector}_features.parquet"
             out_path = config.RANK_FEATURES_DIR / fname
             df.to_parquet(out_path, index=False)
             print(f"  [{split}] {len(df)} feature vectors → {out_path}")
@@ -249,9 +252,10 @@ def main():
     )
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument(
-        "--grounding", type=str, default="oracle",
+        "--grounding", type=str, default="predicted",
         choices=["oracle", "predicted"],
-        help="Use oracle (GT) or predicted (Florence-2) grounding",
+        help="Use oracle (GT) or predicted (Florence-2) grounding. "
+             "Default: predicted (matches step10 default grounder=seg).",
     )
     parser.add_argument(
         "--task", type=str, default="seg",
