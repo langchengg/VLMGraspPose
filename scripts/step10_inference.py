@@ -24,39 +24,55 @@ import config
 from src.data_utils import (
     load_rgb, load_depth, load_label,
     load_camera_intrinsics, get_factor_depth,
+    load_grasp_candidates,
 )
 from src.point_cloud import (
     backproject_depth, add_colors,
     crop_point_cloud_by_mask, crop_point_cloud_by_bbox,
+    crop_points_by_binary_mask,
 )
 from src.grounding import get_grounder
-from src.grasp_detector import GraspNetDetector, GraspCandidate, AntipodalSampler
+from src.grasp_detector import GraspNetDetector, AntipodalSampler
 from src.feature_extractor import FeatureExtractor
 from src.reranker import get_reranker
 from src.label_builder import associate_grasp_to_object
 
 
-def _load_candidates(view_sample_id: str, detector: str = "antipodal"):
-    """Load cached grasp candidates, searching detector-specific dir first."""
-    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
-    path = config.GRASP_CANDIDATES_DIR / detector / f"{view_sample_id}.npz"
-    if not path.exists():
-        # Legacy fallback
-        path = config.GRASP_CANDIDATES_DIR / f"{view_sample_id}.npz"
-    if not path.exists():
-        return []
-    data = np.load(str(path), allow_pickle=True)
-    candidates = []
-    for i in range(int(data.get("num_candidates", 0))):
-        candidates.append(GraspCandidate(
-            candidate_id=i,
-            position=data["positions"][i].tolist(),
-            rotation=data["rotations"][i].tolist(),
-            width=float(data["widths"][i]),
-            detector_score=float(data["detector_scores"][i]),
-            source=str(data["sources"][i]),
-        ))
-    return candidates
+def _find_model_path(reranker_name: str, detector: str) -> Path:
+    """Find the trained model file matching detector/grounding tags.
+
+    Mirrors the naming convention from step09's _model_save_path().
+    Searches tagged filenames first, then falls back to legacy untagged names.
+    """
+    if reranker_name in ("detector", "rule"):
+        return None  # no model file needed
+
+    ext = ".pkl" if reranker_name == "logistic" else ".pt"
+    base_name = {
+        "logistic": "reranker_logreg",
+        "mlp": "reranker_mlp",
+        "pairwise": "reranker_pairwise",
+    }.get(reranker_name, f"reranker_{reranker_name}")
+
+    # Search order: tagged (step09 output) → legacy untagged
+    candidates = [
+        # Current naming: explicit grounding tags
+        config.MODELS_DIR / f"{base_name}_{detector}_predicted{ext}",
+        config.MODELS_DIR / f"{base_name}_{detector}_auto{ext}",
+        config.MODELS_DIR / f"{base_name}_{detector}_oracle{ext}",
+        # Legacy: untagged
+        config.MODELS_DIR / f"{base_name}{ext}",
+    ]
+
+    for p in candidates:
+        if p.exists():
+            return p
+
+    # No match found — print diagnostics
+    print(f"  [WARN] No trained {reranker_name} model found for detector={detector}.")
+    print(f"         Searched: {[c.name for c in candidates]}")
+    print(f"         Run step09 first, or use --reranker rule/detector.")
+    return None
 
 
 def run_inference(
@@ -65,27 +81,38 @@ def run_inference(
     reranker_name: str = "rule",
     max_samples: int = None,
     use_cached_grasps: bool = True,
-    detector_type: str = "antipodal",
+    detector: str = "antipodal",
 ):
     """Run full inference chain on test splits."""
     if splits is None:
         splits = config.TEST_SPLITS
 
     grounder = get_grounder(grounder_name)
-    reranker = get_reranker(reranker_name)
+
+    # Find the correct model path for trained rerankers (BUG-1 fix)
+    model_path = _find_model_path(reranker_name, detector)
+    if model_path:
+        print(f"  [Reranker] Loading {reranker_name} from {model_path.name}")
+    reranker = get_reranker(reranker_name, model_path=model_path)
+
     extractor = FeatureExtractor()
     # Create detector for live inference (--no-cache)
-    detector = None
+    det = None
     if not use_cached_grasps:
-        if detector_type == "antipodal":
-            detector = AntipodalSampler(top_k=config.GRASP_TOP_K)
-        elif detector_type == "graspnet":
-            detector = GraspNetDetector()
+        if detector == "antipodal":
+            det = AntipodalSampler(top_k=config.GRASP_TOP_K)
+        elif detector == "graspnet":
+            det = GraspNetDetector()
         else:
             raise ValueError(
                 f"--no-cache requires detector type 'antipodal' or 'graspnet', "
-                f"got '{detector_type}'. Use cached candidates for 'precomputed'."
+                f"got '{detector}'. Use cached candidates for 'precomputed'."
             )
+
+    # Warm up Florence-2 model before the timing loop (ISSUE-9 fix)
+    if hasattr(grounder, '_ensure_loaded'):
+        print("  [Grounder] Warming up Florence-2 model...")
+        grounder._ensure_loaded()
 
     for split in splits:
         queries_path = config.QUERIES_DIR / f"{split}_queries.jsonl"
@@ -154,11 +181,11 @@ def run_inference(
                 else:
                     # ── 3. Load / generate grasp candidates ──────────
                     if use_cached_grasps:
-                        candidates = _load_candidates(view_sample_id, detector_type)
+                        candidates = load_grasp_candidates(view_sample_id, detector)
                     else:
                         points, px = backproject_depth(depth, K)
                         colors = add_colors(rgb, px)
-                        candidates = detector.detect(points, colors)
+                        candidates = det.detect(points, colors)
 
                     if not candidates:
                         failure_reason = "no_candidates"
@@ -179,7 +206,7 @@ def run_inference(
                             target_mask = grounding.mask
 
                         if target_mask is not None and target_mask.any():
-                            target_pts = _crop_points_by_binary_mask(
+                            target_pts = crop_points_by_binary_mask(
                                 scene_points, scene_pixel_coords, target_mask,
                             )
                         else:
@@ -220,13 +247,14 @@ def run_inference(
             pred = {
                 "sample_id": sample_id,
                 "scene_id": scene_id,
+                "camera": camera,
                 "frame_id": frame_id,
                 "target_object_id": obj_id,
                 "target_class": query["object_name"],
                 "text_query": text_query,
                 "grounder": grounder_name,
                 "reranker": reranker_name,
-                "detector": detector_type,
+                "detector": detector,
                 "pred_bbox": grounding.bbox if grounding else None,
                 "ranked_grasps": ranked,
                 "best_grasp": ranked[0] if ranked else None,
@@ -238,28 +266,12 @@ def run_inference(
 
         # ── Save with grounder+reranker in filename ──────────────
         out_path = config.RESULTS_DIR / (
-            f"predictions_{split}_{grounder_name}_{reranker_name}.json"
+            f"predictions_{split}_{grounder_name}_{reranker_name}_{detector}.json"
         )
         with open(out_path, "w") as f:
             json.dump(predictions, f, indent=2)
 
         print(f"  [{split}] {len(predictions)} predictions → {out_path}")
-
-
-def _crop_points_by_binary_mask(
-    points: np.ndarray,
-    pixel_coords: np.ndarray,
-    mask: np.ndarray,
-) -> np.ndarray:
-    """Crop points by a binary HxW mask (works with both GT and predicted masks)."""
-    u, v = pixel_coords[:, 0], pixel_coords[:, 1]
-    H, W = mask.shape[:2]
-    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
-    u_valid = u[valid]
-    v_valid = v[valid]
-    on_mask = mask[v_valid, u_valid]
-    idx = np.where(valid)[0][on_mask]
-    return points[idx]
 
 
 def main():
@@ -291,7 +303,7 @@ def main():
         reranker_name=args.reranker,
         max_samples=args.max_samples,
         use_cached_grasps=not args.no_cache,
-        detector_type=args.detector,
+        detector=args.detector,
     )
 
 

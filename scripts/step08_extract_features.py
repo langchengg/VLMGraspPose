@@ -19,49 +19,17 @@ from tqdm import tqdm
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
-from src.data_utils import load_label, load_depth, load_camera_intrinsics, get_factor_depth
-from src.point_cloud import crop_point_cloud_by_mask, crop_point_cloud_by_bbox
-from src.grasp_detector import GraspCandidate
+from src.data_utils import (
+    load_label, load_depth, load_camera_intrinsics, get_factor_depth,
+    load_grasp_candidates,
+)
+from src.point_cloud import (
+    crop_point_cloud_by_mask, crop_point_cloud_by_bbox,
+    crop_points_by_binary_mask,
+)
+
+
 from src.feature_extractor import FeatureExtractor
-
-
-def _load_candidates(view_sample_id: str, detector: str = "antipodal"):
-    """Load cached grasp candidates, searching detector-specific dir first."""
-    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
-    path = config.GRASP_CANDIDATES_DIR / detector / f"{view_sample_id}.npz"
-    if not path.exists():
-        # Legacy fallback
-        path = config.GRASP_CANDIDATES_DIR / f"{view_sample_id}.npz"
-    if not path.exists():
-        return []
-    data = np.load(str(path), allow_pickle=True)
-    candidates = []
-    for i in range(int(data.get("num_candidates", 0))):
-        candidates.append(GraspCandidate(
-            candidate_id=i,
-            position=data["positions"][i].tolist(),
-            rotation=data["rotations"][i].tolist(),
-            width=float(data["widths"][i]),
-            detector_score=float(data["detector_scores"][i]),
-            source=str(data["sources"][i]),
-        ))
-    return candidates
-
-
-def _crop_points_by_binary_mask(
-    points: np.ndarray,
-    pixel_coords: np.ndarray,
-    mask: np.ndarray,
-) -> np.ndarray:
-    """Crop points by a binary HxW mask."""
-    u, v = pixel_coords[:, 0], pixel_coords[:, 1]
-    H, W = mask.shape[:2]
-    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
-    u_valid = u[valid]
-    v_valid = v[valid]
-    on_mask = mask[v_valid, u_valid]
-    idx = np.where(valid)[0][on_mask]
-    return points[idx]
 
 
 def extract_features(
@@ -159,7 +127,7 @@ def extract_features(
             target_mask_val = obj_id + 1
 
             # Load candidates
-            candidates = _load_candidates(view_sample_id, detector)
+            candidates = load_grasp_candidates(view_sample_id, detector)
             if not candidates:
                 continue
 
@@ -191,12 +159,17 @@ def extract_features(
                     target_mask = (label == target_mask_val)
                 except Exception:
                     continue
-            elif target.get("mask_path") and Path(target["mask_path"]).exists():
-                target_mask = np.load(target["mask_path"])
+            elif target.get("mask_path"):
+                mask_path = Path(target["mask_path"])
+                # Resolve relative paths (new format) against project root
+                if not mask_path.is_absolute():
+                    mask_path = config.PROJECT_ROOT / mask_path
+                if mask_path.exists():
+                    target_mask = np.load(str(mask_path))
 
             # Get target points using the grounding-consistent mask
             if target_mask is not None and target_mask.any():
-                target_pts = _crop_points_by_binary_mask(
+                target_pts = crop_points_by_binary_mask(
                     scene_points, scene_pixel_coords, target_mask,
                 )
             else:

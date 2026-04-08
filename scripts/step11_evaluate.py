@@ -25,18 +25,26 @@ def find_prediction_files(
     splits: list,
     grounder: str = None,
     reranker: str = None,
+    detector: str = None,
 ) -> list:
-    """Find prediction files matching the given grounder/reranker.
+    """Find prediction files matching the given grounder/reranker/detector.
 
-    File naming convention:
-        predictions_{split}_{grounder}_{reranker}.json
+    File naming conventions (searches both):
+        New:    predictions_{split}_{grounder}_{reranker}_{detector}.json
+        Legacy: predictions_{split}_{grounder}_{reranker}.json
 
     Returns a list of (path, grounder, reranker) tuples.
     """
     found_files = []
     for split in splits:
-        # Try exact match first
+        # Try exact match first (new format with detector tag)
         if grounder and reranker:
+            if detector:
+                path = config.RESULTS_DIR / f"predictions_{split}_{grounder}_{reranker}_{detector}.json"
+                if path.exists():
+                    found_files.append((path, grounder, reranker))
+                    continue
+            # Legacy format (no detector tag)
             path = config.RESULTS_DIR / f"predictions_{split}_{grounder}_{reranker}.json"
             if path.exists():
                 found_files.append((path, grounder, reranker))
@@ -48,15 +56,22 @@ def find_prediction_files(
         if grounder:
             candidates = [c for c in candidates if f"_{grounder}_" in c.name]
         if reranker:
-            candidates = [c for c in candidates if c.name.endswith(f"_{reranker}.json")]
+            # Match reranker as the 2nd-to-last or last segment before .json
+            candidates = [c for c in candidates
+                          if f"_{reranker}_" in c.name
+                          or c.name.endswith(f"_{reranker}.json")]
+        if detector:
+            candidates = [c for c in candidates if f"_{detector}.json" in c.name]
 
         for c in candidates:
             # Parse grounder and reranker from filename
-            # Format: predictions_{split}_{grounder}_{reranker}.json
-            stem = c.stem  # e.g. predictions_test_seen_phrase_rule
+            # New:    predictions_{split}_{grounder}_{reranker}_{detector}.json
+            # Legacy: predictions_{split}_{grounder}_{reranker}.json
+            stem = c.stem
             rest = stem.replace(f"predictions_{split}_", "")
-            parts = rest.rsplit("_", 1)
-            if len(parts) == 2:
+            parts = rest.split("_")
+            if len(parts) >= 2:
+                # grounder is first part, reranker is second
                 found_files.append((c, parts[0], parts[1]))
             else:
                 found_files.append((c, "unknown", "unknown"))
@@ -68,6 +83,7 @@ def evaluate(
     splits: list = None,
     grounder: str = None,
     reranker: str = None,
+    detector: str = None,
 ):
     """Run evaluation on test prediction files.
 
@@ -77,7 +93,7 @@ def evaluate(
     if splits is None:
         splits = config.TEST_SPLITS
 
-    file_entries = find_prediction_files(splits, grounder, reranker)
+    file_entries = find_prediction_files(splits, grounder, reranker, detector)
 
     if not file_entries:
         print("[ERROR] No prediction files found.")
@@ -201,6 +217,8 @@ def main():
                         help="Filter by grounder (gt, phrase, seg)")
     parser.add_argument("--reranker", type=str, default=None,
                         help="Filter by reranker (detector, rule, logistic, mlp, pairwise)")
+    parser.add_argument("--detector", type=str, default=None,
+                        help="Filter by detector (antipodal, graspnet, precomputed)")
     parser.add_argument("--ablation", action="store_true",
                         help="Run oracle vs predicted grounding ablation")
     args = parser.parse_args()
@@ -212,6 +230,7 @@ def main():
             splits=args.splits,
             grounder=args.grounder,
             reranker=args.reranker,
+            detector=args.detector,
         )
 
 

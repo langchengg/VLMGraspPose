@@ -80,8 +80,10 @@ def run_grounding(
                     mask_dir = config.GROUNDING_PRED_DIR / f"pred_masks_{task}"
                     mask_dir.mkdir(parents=True, exist_ok=True)
                     mask_fn = f"{query['sample_id']}_mask.npy"
-                    pred_mask_path = str(mask_dir / mask_fn)
-                    np.save(pred_mask_path, result.mask)
+                    mask_abs = mask_dir / mask_fn
+                    np.save(str(mask_abs), result.mask)
+                    # Store relative path for cross-machine portability
+                    pred_mask_path = str(mask_abs.relative_to(config.PROJECT_ROOT))
 
                 record = {
                     "sample_id": query["sample_id"],

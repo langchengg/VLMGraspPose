@@ -142,6 +142,26 @@ def crop_point_cloud_by_mask(
     return points[idx], pixel_coords[idx]
 
 
+def crop_points_by_binary_mask(
+    points: np.ndarray,
+    pixel_coords: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Keep points whose pixel falls on a True value in a binary HxW mask.
+
+    Unlike crop_point_cloud_by_mask (which takes a label image + mask_val),
+    this works with arbitrary boolean masks (e.g. from Florence-2 segmentation).
+    """
+    u, v = pixel_coords[:, 0], pixel_coords[:, 1]
+    H, W = mask.shape[:2]
+    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    u_valid = u[valid]
+    v_valid = v[valid]
+    on_mask = mask[v_valid, u_valid]
+    idx = np.where(valid)[0][on_mask]
+    return points[idx]
+
+
 # ═════════════════════════════════════════════════════════════════════
 #  Down-sampling
 # ═════════════════════════════════════════════════════════════════════

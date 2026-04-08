@@ -279,15 +279,19 @@ def visualise_sample_3d(
             scene_points, scene_px, pred["pred_bbox"],
         )
 
-    scene_viz = voxel_downsample(scene_points, 0.005)
+    # Note: Don't downsample scene_points separately from scene_px —
+    # the indices would go out of sync (BUG-3 fix).  The matplotlib
+    # backend already subsamples internally via max_scene_pts.
 
     if backend == "open3d":
+        scene_viz = voxel_downsample(scene_points, 0.005)
         visualise_3d_open3d(scene_viz, target_points, selections, sample_id)
         return None
     else:
         return visualise_3d_matplotlib(
-            scene_viz, target_points, selections, sample_id,
+            scene_points, target_points, selections, sample_id,
             output_dir=output_dir,
+            scene_rgb=None,
             scene_pixel_coords=scene_px,
             rgb_image=rgb,
         )

@@ -196,6 +196,26 @@ project/
 
 ---
 
+## Visualization
+
+After running Step 10, inspect results visually:
+
+```bash
+# 2D overlay — draws predicted bbox + ranked gripper poses on RGB
+python -m vis.vis_2d --sample <sample_id> --grounder seg --reranker mlp
+
+# 3D scatter — point cloud + gripper skeletons (Matplotlib)
+python -m vis.vis_3d --sample <sample_id> --grounder seg --reranker mlp
+
+# 3D interactive (requires: pip install open3d)
+python -m vis.vis_3d --sample <sample_id> --backend open3d
+
+# Compare top-1 grasp with GT object pose
+python -m vis.compare_gt --grounder seg --reranker mlp
+```
+
+Output saved to `vis_output/`. Sample IDs can be found in the `results/predictions_*.json` files.
+
 ## License
 
 MIT

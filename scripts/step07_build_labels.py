@@ -26,38 +26,8 @@ from tqdm import tqdm
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
-from src.data_utils import load_label
-from src.grasp_detector import GraspCandidate
+from src.data_utils import load_label, load_grasp_candidates
 from src.label_builder import generate_labels_for_sample
-
-
-def _load_candidates(sample_id: str, detector: str = "antipodal"):
-    """Load saved grasp candidates for a view.
-
-    Searches detector-specific subdirectory first (new layout),
-    then falls back to flat layout (legacy).
-    """
-    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
-    path = config.GRASP_CANDIDATES_DIR / detector / f"{sample_id}.npz"
-    if not path.exists():
-        # Legacy fallback: derived/grasp_candidates/{sample_id}.npz
-        path = config.GRASP_CANDIDATES_DIR / f"{sample_id}.npz"
-    if not path.exists():
-        return []
-    data = np.load(str(path), allow_pickle=True)
-
-    candidates = []
-    n = int(data.get("num_candidates", 0))
-    for i in range(n):
-        candidates.append(GraspCandidate(
-            candidate_id=i,
-            position=data["positions"][i].tolist(),
-            rotation=data["rotations"][i].tolist(),
-            width=float(data["widths"][i]),
-            detector_score=float(data["detector_scores"][i]),
-            source=str(data["sources"][i]),
-        ))
-    return candidates
 
 
 def build_labels(splits: list = None, detector: str = "antipodal"):
@@ -101,7 +71,7 @@ def build_labels(splits: list = None, detector: str = "antipodal"):
             target_mask_val = oracle["gt_mask_val"]
 
             # Load candidates for this view
-            candidates = _load_candidates(view_sample_id, detector)
+            candidates = load_grasp_candidates(view_sample_id, detector)
             if not candidates:
                 continue
 

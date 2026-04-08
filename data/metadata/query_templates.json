@@ -5,13 +5,5 @@
     "grab the {obj}",
     "get the {obj}",
     "pick up the {obj}"
-  ],
-  "attribute": [
-    "pick the {adj} {obj}",
-    "grasp the {adj} {obj}"
-  ],
-  "relation": [
-    "pick the {obj} {rel} the {ref}",
-    "grasp the {obj} {rel} the {ref}"
   ]
 }

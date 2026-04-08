@@ -474,27 +474,30 @@ class PairwiseMLPReranker(Reranker):
 # ═════════════════════════════════════════════════════════════════════
 
 def get_reranker(name: str = "rule", **kwargs) -> Reranker:
-    """Factory to get a reranker by name."""
+    """Factory to get a reranker by name.
+
+    Pass model_path=<Path> to load a specific checkpoint.
+    Pass model_path=None to create an untrained reranker (no file loaded).
+    Omit model_path to use the default fallback path from config.
+    """
     if name == "detector":
         return DetectorBaseline()
     elif name == "rule":
-        return RuleReranker(**kwargs)
+        return RuleReranker(**{k: v for k, v in kwargs.items()
+                               if k != "model_path"})
     elif name == "logistic":
-        return LogisticReranker(
-            model_path=kwargs.get("model_path", config.RERANKER_LOGREG_PATH)
-        )
+        mp = kwargs.get("model_path", config.RERANKER_LOGREG_PATH)
+        return LogisticReranker(model_path=mp)
     elif name == "mlp":
-        return MLPReranker(
-            model_path=kwargs.get("model_path", config.RERANKER_MLP_PATH)
-        )
+        mp = kwargs.get("model_path", config.RERANKER_MLP_PATH)
+        return MLPReranker(model_path=mp)
     elif name == "pairwise":
-        return PairwiseMLPReranker(
-            model_path=kwargs.get(
-                "model_path", config.MODELS_DIR / "reranker_pairwise.pt"
-            )
-        )
+        mp = kwargs.get("model_path",
+                         config.MODELS_DIR / "reranker_pairwise.pt")
+        return PairwiseMLPReranker(model_path=mp)
     else:
         raise ValueError(
             f"Unknown reranker: {name}. "
             f"Choose from: detector, rule, logistic, mlp, pairwise"
         )
+

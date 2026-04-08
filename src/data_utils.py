@@ -255,3 +255,48 @@ def load_collision_labels(
         if key in data:
             return data[key]
     return None
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Grasp candidate loading (shared by step07, step08, step10)
+# ═════════════════════════════════════════════════════════════════════
+
+def load_grasp_candidates(
+    view_sample_id: str,
+    detector: str = "antipodal",
+    candidates_dir: Path = None,
+) -> list:
+    """Load cached grasp candidates for a view.
+
+    Searches detector-specific subdirectory first (new layout),
+    then falls back to flat layout (legacy).
+
+    Returns a list of GraspCandidate objects (or empty list).
+    """
+    from src.grasp_detector import GraspCandidate
+
+    if candidates_dir is None:
+        candidates_dir = config.GRASP_CANDIDATES_DIR
+
+    # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
+    path = candidates_dir / detector / f"{view_sample_id}.npz"
+    if not path.exists():
+        # Legacy fallback: derived/grasp_candidates/{sample_id}.npz
+        path = candidates_dir / f"{view_sample_id}.npz"
+    if not path.exists():
+        return []
+
+    data = np.load(str(path), allow_pickle=True)
+    candidates = []
+    n = int(data.get("num_candidates", 0))
+    for i in range(n):
+        candidates.append(GraspCandidate(
+            candidate_id=i,
+            position=data["positions"][i].tolist(),
+            rotation=data["rotations"][i].tolist(),
+            width=float(data["widths"][i]),
+            detector_score=float(data["detector_scores"][i]),
+            source=str(data["sources"][i]),
+        ))
+    return candidates
+

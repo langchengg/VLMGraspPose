@@ -55,11 +55,15 @@ def compare_single(
     top1 = pred["ranked_grasps"][0]
     sample_id = pred["sample_id"]
 
-    # Parse sample_id → scene_id, camera, frame
-    parts = sample_id.split("_")
-    scene_id = int(parts[1])
-    camera = parts[2]
-    frame_id = int(parts[3])
+    # Prefer explicit dict fields; fall back to sample_id parsing for legacy
+    scene_id = pred.get("scene_id")
+    camera = pred.get("camera")
+    frame_id = pred.get("frame_id")
+    if scene_id is None or camera is None or frame_id is None:
+        parts = sample_id.split("_")
+        scene_id = int(parts[1])
+        camera = parts[2]
+        frame_id = int(parts[3])
 
     scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
     if not scene_dir.exists():
