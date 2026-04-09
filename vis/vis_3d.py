@@ -255,8 +255,9 @@ def visualise_sample_3d(
     scene_points, scene_px = backproject_depth(depth, K)
 
     # Find prediction
-    pred_files = glob.glob(
-        str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}.json")
+    pred_files = (
+        glob.glob(str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}_*.json"))
+        + glob.glob(str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}.json"))
     )
 
     pred = None

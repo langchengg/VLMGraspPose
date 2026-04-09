@@ -175,8 +175,9 @@ def visualise_sample(
     img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
     # Try to find prediction file
-    pred_files = glob.glob(
-        str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}.json")
+    pred_files = (
+        glob.glob(str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}_*.json"))
+        + glob.glob(str(config.RESULTS_DIR / f"predictions_*_{grounder}_{reranker}.json"))
     )
 
     pred = None

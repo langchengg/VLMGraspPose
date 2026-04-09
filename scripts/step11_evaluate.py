@@ -141,24 +141,32 @@ def run_ablation(reranker: str = "rule"):
     predicted_by_grounder = {}  # {"phrase": [...], "seg": [...]}
 
     for split in config.TEST_SPLITS:
-        # Oracle predictions (grounder=gt)
-        oracle_path = config.RESULTS_DIR / f"predictions_{split}_gt_{reranker}.json"
-        if oracle_path.exists():
-            with open(oracle_path) as f:
-                oracle_preds.extend(json.load(f))
+        # Oracle predictions (grounder=gt) — search new + legacy filenames
+        for pattern in [
+            f"predictions_{split}_gt_{reranker}_*.json",  # new (with detector)
+            f"predictions_{split}_gt_{reranker}.json",     # legacy
+        ]:
+            for oracle_path in sorted(config.RESULTS_DIR.glob(pattern)):
+                with open(oracle_path) as f:
+                    oracle_preds.extend(json.load(f))
+                break  # take first match per pattern group
 
         # Predicted predictions — load each grounder separately
         for grounder in ["phrase", "seg"]:
-            pred_path = config.RESULTS_DIR / f"predictions_{split}_{grounder}_{reranker}.json"
-            if pred_path.exists():
-                with open(pred_path) as f:
-                    preds = json.load(f)
-                predicted_by_grounder.setdefault(grounder, []).extend(preds)
+            for pattern in [
+                f"predictions_{split}_{grounder}_{reranker}_*.json",
+                f"predictions_{split}_{grounder}_{reranker}.json",
+            ]:
+                for pred_path in sorted(config.RESULTS_DIR.glob(pattern)):
+                    with open(pred_path) as f:
+                        preds = json.load(f)
+                    predicted_by_grounder.setdefault(grounder, []).extend(preds)
+                    break
 
     if not oracle_preds and not predicted_by_grounder:
         print("[ERROR] No predictions found for ablation.")
-        print(f"  Expected files like: predictions_*_gt_{reranker}.json")
-        print(f"                   and: predictions_*_phrase_{reranker}.json")
+        print(f"  Expected files like: predictions_*_gt_{reranker}_*.json")
+        print(f"                   and: predictions_*_phrase_{reranker}_*.json")
         print("  Run step10 with both --grounder gt and --grounder phrase")
         return
 
