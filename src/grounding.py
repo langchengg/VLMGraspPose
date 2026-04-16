@@ -17,6 +17,7 @@ import abc
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
+from packaging.version import Version
 
 import numpy as np
 from PIL import Image
@@ -24,6 +25,35 @@ from PIL import Image
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
+
+
+def ensure_florence_transformers_compat(version: str) -> None:
+    """Reject known-incompatible transformers majors for Florence-2 remote code."""
+    parsed = Version(version)
+    if parsed.major >= 5:
+        raise RuntimeError(
+            "Florence-2 loading currently requires transformers<5. "
+            f"Found transformers=={version}. "
+            "Install a 4.x release such as 4.57.0."
+        )
+
+
+def florence_model_load_kwargs(torch_dtype) -> dict:
+    """Load Florence-2 with eager attention to avoid remote-code SDPA init issues."""
+    return {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": True,
+        "attn_implementation": "eager",
+    }
+
+
+def florence_generation_kwargs() -> dict:
+    """Generation kwargs compatible with Florence-2 remote code on current transformers."""
+    return {
+        "max_new_tokens": 1024,
+        "num_beams": 3,
+        "use_cache": False,
+    }
 
 
 # ── Output dataclass ─────────────────────────────────────────────────
@@ -134,7 +164,10 @@ class Florence2Grounder(TargetGrounder):
             return
 
         import torch
+        import transformers
         from transformers import AutoProcessor, AutoModelForCausalLM
+
+        ensure_florence_transformers_compat(transformers.__version__)
 
         model_path = str(self._model_dir)
 
@@ -152,8 +185,7 @@ class Florence2Grounder(TargetGrounder):
         )
         self._model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
+            **florence_model_load_kwargs(torch_dtype),
         ).to(self._device)
 
         self._model.eval()
@@ -186,8 +218,7 @@ class Florence2Grounder(TargetGrounder):
             generated_ids = self._model.generate(
                 input_ids=inputs["input_ids"],
                 pixel_values=inputs["pixel_values"],
-                max_new_tokens=1024,
-                num_beams=3,
+                **florence_generation_kwargs(),
             )
 
         generated_text = self._processor.batch_decode(

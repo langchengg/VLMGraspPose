@@ -108,6 +108,7 @@ def extract_features(
 
         config.RANK_FEATURES_DIR.mkdir(parents=True, exist_ok=True)
         all_records = []
+        view_cache = {}
 
         with open(queries_path) as fin:
             lines = fin.readlines()
@@ -125,28 +126,56 @@ def extract_features(
             frame_id = query["frame_id"]
             obj_id = query["target_object_id"]
             target_mask_val = obj_id + 1
-
-            # Load candidates
-            candidates = load_grasp_candidates(view_sample_id, detector)
-            if not candidates:
-                continue
-
-            # Load point cloud
-            pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
-            if not pcd_path.exists():
-                continue
-            pcd_data = np.load(str(pcd_path))
-            scene_points = pcd_data["points"]
-            scene_pixel_coords = pcd_data["pixel_coords"]
-
-            # Load depth + intrinsics (needed for f8)
             scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
-            try:
-                factor = get_factor_depth(scene_dir, camera)
-                depth = load_depth(scene_dir, frame_id, camera, factor)
-                K = load_camera_intrinsics(scene_dir, camera)
-            except Exception:
+            ctx = view_cache.get(view_sample_id)
+            if ctx is None:
+                ctx = {"skip": True}
+
+                candidates = load_grasp_candidates(view_sample_id, detector)
+                if candidates:
+                    pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
+                    if pcd_path.exists():
+                        pcd_data = np.load(str(pcd_path))
+                        scene_points = pcd_data["points"]
+                        scene_pixel_coords = pcd_data["pixel_coords"]
+
+                        try:
+                            factor = get_factor_depth(scene_dir, camera)
+                            depth = load_depth(scene_dir, frame_id, camera, factor)
+                            K = load_camera_intrinsics(scene_dir, camera)
+                        except Exception:
+                            depth = None
+                            K = None
+
+                        label = None
+                        if grounding == "oracle" and depth is not None and K is not None:
+                            try:
+                                label = load_label(scene_dir, frame_id, camera)
+                            except Exception:
+                                label = None
+
+                        if depth is not None and K is not None and (grounding != "oracle" or label is not None):
+                            ctx = {
+                                "skip": False,
+                                "candidates": candidates,
+                                "scene_points": scene_points,
+                                "scene_pixel_coords": scene_pixel_coords,
+                                "depth": depth,
+                                "intrinsics": K,
+                                "label": label,
+                            }
+
+                view_cache[view_sample_id] = ctx
+
+            if ctx["skip"]:
                 continue
+
+            candidates = ctx["candidates"]
+            scene_points = ctx["scene_points"]
+            scene_pixel_coords = ctx["scene_pixel_coords"]
+            depth = ctx["depth"]
+            K = ctx["intrinsics"]
+            label = ctx["label"]
 
             # ── Build target_mask from the correct source ────────────
             # Oracle: use GT label
@@ -154,11 +183,9 @@ def extract_features(
             # This is the key fix: NO GT leakage in predicted mode
             target_mask = None
             if grounding == "oracle":
-                try:
-                    label = load_label(scene_dir, frame_id, camera)
-                    target_mask = (label == target_mask_val)
-                except Exception:
+                if label is None:
                     continue
+                target_mask = (label == target_mask_val)
             elif target.get("mask_path"):
                 mask_path = Path(target["mask_path"])
                 # Resolve relative paths (new format) against project root

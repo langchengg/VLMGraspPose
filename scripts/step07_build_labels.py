@@ -27,7 +27,27 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 from src.data_utils import load_label, load_grasp_candidates
-from src.label_builder import generate_labels_for_sample
+from src.label_builder import associate_grasp_to_object
+
+
+def _build_view_candidate_cache(
+    candidates: list,
+    scene_points: np.ndarray,
+    scene_pixel_coords: np.ndarray,
+    label: np.ndarray,
+) -> list:
+    """Compute view-dependent candidate attributes once per view."""
+    cached = []
+    for candidate in candidates:
+        associated_val = associate_grasp_to_object(
+            candidate, scene_points, scene_pixel_coords, label,
+        )
+        cached.append({
+            "candidate_id": candidate.candidate_id,
+            "associated_object_val": int(associated_val) if associated_val else -1,
+            "is_collision_free": int(candidate.detector_score >= 0.3),
+        })
+    return cached
 
 
 def build_labels(splits: list = None, detector: str = "antipodal"):
@@ -52,6 +72,7 @@ def build_labels(splits: list = None, detector: str = "antipodal"):
 
         config.RANK_LABELS_DIR.mkdir(parents=True, exist_ok=True)
         all_records = []
+        view_cache = {}
 
         with open(queries_path) as fin:
             lines = fin.readlines()
@@ -69,37 +90,63 @@ def build_labels(splits: list = None, detector: str = "antipodal"):
             camera = query["camera"]
             frame_id = query["frame_id"]
             target_mask_val = oracle["gt_mask_val"]
+            ctx = view_cache.get(view_sample_id)
+            if ctx is None:
+                ctx = {"skip": True}
 
-            # Load candidates for this view
-            candidates = load_grasp_candidates(view_sample_id, detector)
-            if not candidates:
+                candidates = load_grasp_candidates(view_sample_id, detector)
+                if candidates:
+                    pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
+                    if pcd_path.exists():
+                        pcd_data = np.load(str(pcd_path))
+                        scene_points = pcd_data["points"]
+                        scene_pixel_coords = pcd_data["pixel_coords"]
+
+                        scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
+                        try:
+                            label = load_label(scene_dir, frame_id, camera)
+                        except Exception:
+                            label = None
+
+                        if label is not None:
+                            ctx = {
+                                "skip": False,
+                                "candidates": candidates,
+                                "scene_points": scene_points,
+                                "scene_pixel_coords": scene_pixel_coords,
+                                "label": label,
+                            }
+
+                view_cache[view_sample_id] = ctx
+
+            if ctx["skip"]:
                 continue
 
-            # Load point cloud
-            pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
-            if not pcd_path.exists():
-                continue
-            pcd_data = np.load(str(pcd_path))
-            scene_points = pcd_data["points"]
-            scene_pixel_coords = pcd_data["pixel_coords"]
+            candidates = ctx["candidates"]
+            scene_points = ctx["scene_points"]
+            scene_pixel_coords = ctx["scene_pixel_coords"]
+            label = ctx["label"]
 
-            # Load label mask
-            scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
-            try:
-                label = load_label(scene_dir, frame_id, camera)
-            except Exception:
-                continue
+            base_labels = ctx.get("base_labels")
+            if base_labels is None:
+                base_labels = _build_view_candidate_cache(
+                    candidates,
+                    scene_points,
+                    scene_pixel_coords,
+                    label,
+                )
+                ctx["base_labels"] = base_labels
 
-            # NOTE: Collision labels are NOT loaded here.
-            # Official GraspNet collision labels are indexed by
-            # (object × angle × depth), not by detector candidate_id.
-            # See src/label_builder.py for details on the proxy used.
-
-            # Generate labels
-            labels = generate_labels_for_sample(
-                candidates, target_mask_val,
-                scene_points, scene_pixel_coords, label,
-            )
+            labels = []
+            for base in base_labels:
+                is_on_target = base["associated_object_val"] == int(target_mask_val)
+                labels.append({
+                    "candidate_id": base["candidate_id"],
+                    "target_mask_val": int(target_mask_val),
+                    "associated_object_val": base["associated_object_val"],
+                    "is_collision_free": base["is_collision_free"],
+                    "label": int(is_on_target and base["is_collision_free"]),
+                })
 
             for lbl in labels:
                 lbl["sample_id"] = sample_id

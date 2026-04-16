@@ -11,7 +11,7 @@ pandas>=2.0
 pyarrow>=12.0
 # Model downloading & loading
 huggingface_hub>=0.20
-transformers>=4.40
+transformers>=4.40,<5
 einops>=0.7
 timm>=0.9
 gdown>=5.0

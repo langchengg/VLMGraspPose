@@ -38,9 +38,28 @@ from src.grasp_detector import GraspCandidate
 class FeatureExtractor:
     """Compute the 9-dim feature vector for each grasp candidate."""
 
-    def __init__(self):
+    def __init__(self, max_scene_points: int = config.FEATURE_MAX_SCENE_POINTS):
         self.feature_dim = config.FEATURE_DIM  # 9
         self.feature_names = config.FEATURE_NAMES
+        self.max_scene_points = max_scene_points
+
+    def _downsample_scene_context(
+        self,
+        scene_points: np.ndarray,
+        scene_pixel_coords: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Bound scene-point count before repeated per-candidate geometry."""
+        if len(scene_points) <= self.max_scene_points:
+            return scene_points, scene_pixel_coords
+
+        rng = np.random.RandomState(42)
+        idx = rng.choice(
+            len(scene_points),
+            size=self.max_scene_points,
+            replace=False,
+        )
+        idx = np.sort(idx)
+        return scene_points[idx], scene_pixel_coords[idx]
 
     def extract_batch(
         self,
@@ -61,6 +80,9 @@ class FeatureExtractor:
         if not candidates:
             return np.zeros((0, self.feature_dim), dtype=np.float32)
 
+        scene_points, scene_pixel_coords = self._downsample_scene_context(
+            scene_points, scene_pixel_coords,
+        )
         target_center_3d = compute_target_center(target_points)
 
         # Pre-compute normalisation scales

@@ -38,6 +38,56 @@ from src.reranker import get_reranker
 from src.label_builder import associate_grasp_to_object
 
 
+def group_predictions_by_view(predictions: list) -> list:
+    """Group per-query predictions into one record per image/view.
+
+    Keeps the legacy per-query prediction format intact while providing
+    an additional view-level artifact with one top-1 result per target object.
+    """
+    grouped = {}
+
+    for pred in predictions:
+        view_sample_id = pred.get("view_sample_id")
+        if not view_sample_id:
+            view_sample_id = (
+                f"scene_{pred['scene_id']:04d}_{pred['camera']}_{pred['frame_id']:04d}"
+            )
+
+        if view_sample_id not in grouped:
+            grouped[view_sample_id] = {
+                "view_sample_id": view_sample_id,
+                "scene_id": pred["scene_id"],
+                "camera": pred["camera"],
+                "frame_id": pred["frame_id"],
+                "split": pred.get("split"),
+                "grounder": pred.get("grounder"),
+                "reranker": pred.get("reranker"),
+                "detector": pred.get("detector"),
+                "objects": [],
+            }
+
+        grouped[view_sample_id]["objects"].append({
+            "sample_id": pred["sample_id"],
+            "target_object_id": pred["target_object_id"],
+            "target_class": pred.get("target_class"),
+            "text_query": pred.get("text_query"),
+            "best_grasp": pred.get("best_grasp"),
+            "ranked_grasps": pred.get("ranked_grasps", []),
+            "failure_reason": pred.get("failure_reason"),
+            "latency": pred.get("latency"),
+        })
+
+    results = []
+    for view_sample_id in sorted(grouped.keys()):
+        entry = grouped[view_sample_id]
+        entry["objects"].sort(
+            key=lambda obj: (obj["target_object_id"], obj["sample_id"])
+        )
+        entry["num_objects"] = len(entry["objects"])
+        results.append(entry)
+    return results
+
+
 def _find_model_path(reranker_name: str, detector: str) -> Path:
     """Find the trained model file matching detector/grounding tags.
 
@@ -133,6 +183,7 @@ def run_inference(
 
         config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         predictions = []
+        view_cache = {}
 
         with open(queries_path) as fin:
             lines = fin.readlines()
@@ -159,14 +210,58 @@ def run_inference(
             ranked = []
 
             try:
-                # ── 1. Load data ─────────────────────────────────────
-                rgb = load_rgb(scene_dir, frame_id, camera)
-                factor = get_factor_depth(scene_dir, camera)
-                depth = load_depth(scene_dir, frame_id, camera, factor)
-                K = load_camera_intrinsics(scene_dir, camera)
+                # ── 1. Load / reuse per-view context ─────────────────
+                ctx = view_cache.get(view_sample_id)
+                if ctx is None:
+                    rgb = load_rgb(scene_dir, frame_id, camera)
+                    factor = get_factor_depth(scene_dir, camera)
+                    depth = load_depth(scene_dir, frame_id, camera, factor)
+                    K = load_camera_intrinsics(scene_dir, camera)
 
-                # GT label loaded ONLY for evaluation, never for features
-                gt_label = load_label(scene_dir, frame_id, camera)
+                    # GT label loaded ONLY for evaluation, never for features
+                    gt_label = load_label(scene_dir, frame_id, camera)
+
+                    if use_cached_grasps:
+                        candidates = load_grasp_candidates(view_sample_id, detector)
+                    else:
+                        scene_points_live, scene_pixel_coords_live = backproject_depth(
+                            depth, K
+                        )
+                        colors = add_colors(rgb, scene_pixel_coords_live)
+                        candidates = det.detect(scene_points_live, colors)
+
+                    pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
+                    if pcd_path.exists():
+                        pcd_data = np.load(str(pcd_path))
+                        scene_points = pcd_data["points"]
+                        scene_pixel_coords = pcd_data["pixel_coords"]
+                    else:
+                        if use_cached_grasps:
+                            scene_points, scene_pixel_coords = backproject_depth(
+                                depth, K
+                            )
+                        else:
+                            scene_points = scene_points_live
+                            scene_pixel_coords = scene_pixel_coords_live
+
+                    ctx = {
+                        "rgb": rgb,
+                        "depth": depth,
+                        "K": K,
+                        "gt_label": gt_label,
+                        "candidates": candidates,
+                        "scene_points": scene_points,
+                        "scene_pixel_coords": scene_pixel_coords,
+                    }
+                    view_cache[view_sample_id] = ctx
+
+                rgb = ctx["rgb"]
+                depth = ctx["depth"]
+                K = ctx["K"]
+                gt_label = ctx["gt_label"]
+                candidates = ctx["candidates"]
+                scene_points = ctx["scene_points"]
+                scene_pixel_coords = ctx["scene_pixel_coords"]
 
                 # ── 2. Grounding ─────────────────────────────────────
                 if grounder_name == "gt":
@@ -179,27 +274,11 @@ def run_inference(
                 if grounding is None:
                     failure_reason = "grounding_failed"
                 else:
-                    # ── 3. Load / generate grasp candidates ──────────
-                    if use_cached_grasps:
-                        candidates = load_grasp_candidates(view_sample_id, detector)
-                    else:
-                        points, px = backproject_depth(depth, K)
-                        colors = add_colors(rgb, px)
-                        candidates = det.detect(points, colors)
-
+                    # ── 3. Reuse grasp candidates ────────────────────
                     if not candidates:
                         failure_reason = "no_candidates"
                     else:
-                        # ── 4. Point cloud for features ──────────────
-                        pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
-                        if pcd_path.exists():
-                            pcd_data = np.load(str(pcd_path))
-                            scene_points = pcd_data["points"]
-                            scene_pixel_coords = pcd_data["pixel_coords"]
-                        else:
-                            scene_points, scene_pixel_coords = backproject_depth(depth, K)
-
-                        # ── 5. Build target_mask from GROUNDING source
+                        # ── 4. Build target_mask from GROUNDING source
                         if grounder_name == "gt":
                             target_mask = (gt_label == target_mask_val)
                         else:
@@ -214,7 +293,7 @@ def run_inference(
                                 scene_points, scene_pixel_coords, grounding.bbox,
                             )
 
-                        # ── 6. Extract features (NO GT label passed) ─
+                        # ── 5. Extract features (NO GT label passed) ─
                         features = extractor.extract_batch(
                             candidates=candidates,
                             target_bbox=grounding.bbox,
@@ -227,10 +306,10 @@ def run_inference(
                             intrinsics=K,
                         )
 
-                        # ── 7. Rerank ────────────────────────────────
+                        # ── 6. Rerank ────────────────────────────────
                         ranked = reranker.select_top_k(features, candidates, k=5)
 
-                        # ── 8. Evaluate on-target using GT label ─────
+                        # ── 7. Evaluate on-target using GT label ─────
                         for g in ranked:
                             cid = g["candidate_id"]
                             c = candidates[cid]
@@ -246,6 +325,7 @@ def run_inference(
 
             pred = {
                 "sample_id": sample_id,
+                "view_sample_id": view_sample_id,
                 "scene_id": scene_id,
                 "camera": camera,
                 "frame_id": frame_id,
@@ -272,6 +352,15 @@ def run_inference(
             json.dump(predictions, f, indent=2)
 
         print(f"  [{split}] {len(predictions)} predictions → {out_path}")
+
+        grouped = group_predictions_by_view(predictions)
+        grouped_path = config.RESULTS_DIR / (
+            f"top1_by_view_{split}_{grounder_name}_{reranker_name}_{detector}.json"
+        )
+        with open(grouped_path, "w") as f:
+            json.dump(grouped, f, indent=2)
+
+        print(f"  [{split}] {len(grouped)} grouped views → {grouped_path}")
 
 
 def main():

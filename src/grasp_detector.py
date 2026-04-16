@@ -291,12 +291,27 @@ class AntipodalSampler(GraspDetectorBase):
         min_width: float = config.GRASP_MIN_WIDTH,
         max_width: float = config.GRASP_MAX_WIDTH,
         antipodal_thresh: float = 0.3,
+        max_points_for_sampling: int = config.ANTIPODAL_MAX_POINTS_FOR_SAMPLING,
     ):
         self.top_k = top_k
         self.num_contact_samples = num_contact_samples
         self.min_width = min_width
         self.max_width = max_width
         self.antipodal_thresh = antipodal_thresh
+        self.max_points_for_sampling = max_points_for_sampling
+
+    def _downsample_for_sampling(self, point_cloud: np.ndarray) -> np.ndarray:
+        """Bound the point count before normal estimation and pair search."""
+        if len(point_cloud) <= self.max_points_for_sampling:
+            return point_cloud
+
+        rng = np.random.RandomState(42)
+        idx = rng.choice(
+            len(point_cloud),
+            size=self.max_points_for_sampling,
+            replace=False,
+        )
+        return point_cloud[np.sort(idx)]
 
     def detect(
         self,
@@ -309,6 +324,8 @@ class AntipodalSampler(GraspDetectorBase):
 
         if len(point_cloud) < 10:
             return []
+
+        point_cloud = self._downsample_for_sampling(point_cloud)
 
         from src.point_cloud import estimate_normals_pca
         normals = estimate_normals_pca(
