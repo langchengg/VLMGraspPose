@@ -4,15 +4,14 @@ scripts/step06_grasp_candidates.py — Generate 6-DoF grasp candidates
 Step 6: Run a FIXED grasp detector on FULL-SCENE point clouds.
 Do NOT crop to target region — grounding is used for reranking only.
 
-Detector types:
-  antipodal    — geometry-based antipodal sampler (default, no external deps)
-  graspnet     — official GraspNet baseline (requires graspnetAPI + checkpoint)
-  precomputed  — load pre-generated .npy files from GraspNet baseline output
+Main detector:
+  graspnet     — official GraspNet baseline (requires baseline checkout,
+                 compiled ops, graspnetAPI, and checkpoint)
 
 Usage:
     python scripts/step06_grasp_candidates.py
     python scripts/step06_grasp_candidates.py --splits test_seen --top-k 50
-    python scripts/step06_grasp_candidates.py --detector graspnet
+    python scripts/step06_grasp_candidates.py
 """
 
 import argparse
@@ -60,7 +59,7 @@ def _create_detector(detector_type: str, top_k: int):
 def generate_candidates(
     splits: list = None,
     top_k: int = config.GRASP_TOP_K,
-    detector_type: str = "antipodal",
+    detector_type: str = config.DEFAULT_DETECTOR,
 ):
     """Run grasp detection on all indexed views."""
     if splits is None:
@@ -162,10 +161,9 @@ def main():
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument("--top-k", type=int, default=config.GRASP_TOP_K)
     parser.add_argument(
-        "--detector", type=str, default="antipodal",
+        "--detector", type=str, default=config.DEFAULT_DETECTOR,
         choices=["antipodal", "graspnet", "precomputed"],
-        help="Detector type. Default: antipodal (no external deps). "
-             "Use 'graspnet' for official baseline (requires graspnetAPI + checkpoint).",
+        help="Detector type. Default: graspnet (official baseline).",
     )
     args = parser.parse_args()
 
@@ -178,4 +176,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

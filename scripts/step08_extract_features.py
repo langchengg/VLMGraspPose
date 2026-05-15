@@ -36,7 +36,7 @@ def extract_features(
     splits: list = None,
     grounding: str = "predicted",
     grounding_task: str = "seg",
-    detector: str = "antipodal",
+    detector: str = config.DEFAULT_DETECTOR,
 ):
     """Extract features for all candidates.
 
@@ -264,9 +264,9 @@ def main():
              " Default: seg (activates all 9 features). Only used when --grounding=predicted.",
     )
     parser.add_argument(
-        "--detector", type=str, default="antipodal",
+        "--detector", type=str, default=config.DEFAULT_DETECTOR,
         choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's candidates to use (must match step06).",
+        help="Which detector's candidates to use (default: graspnet).",
     )
     args = parser.parse_args()
 

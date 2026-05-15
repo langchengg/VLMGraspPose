@@ -15,7 +15,6 @@ transformers>=4.40,<5
 einops>=0.7
 timm>=0.9
 gdown>=5.0
-# Optional — 3D visualization with vis/vis_3d.py --backend open3d
-# open3d>=0.17
-# GraspNet evaluation (optional — install from source if needed)
-# graspnetAPI
+# Official GraspNet baseline is installed from external/graspnet-baseline.
+# It includes compiled pointnet2/knn operators and is not a plain pip dep.
+# Install graspnetAPI from source as described in README.md.

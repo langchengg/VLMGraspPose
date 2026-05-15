@@ -5,7 +5,7 @@ Migrated from stage1/grounding.py + stage1/postprocess_bbox.py.
 
 Implementations:
   • GroundTruthGrounder  — uses GT label masks (oracle upper-bound)
-  • Florence2Grounder   — Florence-2-large fine-tuned
+  • Florence2Grounder   — Florence-2-base fine-tuned
       Tasks:
         - Box grounding:    <CAPTION_TO_PHRASE_GROUNDING>
         - Mask refinement:  <REFERRING_EXPRESSION_SEGMENTATION>
@@ -120,10 +120,10 @@ class GroundTruthGrounder(TargetGrounder):
         return GroundingResult(bbox=bbox, mask=mask, confidence=1.0)
 
 
-# ── Florence-2 Grounder (large, fine-tuned) ─────────────────────────
+# ── Florence-2 Grounder (base, fine-tuned) ──────────────────────────
 
 class Florence2Grounder(TargetGrounder):
-    """Grounding via Florence-2-large fine-tuned.
+    """Grounding via Florence-2-base fine-tuned.
 
     Supported tasks:
       - 'phrase'  → <CAPTION_TO_PHRASE_GROUNDING>  (box output)

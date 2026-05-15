@@ -66,26 +66,39 @@ class GraspDetectorBase(abc.ABC):
 # ═════════════════════════════════════════════════════════════════════
 
 class GraspNetDetector(GraspDetectorBase):
-    """Wrapper around pretrained GraspNet baseline checkpoint.
+    """Wrapper around the official GraspNet baseline checkpoint.
 
-    The grasp detector is kept FIXED — the thesis contribution is the
-    target-aware reranking layer, not the detector itself.
+    The detector is fixed: this project contributes the target-aware MLP
+    reranker, not a new grasp proposal network.  The wrapper follows the
+    official baseline demo contract:
 
-    This class attempts to load the official GraspNet baseline model.
-    If the model cannot be loaded (missing deps / checkpoint), it
-    raises an error — use AntipodalSampler explicitly as a fallback.
+      1. sample exactly ``num_point`` scene points,
+      2. call ``GraspNet`` with ``end_points["point_clouds"]``,
+      3. decode with ``pred_decode``,
+      4. convert decoded rows through ``graspnetAPI.GraspGroup``.
 
-    Checkpoint should be at: models/grasp_detector/
+    The GraspNet baseline code is not vendored.  Put it at
+    ``external/graspnet-baseline`` or set ``GRASPNET_BASELINE_ROOT``.
     """
 
     def __init__(
         self,
         checkpoint_dir: Optional[Path] = None,
+        checkpoint_path: Optional[Path] = None,
+        baseline_root: Optional[Path] = None,
         device: Optional[str] = None,
+        num_point: int = config.GRASPNET_NUM_POINT,
+        num_view: int = config.GRASPNET_NUM_VIEW,
     ):
         self._checkpoint_dir = checkpoint_dir or config.GRASP_DETECTOR_DIR
+        self._checkpoint_path = Path(checkpoint_path) if checkpoint_path else None
+        self._baseline_root = Path(baseline_root) if baseline_root else None
+        self.num_point = num_point
+        self.num_view = num_view
         self._model = None
         self._net = None
+        self._pred_decode = None
+        self._GraspGroup = None
 
         if device is None:
             import torch
@@ -93,65 +106,164 @@ class GraspNetDetector(GraspDetectorBase):
         else:
             self._device = device
 
+    def _resolve_checkpoint_path(self) -> Path:
+        """Return the configured checkpoint path or discover one in the dir."""
+        if self._checkpoint_path is not None:
+            if self._checkpoint_path.exists():
+                return self._checkpoint_path
+            raise FileNotFoundError(
+                f"GraspNet checkpoint not found: {self._checkpoint_path}"
+            )
+
+        preferred = config.GRASPNET_CHECKPOINT_PATH
+        if preferred.exists():
+            return preferred
+
+        ckpt_dir = Path(self._checkpoint_dir)
+        if not ckpt_dir.exists():
+            raise FileNotFoundError(
+                f"GraspNet checkpoint directory not found: {ckpt_dir}\n"
+                "Run: python scripts/download_weights.py --graspnet --camera realsense"
+            )
+
+        ckpt_files = (
+            list(ckpt_dir.glob("checkpoint-rs.tar"))
+            + list(ckpt_dir.glob("*.tar"))
+            + list(ckpt_dir.glob("*.pth"))
+        )
+        if not ckpt_files:
+            raise FileNotFoundError(
+                f"No GraspNet checkpoint files (*.tar, *.pth) in {ckpt_dir}.\n"
+                "Run: python scripts/download_weights.py --graspnet --camera realsense"
+            )
+        return ckpt_files[0]
+
+    def _candidate_baseline_roots(self) -> list[Path]:
+        """Return baseline checkout candidates in priority order."""
+        roots = []
+        import os
+        env_root = os.environ.get("GRASPNET_BASELINE_ROOT")
+        if env_root:
+            roots.append(Path(env_root))
+        if self._baseline_root is not None:
+            roots.append(self._baseline_root)
+        roots.append(config.GRASPNET_BASELINE_ROOT)
+        return roots
+
+    def _add_baseline_to_path(self) -> Optional[Path]:
+        """Expose official baseline modules if a checkout is available."""
+        for root in self._candidate_baseline_roots():
+            if not root.exists():
+                continue
+            for subdir in ["models", "dataset", "utils", "knn", "pointnet2"]:
+                p = root / subdir
+                if p.exists() and str(p) not in sys.path:
+                    sys.path.insert(0, str(p))
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            return root
+        return None
+
+    def _import_graspnet_baseline(self):
+        """Import official baseline symbols with actionable diagnostics."""
+        baseline_root = self._add_baseline_to_path()
+        try:
+            from graspnet import GraspNet as GraspNetModel, pred_decode
+        except ImportError as e:
+            checked = ", ".join(str(p) for p in self._candidate_baseline_roots())
+            raise ImportError(
+                "Cannot import the official GraspNet baseline modules.\n"
+                "Clone https://github.com/graspnet/graspnet-baseline and either:\n"
+                f"  1. place it at {config.GRASPNET_BASELINE_ROOT}, or\n"
+                "  2. set GRASPNET_BASELINE_ROOT=/path/to/graspnet-baseline.\n"
+                "Then install its compiled pointnet2 and knn operators.\n"
+                f"Checked roots: {checked}\n"
+                f"Original import error: {e}"
+            )
+
+        try:
+            from graspnetAPI import GraspGroup
+        except ImportError as e:
+            raise ImportError(
+                "Cannot import graspnetAPI. Install it from the official "
+                "graspnetAPI repository before running GraspNet baseline.\n"
+                f"Original import error: {e}"
+            )
+
+        self._GraspNetModel = GraspNetModel
+        self._pred_decode = pred_decode
+        self._GraspGroup = GraspGroup
+        if baseline_root is not None:
+            print(f"[GraspNetDetector] Baseline root: {baseline_root}")
+
     def _ensure_loaded(self):
         """Load model on first call (lazy)."""
         if self._model is not None:
             return
 
-        ckpt_dir = self._checkpoint_dir
-        if not ckpt_dir.exists():
-            raise FileNotFoundError(
-                f"GraspNet checkpoint not found at {ckpt_dir}.\n"
-                f"  Run: python scripts/download_weights.py --graspnet\n"
-                f"  Or use AntipodalSampler / PrecomputedGraspLoader instead."
-            )
+        import torch
 
-        ckpt_files = list(ckpt_dir.glob("*.tar")) + list(ckpt_dir.glob("*.pth"))
-        if not ckpt_files:
-            raise FileNotFoundError(
-                f"No checkpoint files (*.tar, *.pth) in {ckpt_dir}.\n"
-                f"  Run: python scripts/download_weights.py --graspnet"
-            )
+        self._ckpt_path = self._resolve_checkpoint_path()
+        self._import_graspnet_baseline()
 
-        self._ckpt_path = ckpt_files[0]
+        net = self._GraspNetModel(
+            input_feature_dim=0,
+            num_view=self.num_view,
+            num_angle=12,
+            num_depth=4,
+            cylinder_radius=0.05,
+            hmin=-0.02,
+            hmax_list=[0.01, 0.02, 0.03, 0.04],
+            is_training=False,
+        )
+        ckpt = torch.load(str(self._ckpt_path), map_location=self._device)
+        state_dict = ckpt.get("model_state_dict", ckpt)
+        net.load_state_dict(state_dict)
+        net.to(self._device)
+        net.eval()
 
-        # Try to import and build the real model
-        try:
-            import torch
-            from graspnetAPI import GraspGroup  # noqa: F401
+        self._net = net
+        self._model = "graspnet-baseline"
+        print(f"[GraspNetDetector] Loaded checkpoint: {self._ckpt_path}")
 
-            # Attempt to import the baseline model architecture
-            # (user must have cloned graspnet-baseline and installed deps)
-            try:
-                from models.graspnet import GraspNet as GraspNetModel
-                from utils.collision_detector import ModelFreeCollisionDetector  # noqa: F401
+    def _sample_points_for_network(
+        self,
+        point_cloud: np.ndarray,
+        colors: Optional[np.ndarray] = None,
+        rng: Optional[np.random.RandomState] = None,
+    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        """Sample exactly ``num_point`` rows, preserving all rows if undersized."""
+        points = np.asarray(point_cloud, dtype=np.float32)
+        if len(points) == 0:
+            raise ValueError("GraspNetDetector requires a non-empty point cloud")
 
-                net = GraspNetModel(
-                    input_feature_dim=0, num_view=300, num_angle=12,
-                    num_depth=4, cylinder_radius=0.05, hmin=-0.02,
-                    hmax_list=[0.01, 0.02, 0.03, 0.04],
-                    is_training=False,
+        colors_arr = None
+        if colors is not None:
+            colors_arr = np.asarray(colors, dtype=np.float32)
+            if len(colors_arr) != len(points):
+                raise ValueError(
+                    "colors must have the same number of rows as point_cloud"
                 )
-                ckpt = torch.load(str(self._ckpt_path), map_location=self._device)
-                net.load_state_dict(ckpt["model_state_dict"])
-                net.to(self._device)
-                net.eval()
-                self._net = net
-                self._model = "REAL"
-                print(f"[GraspNetDetector] Loaded real model from {self._ckpt_path}")
-            except ImportError:
-                raise ImportError(
-                    "GraspNet baseline model code not found.\n"
-                    "  Clone https://github.com/graspnet/graspnet-baseline "
-                    "and add to PYTHONPATH,\n"
-                    "  or use AntipodalSampler / PrecomputedGraspLoader."
-                )
-        except ImportError as e:
-            raise ImportError(
-                f"Cannot load GraspNet detector: {e}\n"
-                f"  Install: pip install graspnetAPI\n"
-                f"  Or use AntipodalSampler / PrecomputedGraspLoader."
+
+        rng = rng or np.random.RandomState(42)
+        if len(points) >= self.num_point:
+            idx = rng.choice(len(points), self.num_point, replace=False)
+        else:
+            idx_keep = np.arange(len(points))
+            idx_extra = rng.choice(
+                len(points),
+                self.num_point - len(points),
+                replace=True,
             )
+            idx = np.concatenate([idx_keep, idx_extra], axis=0)
+
+        sampled_points = points[idx].astype(np.float32, copy=False)
+        sampled_colors = (
+            colors_arr[idx].astype(np.float32, copy=False)
+            if colors_arr is not None
+            else None
+        )
+        return sampled_points, sampled_colors
 
     def detect(
         self,
@@ -163,30 +275,34 @@ class GraspNetDetector(GraspDetectorBase):
         self._ensure_loaded()
 
         import torch
-        from graspnetAPI import GraspGroup
 
-        # Prepare input
-        N = len(point_cloud)
-        if N > 20000:
-            idx = np.random.choice(N, 20000, replace=False)
-            pc_input = point_cloud[idx]
-        else:
-            pc_input = point_cloud
+        try:
+            pc_input, color_input = self._sample_points_for_network(
+                point_cloud,
+                colors,
+            )
+        except ValueError:
+            return []
 
-        pc_tensor = torch.tensor(
-            pc_input, dtype=torch.float32
-        ).unsqueeze(0).to(self._device)
+        end_points = {
+            "point_clouds": torch.from_numpy(pc_input[None]).to(self._device),
+        }
+        if color_input is not None:
+            end_points["cloud_colors"] = color_input
 
         with torch.no_grad():
-            end_points = self._net(pc_tensor)
-            grasp_preds = end_points["grasp_preds"]  # (B, Ns, 17)
+            end_points = self._net(end_points)
+            grasp_preds = self._pred_decode(end_points)
 
-        # Parse predictions
-        preds_np = grasp_preds[0].cpu().numpy()
-        gg = GraspGroup(preds_np)
-        gg = gg.nms().sort_by_score()
+        preds_np = grasp_preds[0].detach().cpu().numpy()
+        gg = self._GraspGroup(preds_np)
+        maybe = gg.nms()
+        if maybe is not None:
+            gg = maybe
+        maybe = gg.sort_by_score()
+        if maybe is not None:
+            gg = maybe
 
-        # Convert to GraspCandidate
         candidates = []
         for i, g in enumerate(gg):
             if i >= top_k:

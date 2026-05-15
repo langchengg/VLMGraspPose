@@ -50,7 +50,7 @@ def _build_view_candidate_cache(
     return cached
 
 
-def build_labels(splits: list = None, detector: str = "antipodal"):
+def build_labels(splits: list = None, detector: str = config.DEFAULT_DETECTOR):
     """Build training labels for all candidates."""
     if splits is None:
         splits = config.TRAIN_SPLITS + config.VAL_SPLITS
@@ -172,9 +172,9 @@ def main():
     )
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument(
-        "--detector", type=str, default="antipodal",
+        "--detector", type=str, default=config.DEFAULT_DETECTOR,
         choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's candidates to use (must match step06).",
+        help="Which detector's candidates to use (default: graspnet).",
     )
     args = parser.parse_args()
     build_labels(splits=args.splits, detector=args.detector)

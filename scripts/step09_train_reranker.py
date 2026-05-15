@@ -5,9 +5,8 @@ Step 9: Train models that turn generic grasp candidates into
 language-conditioned target grasps.
 
 Usage:
-    python scripts/step09_train_reranker.py --model logistic
-    python scripts/step09_train_reranker.py --model mlp --grounding predicted --detector antipodal
-    python scripts/step09_train_reranker.py --model pairwise
+    python scripts/step09_train_reranker.py
+    python scripts/step09_train_reranker.py --grounding predicted --detector graspnet
 """
 
 import argparse
@@ -25,7 +24,7 @@ from src.reranker import (
 
 
 def _find_feature_file(split: str, grounding: str = None,
-                        detector: str = "antipodal") -> Path:
+                        detector: str = config.DEFAULT_DETECTOR) -> Path:
     """Find the feature parquet for a split.
 
     step08 now writes (newest → oldest naming):
@@ -88,7 +87,7 @@ def _find_feature_file(split: str, grounding: str = None,
     return None
 
 
-def _find_label_file(split: str, detector: str = "antipodal") -> Path:
+def _find_label_file(split: str, detector: str = config.DEFAULT_DETECTOR) -> Path:
     """Find the label parquet for a split.
 
     Searches detector-tagged filename first, then legacy.
@@ -105,7 +104,7 @@ def _find_label_file(split: str, detector: str = "antipodal") -> Path:
     return None
 
 
-def load_train_val_data(grounding: str = None, detector: str = "antipodal"):
+def load_train_val_data(grounding: str = None, detector: str = config.DEFAULT_DETECTOR):
     """Load features and labels from parquet files.
 
     Args:
@@ -181,8 +180,8 @@ def _model_save_path(model_name: str, detector: str, grounding: str) -> Path:
     return config.MODELS_DIR / f"reranker_{model_name}_{detector}_{grounding_tag}.pt"
 
 
-def train_reranker(model_name: str = "logistic", grounding: str = None,
-                   detector: str = "antipodal"):
+def train_reranker(model_name: str = config.DEFAULT_RERANKER, grounding: str = None,
+                   detector: str = config.DEFAULT_DETECTOR):
     """Train a reranker model.
 
     Args:
@@ -258,7 +257,7 @@ def main():
         description="Step 9: Train the reranker"
     )
     parser.add_argument(
-        "--model", type=str, default="logistic",
+        "--model", type=str, default=config.DEFAULT_RERANKER,
         choices=["logistic", "mlp", "pairwise"],
     )
     parser.add_argument(
@@ -268,9 +267,9 @@ def main():
              "used at inference. If not set, auto-detects (prefers predicted).",
     )
     parser.add_argument(
-        "--detector", type=str, default="antipodal",
+        "--detector", type=str, default=config.DEFAULT_DETECTOR,
         choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's features/labels to use (must match step06/07/08).",
+        help="Which detector's features/labels to use (default: graspnet).",
     )
     args = parser.parse_args()
     train_reranker(

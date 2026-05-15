@@ -131,7 +131,7 @@ def evaluate(
         full_evaluation(all_predictions, output_path=out_path)
 
 
-def run_ablation(reranker: str = "rule"):
+def run_ablation(reranker: str = config.DEFAULT_RERANKER):
     """Compare oracle (GT) vs predicted (Florence-2) grounding.
 
     Evaluates each predicted grounder (phrase, seg) separately
@@ -232,7 +232,7 @@ def main():
     args = parser.parse_args()
 
     if args.ablation:
-        run_ablation(reranker=args.reranker or "rule")
+        run_ablation(reranker=args.reranker or config.DEFAULT_RERANKER)
     else:
         evaluate(
             splits=args.splits,

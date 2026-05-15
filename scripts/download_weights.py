@@ -1,7 +1,7 @@
 """
 scripts/download_weights.py — Download pre-trained model weights
 =================================================================
-Downloads Florence-2-large-ft and GraspNet baseline checkpoint.
+Downloads Florence-2-base-ft and the GraspNet baseline checkpoint.
 
 Usage:
     python scripts/download_weights.py --all
@@ -17,9 +17,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
 
-# Florence-2-large fine-tuned
-FLORENCE2_MODEL_ID = "microsoft/Florence-2-large-ft"
-FLORENCE2_LOCAL_DIR = MODELS_DIR / "florence2"
+# Florence-2-base fine-tuned
+FLORENCE2_MODEL_ID = "microsoft/Florence-2-base-ft"
+FLORENCE2_LOCAL_DIR = MODELS_DIR / "florence2_base_ft"
 
 # GraspNet baseline checkpoints
 GRASPNET_CHECKPOINTS = {
@@ -36,9 +36,9 @@ GRASPNET_LOCAL_DIR = MODELS_DIR / "grasp_detector"
 
 
 def download_florence2():
-    """Download Florence-2-large-ft from HuggingFace Hub."""
+    """Download Florence-2-base-ft from HuggingFace Hub."""
     print(f"{'=' * 60}")
-    print(f"Downloading Florence-2-large-ft")
+    print(f"Downloading Florence-2-base-ft")
     print(f"  Model ID: {FLORENCE2_MODEL_ID}")
     print(f"  Save to:  {FLORENCE2_LOCAL_DIR}")
     print(f"{'=' * 60}")
@@ -113,7 +113,7 @@ def verify():
     print(f"Model Weight Status")
     print(f"{'=' * 60}")
     models = [
-        ("Florence-2-large-ft", FLORENCE2_LOCAL_DIR),
+        ("Florence-2-base-ft", FLORENCE2_LOCAL_DIR),
         ("GraspNet (RS)", GRASPNET_LOCAL_DIR / "checkpoint-rs.tar"),
         ("GraspNet (KN)", GRASPNET_LOCAL_DIR / "checkpoint-kn.tar"),
     ]

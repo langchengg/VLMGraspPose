@@ -1,7 +1,7 @@
 """
 scripts/step04_florence_grounding.py — Run Florence-2 grounding
 =================================================================
-Step 4: Use Florence-2-large to predict target bbox & optional mask.
+Step 4: Use Florence-2-base-ft to predict target bbox & optional mask.
 
 Usage:
     python scripts/step04_florence_grounding.py --splits test_seen
@@ -111,7 +111,7 @@ def main():
         help="Splits to process (default: test splits)"
     )
     parser.add_argument(
-        "--task", type=str, default="seg",
+        "--task", type=str, default=config.DEFAULT_GROUNDING,
         choices=["phrase", "seg"],
         help="Florence-2 task: seg (mask, default — activates all features) or phrase (box only)"
     )

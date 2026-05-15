@@ -3,11 +3,11 @@ scripts/step10_inference.py — Full-chain test-time inference
 ==============================================================
 Step 10: Run the complete pipeline on unseen test views.
 
-    Florence-2 → depth→pcd → grasp detector → features → reranker → top-K
+    Florence-2-base → depth→pcd → GraspNet baseline → features → MLP reranker → top-K
 
 Usage:
-    python scripts/step10_inference.py --splits test_seen --reranker rule
-    python scripts/step10_inference.py --splits test_seen test_similar test_novel --reranker mlp
+    python scripts/step10_inference.py --splits test_seen
+    python scripts/step10_inference.py --splits test_seen test_similar test_novel
 """
 
 import argparse
@@ -32,7 +32,7 @@ from src.point_cloud import (
     crop_points_by_binary_mask,
 )
 from src.grounding import get_grounder
-from src.grasp_detector import GraspNetDetector, AntipodalSampler
+from src.grasp_detector import GraspNetDetector
 from src.feature_extractor import FeatureExtractor
 from src.reranker import get_reranker
 from src.label_builder import associate_grasp_to_object
@@ -106,6 +106,8 @@ def _find_model_path(reranker_name: str, detector: str) -> Path:
 
     # Search order: tagged (step09 output) → legacy untagged
     candidates = [
+        config.RERANKER_MLP_PATH if reranker_name == "mlp" else None,
+        config.RERANKER_LOGREG_PATH if reranker_name == "logistic" else None,
         # Current naming: explicit grounding tags
         config.MODELS_DIR / f"{base_name}_{detector}_predicted{ext}",
         config.MODELS_DIR / f"{base_name}_{detector}_auto{ext}",
@@ -115,23 +117,25 @@ def _find_model_path(reranker_name: str, detector: str) -> Path:
     ]
 
     for p in candidates:
-        if p.exists():
+        if p is not None and p.exists():
             return p
 
-    # No match found — print diagnostics
-    print(f"  [WARN] No trained {reranker_name} model found for detector={detector}.")
-    print(f"         Searched: {[c.name for c in candidates]}")
-    print(f"         Run step09 first, or use --reranker rule/detector.")
-    return None
+    searched = [c.name for c in candidates if c is not None]
+    raise FileNotFoundError(
+        f"No trained {reranker_name} model found for detector={detector}.\n"
+        f"Searched: {searched}\n"
+        "Run: python scripts/step09_train_reranker.py --model mlp "
+        "--grounding predicted --detector graspnet"
+    )
 
 
 def run_inference(
     splits: list = None,
-    grounder_name: str = "seg",
-    reranker_name: str = "rule",
+    grounder_name: str = config.DEFAULT_GROUNDING,
+    reranker_name: str = config.DEFAULT_RERANKER,
     max_samples: int = None,
     use_cached_grasps: bool = True,
-    detector: str = "antipodal",
+    detector: str = config.DEFAULT_DETECTOR,
 ):
     """Run full inference chain on test splits."""
     if splits is None:
@@ -149,14 +153,11 @@ def run_inference(
     # Create detector for live inference (--no-cache)
     det = None
     if not use_cached_grasps:
-        if detector == "antipodal":
-            det = AntipodalSampler(top_k=config.GRASP_TOP_K)
-        elif detector == "graspnet":
+        if detector == "graspnet":
             det = GraspNetDetector()
         else:
             raise ValueError(
-                f"--no-cache requires detector type 'antipodal' or 'graspnet', "
-                f"got '{detector}'. Use cached candidates for 'precomputed'."
+                f"--no-cache requires detector type 'graspnet', got '{detector}'."
             )
 
     # Warm up Florence-2 model before the timing loop (ISSUE-9 fix)
@@ -369,20 +370,20 @@ def main():
     )
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument(
-        "--grounder", type=str, default="seg",
+        "--grounder", type=str, default=config.DEFAULT_GROUNDING,
         choices=["gt", "phrase", "seg"],
     )
     parser.add_argument(
-        "--reranker", type=str, default="rule",
+        "--reranker", type=str, default=config.DEFAULT_RERANKER,
         choices=["detector", "rule", "logistic", "mlp", "pairwise"],
     )
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--no-cache", action="store_true",
                         help="Don't use cached candidates, run detector live")
     parser.add_argument(
-        "--detector", type=str, default="antipodal",
+        "--detector", type=str, default=config.DEFAULT_DETECTOR,
         choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's cached candidates to use (must match step06).",
+        help="Which detector's cached candidates to use (default: graspnet).",
     )
     args = parser.parse_args()
 

@@ -1,5 +1,5 @@
 """
-VLMGraspPose — Central Configuration (v2: 12-step thesis pipeline)
+VLMGraspPose — Central Configuration (local Florence-2-base + GraspNet + MLP stack)
 ====================================================================
 All paths, hyperparameters, object mappings, and text templates
 are defined here so every module shares a single source of truth.
@@ -77,16 +77,27 @@ RANK_FEATURES_DIR   = DERIVED_DIR / "rank_features"    # Step 8
 # ═════════════════════════════════════════════════════════════════════
 MODELS_DIR = PROJECT_ROOT / "models"
 
-# Stage 1: Florence-2 large (fine-tuned)
-FLORENCE2_MODEL_ID  = "microsoft/Florence-2-large-ft"
-FLORENCE2_MODEL_DIR = MODELS_DIR / "florence2"
+# Default local thesis stack
+DEFAULT_GROUNDING = "seg"
+DEFAULT_DETECTOR = "graspnet"
+DEFAULT_RERANKER = "mlp"
+
+# Stage 1: Florence-2 base fine-tuned
+FLORENCE2_MODEL_ID  = "microsoft/Florence-2-base-ft"
+FLORENCE2_MODEL_DIR = MODELS_DIR / "florence2_base_ft"
 
 # Stage 2: GraspNet baseline detector
 GRASP_DETECTOR_DIR  = MODELS_DIR / "grasp_detector"
+GRASPNET_BASELINE_ROOT = PROJECT_ROOT / "external" / "graspnet-baseline"
+GRASPNET_CHECKPOINT_PATH = GRASP_DETECTOR_DIR / "checkpoint-rs.tar"
+GRASPNET_NUM_POINT = 20000
+GRASPNET_NUM_VIEW = 300
+GRASPNET_COLLISION_THRESH = -1.0
+GRASPNET_VOXEL_SIZE = 0.01
 
 # Stage 4: Trained rerankers
-RERANKER_LOGREG_PATH = MODELS_DIR / "reranker_logreg.pkl"
-RERANKER_MLP_PATH    = MODELS_DIR / "reranker_mlp.pt"
+RERANKER_LOGREG_PATH = MODELS_DIR / "reranker_logreg_graspnet_predicted.pkl"
+RERANKER_MLP_PATH    = MODELS_DIR / "reranker_mlp_graspnet_predicted.pt"
 
 # ═════════════════════════════════════════════════════════════════════
 #  RESULTS  (Steps 10–11)
@@ -111,6 +122,7 @@ GRASP_MAX_WIDTH = 0.10
 VOXEL_SIZE      = 0.005            # point-cloud down-sampling
 NORMAL_RADIUS   = 0.02
 NORMAL_MAX_NN   = 30
+ANTIPODAL_MAX_POINTS_FOR_SAMPLING = 5000
 
 # ═════════════════════════════════════════════════════════════════════
 #  FEATURE EXTRACTION  (Step 8)
@@ -127,6 +139,7 @@ FEATURE_NAMES = [
     "florence_conf",           # f9
 ]
 FEATURE_DIM = len(FEATURE_NAMES)   # 9
+FEATURE_MAX_SCENE_POINTS = 50000
 
 # ═════════════════════════════════════════════════════════════════════
 #  RERANKER TRAINING  (Step 9)
