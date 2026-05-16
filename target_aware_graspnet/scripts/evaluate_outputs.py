@@ -11,7 +11,7 @@ from main import load_config
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate target-aware grasp outputs.")
     parser.add_argument("--output-root", type=Path, default=ROOT / "outputs")
-    parser.add_argument("--mode", choices=["proxy", "annotation"], default="proxy")
+    parser.add_argument("--mode", choices=["proxy", "annotation", "ocid_2d"], default="proxy")
     parser.add_argument("--config-dir", type=Path, default=None)
     args = parser.parse_args()
 
@@ -22,6 +22,8 @@ def main() -> None:
         thresholds = config.get("evaluation", {}).get("proxy_thresholds", {})
     if args.mode == "annotation":
         print("Annotation mode compares against annotation_valid_grasps if present in best_grasp.json; otherwise annotation rates are 0.")
+    if args.mode == "ocid_2d":
+        print("OCID 2D mode reports whether projected grasp centers fall inside GT grasp rectangles.")
     generate_reports(args.output_root, thresholds, mode=args.mode)
     print(f"metrics_by_split: {args.output_root / 'metrics_by_split.csv'}")
     print(f"metrics_by_scene: {args.output_root / 'metrics_by_scene.csv'}")

@@ -44,6 +44,30 @@ class GraspNetSample:
 
 
 @dataclass
+class OCIDVLGSample:
+    split: str
+    image_id: str
+    scene_id: str
+    camera: str
+    frame_id: str
+    rgb_path: Path
+    depth_path: Path
+    sentence: str
+    command: str
+    target_label: str
+    target_index: int
+    target_bbox: list[int]
+    target_mask_path: Optional[Path]
+    grasp_rectangles: list[list[list[float]]]
+    output_dir: Path
+    label_path: Optional[Path] = None
+    metadata: dict = field(default_factory=dict)
+
+    def to_json(self) -> dict:
+        return _to_jsonable(asdict(self))
+
+
+@dataclass
 class TargetRegion:
     target_id: Optional[int]
     label: str

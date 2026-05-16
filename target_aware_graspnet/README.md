@@ -204,7 +204,7 @@ outputs/paper_figures/
 ## Known Limitations
 
 - First version uses label images / target IDs, not Florence-2 grounding.
-- Category names are loaded by default from `../data/metadata/object_id_to_name.json`. Without that file, commands fall back to pseudo-language such as `pick object_003`.
+- Category names are disabled by default because GraspNet label values must be matched to a trusted dataset-specific label table. Without a trusted table, commands fall back to pseudo-language such as `pick object_003`. To enable real names, set `target_mapping.category_labels_path` and `target_mapping.category_labels_trusted: true` in `configs/dataset.yaml`.
 - The sampler is geometric and CPU-only. It is suitable for an offline Mac prototype, not a learned GraspNet baseline replacement.
 - Evaluation defaults to proxy validity. Full annotation matching against official 6D grasp labels is scaffolded but not fully implemented.
 - Depth scale, intrinsics, mask alignment, and coordinate conventions should be checked visually on a small subset before running all scenes.

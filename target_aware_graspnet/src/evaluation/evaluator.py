@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from evaluation.metrics import is_proxy_valid, mean_or_zero, topk_valid_rate
+from evaluation.metrics import is_proxy_valid, mean_or_zero, topk_2d_grasp_center_hit_rate, topk_valid_rate
 
 
 class OutputEvaluator:
@@ -49,6 +49,12 @@ class OutputEvaluator:
                 "top1_annotation_valid_rate": self._annotation_topk_rate(records, 1),
                 "top3_annotation_valid_rate": self._annotation_topk_rate(records, 3),
                 "top5_annotation_valid_rate": self._annotation_topk_rate(records, 5),
+            })
+        if mode == "ocid_2d":
+            row.update({
+                "top1_2d_grasp_center_hit_rate": topk_2d_grasp_center_hit_rate(records, 1),
+                "top3_2d_grasp_center_hit_rate": topk_2d_grasp_center_hit_rate(records, 3),
+                "top5_2d_grasp_center_hit_rate": topk_2d_grasp_center_hit_rate(records, 5),
             })
         return row
 

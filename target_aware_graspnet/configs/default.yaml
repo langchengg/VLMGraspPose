@@ -55,4 +55,5 @@ target_mapping:
   command_mode: auto
   default_full_evaluation: all_targets_per_frame
   default_debug: one_target_per_frame
-  category_labels_path: ../data/metadata/object_id_to_name.json
+  category_labels_path: null
+  category_labels_trusted: false

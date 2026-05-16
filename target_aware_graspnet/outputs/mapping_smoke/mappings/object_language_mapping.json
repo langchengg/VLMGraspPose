@@ -5,8 +5,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 9,
-    "target_label": "plum",
-    "command": "pick the plum",
+    "target_label": "object_009",
+    "command": "pick object_009",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_009.png",
     "bbox": [
       599,
@@ -14,7 +14,7 @@
       975,
       519
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.08709147428656777,
     "metadata": {
       "mask_val": 10,
@@ -36,8 +36,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 11,
-    "target_label": "orange",
-    "command": "pick the orange",
+    "target_label": "object_011",
+    "command": "pick object_011",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_011.png",
     "bbox": [
       508,
@@ -45,7 +45,7 @@
       602,
       493
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.03200526497577551,
     "metadata": {
       "mask_val": 12,
@@ -67,8 +67,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 20,
-    "target_label": "spoon",
-    "command": "pick the spoon",
+    "target_label": "object_020",
+    "command": "pick object_020",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_020.png",
     "bbox": [
       218,
@@ -76,7 +76,7 @@
       523,
       608
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.055058204120497,
     "metadata": {
       "mask_val": 21,
@@ -98,8 +98,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 29,
-    "target_label": "extra large clamp",
-    "command": "pick the extra large clamp",
+    "target_label": "object_029",
+    "command": "pick object_029",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_029.png",
     "bbox": [
       912,
@@ -107,7 +107,7 @@
       1060,
       369
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.031753218263118096,
     "metadata": {
       "mask_val": 30,
@@ -129,8 +129,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 30,
-    "target_label": "foam brick",
-    "command": "pick the foam brick",
+    "target_label": "object_030",
+    "command": "pick object_030",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_030.png",
     "bbox": [
       846,
@@ -138,7 +138,7 @@
       981,
       229
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.02582078545223715,
     "metadata": {
       "mask_val": 31,
@@ -160,8 +160,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 41,
-    "target_label": "toy airplane b",
-    "command": "pick the toy airplane b",
+    "target_label": "object_041",
+    "command": "pick object_041",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_041.png",
     "bbox": [
       587,
@@ -169,7 +169,7 @@
       944,
       400
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.1276243197072524,
     "metadata": {
       "mask_val": 42,
@@ -191,8 +191,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 48,
-    "target_label": "dabao sod cream",
-    "command": "pick the dabao sod cream",
+    "target_label": "object_048",
+    "command": "pick object_048",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_048.png",
     "bbox": [
       234,
@@ -200,7 +200,7 @@
       465,
       719
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.07763038749848306,
     "metadata": {
       "mask_val": 49,
@@ -222,8 +222,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 52,
-    "target_label": "pantene bottle",
-    "command": "pick the pantene bottle",
+    "target_label": "object_052",
+    "command": "pick object_052",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_052.png",
     "bbox": [
       273,
@@ -231,7 +231,7 @@
       514,
       527
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.09481157174463001,
     "metadata": {
       "mask_val": 53,
@@ -253,8 +253,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 58,
-    "target_label": "camel figurine",
-    "command": "pick the camel figurine",
+    "target_label": "object_058",
+    "command": "pick object_058",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_058.png",
     "bbox": [
       334,
@@ -262,7 +262,7 @@
       854,
       291
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.29438122532042604,
     "metadata": {
       "mask_val": 59,
@@ -284,8 +284,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 62,
-    "target_label": "tape dispenser",
-    "command": "pick the tape dispenser",
+    "target_label": "object_062",
+    "command": "pick object_062",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/mapping_smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_062.png",
     "bbox": [
       515,
@@ -293,7 +293,7 @@
       892,
       608
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 0.17382354863101296,
     "metadata": {
       "mask_val": 63,

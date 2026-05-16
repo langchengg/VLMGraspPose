@@ -67,6 +67,8 @@ def make_loader(config: dict) -> GraspNetLoader:
 
 def load_category_labels(config: dict) -> dict[int, str]:
     mapping_cfg = config.get("default", {}).get("target_mapping", {}) | config.get("dataset", {}).get("target_mapping", {})
+    if not mapping_cfg.get("category_labels_trusted", False):
+        return {}
     path_value = mapping_cfg.get("category_labels_path")
     if not path_value:
         return {}

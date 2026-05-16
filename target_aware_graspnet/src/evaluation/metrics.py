@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import cv2
 
 
 def is_proxy_valid(feature: dict, thresholds: dict) -> bool:
@@ -27,3 +28,25 @@ def topk_valid_rate(records: list[dict], k: int, thresholds: dict) -> float:
 
 def mean_or_zero(values: list[float]) -> float:
     return float(np.mean(values)) if values else 0.0
+
+
+def point_in_grasp_rectangles(point: list[float] | None, rectangles: list) -> bool:
+    if point is None or not rectangles:
+        return False
+    pt = (float(point[0]), float(point[1]))
+    for rect in rectangles:
+        arr = np.asarray(rect, dtype=np.float32)
+        if arr.shape == (4, 2) and cv2.pointPolygonTest(arr, pt, False) >= 0:
+            return True
+    return False
+
+
+def topk_2d_grasp_center_hit_rate(records: list[dict], k: int) -> float:
+    if not records:
+        return 0.0
+    hits = 0
+    for rec in records:
+        rectangles = rec.get("gt_grasp_rectangles", [])
+        centers = rec.get("top_k_grasp_centers_2d") or [rec.get("best_grasp_center_2d")]
+        hits += any(point_in_grasp_rectangles(center, rectangles) for center in centers[:k])
+    return hits / len(records)

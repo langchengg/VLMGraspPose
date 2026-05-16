@@ -5,8 +5,8 @@
     "camera": "realsense",
     "frame_id": "0000",
     "target_id": 58,
-    "target_label": "camel figurine",
-    "command": "pick the camel figurine",
+    "target_label": "object_058",
+    "command": "pick object_058",
     "mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet/outputs/smoke/mappings/masks/test_seen/scene_0100/realsense/0000/target_058.png",
     "bbox": [
       334,
@@ -14,7 +14,7 @@
       854,
       291
     ],
-    "disambiguation_type": "category",
+    "disambiguation_type": "object_id",
     "visibility_score": 1.0,
     "metadata": {
       "mask_val": 59,
