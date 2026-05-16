@@ -1,0 +1,3 @@
+split,scene_id,camera,frame_id,target_id,command,runtime_total,runtime_load_sample,runtime_pointcloud_processing,runtime_sampling,runtime_feature_extraction,runtime_scoring
+test,ARID10/floor/top/non-fruits/seq09,ocid,result_2018-08-27-16-13-28,2,Grasp the flashlight,0.1570944579943898,0.01408683399859001,0.01383995799915283,0.0042892499986919574,0.12477708299775259,0.00010133300020243041
+test,ARID10/floor/top/non-fruits/seq09,ocid,result_2018-08-27-16-13-28,9,The can food,0.15869287400346366,0.011979833001532825,0.013069125001493376,0.0026923750010610092,0.13089783300165436,5.3707997722085565e-05

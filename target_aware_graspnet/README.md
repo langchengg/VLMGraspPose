@@ -1,6 +1,6 @@
-# Target-Aware GraspNet
+# Target-Aware OCID-VLG
 
-Mac-compatible prototype for language-guided target-aware RGB-D grasping on the GraspNet dataset.
+Mac-compatible prototype for language-guided target-aware RGB-D grasping. OCID-VLG is the primary dataset. GraspNet support is kept only as a legacy/fallback path because GraspNet does not provide reliable object category names or natural-language referring expressions.
 
 The pipeline is:
 
@@ -26,137 +26,88 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-## Dataset
+## Primary Dataset: OCID-VLG
 
 Expected dataset root:
 
 ```text
-/Users/delaynomore/Downloads/VLMGraspPose/data/raw/graspnet
+/Users/delaynomore/Downloads/VLMGraspPose/data/raw/OCID-VLG
 ```
 
-Expected scene layout:
+Expected OCID-VLG fields:
 
 ```text
-data/raw/graspnet/scenes/scene_0000/realsense/rgb/0000.png
-data/raw/graspnet/scenes/scene_0000/realsense/depth/0000.png
-data/raw/graspnet/scenes/scene_0000/realsense/label/0000.png
-data/raw/graspnet/scenes/scene_0000/realsense/camK.npy
+refer/{unique,multiple,novel-classes,novel-instances}/{train,val,test}_expressions.json
+ARID*/.../rgb/*.png
+ARID*/.../depth/*.png
+ARID*/.../seg_mask_instances_combi/*.png
+grasps from expression JSON or Grasps_per_instance
 ```
 
-You can change paths in `configs/dataset.yaml` or pass `--dataset-root` / `--output-root`.
-
-## Splits
+Each OCID-VLG processing unit is:
 
 ```text
-train:        scene_0000 - scene_0089
-val:          scene_0090 - scene_0099
-test_seen:    scene_0100 - scene_0129
-test_similar: scene_0130 - scene_0159
-test_novel:   scene_0160 - scene_0189
+(image_id, sentence, target_label, target_bbox, target_mask)
 ```
 
-## Object-Language Mapping
+The `sentence` / `question` field is used directly as the command. Pseudo object-id commands are not generated unless language is missing.
 
-GraspNet frames contain multiple objects and do not provide natural-language commands. This project builds an explicit mapping:
+## OCID Commands
 
-```text
-(scene_id, camera, frame_id, target_id, command)
-```
-
-Examples:
-
-```text
-frame_0000 + "pick object_003" -> target_id 3
-frame_0000 + "pick the left mug" -> target_id 1
-```
-
-Mapping files are saved to:
-
-```text
-outputs/mappings/object_language_mapping.csv
-outputs/mappings/object_language_mapping.json
-```
-
-Quick debug defaults to one target per frame. Full split runs default to all visible targets per frame.
-
-## Commands
-
-Check indexing:
+Run one OCID-VLG language target:
 
 ```bash
-python scripts/build_index.py \
-  --dataset-root ../data/raw/graspnet \
-  --camera realsense \
-  --split test_seen \
-  --max-scenes 1 \
-  --max-frames 5
+python scripts/run_ocid_one.py \
+  --dataset-root ../data/raw/OCID-VLG \
+  --refer-split multiple \
+  --split test \
+  --index 0 \
+  --output-root outputs/ocid_debug \
+  --top-k 5 \
+  --overwrite
 ```
 
-Run one frame, largest visible target:
+Run an OCID-VLG split:
 
 ```bash
-python scripts/run_one_frame.py \
-  --dataset-root ../data/raw/graspnet \
-  --scene-id scene_0100 \
-  --camera realsense \
-  --frame-id 0000 \
-  --output-root outputs/debug \
+python scripts/run_ocid_split.py \
+  --dataset-root ../data/raw/OCID-VLG \
+  --refer-split multiple \
+  --split test \
+  --max-samples 20 \
+  --output-root outputs/ocid_debug \
   --top-k 5
 ```
 
-Run all visible targets in one frame:
+Evaluate against 2D grasp rectangles:
 
 ```bash
-python scripts/run_one_frame.py \
-  --dataset-root ../data/raw/graspnet \
-  --scene-id scene_0100 \
-  --camera realsense \
-  --frame-id 0000 \
-  --all-targets-per-frame \
-  --output-root outputs/debug \
+python scripts/evaluate_outputs.py \
+  --output-root outputs/ocid_debug \
+  --mode ocid_2d
+```
+
+Run OCID-Grasp fallback samples without referring expressions:
+
+```bash
+python scripts/run_ocid_grasp.py \
+  --dataset-root ../data/raw/OCID-VLG \
+  --max-samples 20 \
+  --output-root outputs/ocid_grasp_debug \
   --top-k 5
 ```
 
-Run a small split test:
+## Legacy GraspNet Support
 
-```bash
-python scripts/run_split.py \
-  --dataset-root ../data/raw/graspnet \
-  --split test_seen \
-  --camera realsense \
-  --max-scenes 1 \
-  --max-frames 10 \
-  --one-target-per-frame \
-  --output-root outputs \
-  --top-k 5
+The old GraspNet scripts still exist:
+
+```text
+scripts/run_one_frame.py
+scripts/run_split.py
+scripts/run_all.py
 ```
 
-Run a full split:
-
-```bash
-python scripts/run_split.py \
-  --dataset-root ../data/raw/graspnet \
-  --split train \
-  --camera realsense \
-  --output-root outputs \
-  --top-k 5
-```
-
-Run all splits:
-
-```bash
-python scripts/run_all.py \
-  --dataset-root ../data/raw/graspnet \
-  --camera realsense \
-  --output-root outputs \
-  --top-k 5
-```
-
-Evaluate proxy metrics:
-
-```bash
-python scripts/evaluate_outputs.py --output-root outputs --mode proxy
-```
+Use them only for non-language proxy experiments.
 
 Export paper figures:
 
@@ -169,10 +120,10 @@ python scripts/make_paper_figures.py \
 
 ## Per-Target Output
 
-Each processing unit writes to:
+Each OCID-VLG processing unit writes to:
 
 ```text
-outputs/{split}/{scene_id}/{camera}/{frame_id}/target_{target_id}/
+outputs/ocid_vlg/{refer_split}/{split}/{image_id}/
 ```
 
 Files:
@@ -188,7 +139,7 @@ visualization_3d.png
 score_breakdown.json
 ```
 
-`best_grasp.json` contains split, scene, camera, frame, target id, command, bbox, position, quaternion, approach vector, closing direction, gripper width, grasp type, final score, feature breakdown, and Top-K fallbacks.
+`best_grasp.json` contains split, image id, scene path, frame id, target id, target label, sentence command, bbox, 3D pose, projected 2D grasp center, GT grasp rectangles, final score, feature breakdown, and Top-K fallbacks.
 
 ## Global Outputs
 
@@ -203,8 +154,8 @@ outputs/paper_figures/
 
 ## Known Limitations
 
-- First version uses label images / target IDs, not Florence-2 grounding.
-- Category names are disabled by default because GraspNet label values must be matched to a trusted dataset-specific label table. Without a trusted table, commands fall back to pseudo-language such as `pick object_003`. To enable real names, set `target_mapping.category_labels_path` and `target_mapping.category_labels_trusted: true` in `configs/dataset.yaml`.
+- OCID-VLG uses dataset-provided target boxes/masks as grounding supervision; Florence-2 grounding is not used in the default offline benchmark.
+- OCID-Grasp fallback generates class commands from `catalog.csv` only when natural language is missing.
 - The sampler is geometric and CPU-only. It is suitable for an offline Mac prototype, not a learned GraspNet baseline replacement.
-- Evaluation defaults to proxy validity. Full annotation matching against official 6D grasp labels is scaffolded but not fully implemented.
+- OCID 2D evaluation currently checks whether projected grasp centers fall inside GT grasp rectangles; this is a lightweight proxy, not full rectangle angle/IoU matching.
 - Depth scale, intrinsics, mask alignment, and coordinate conventions should be checked visually on a small subset before running all scenes.

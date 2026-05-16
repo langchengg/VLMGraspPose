@@ -1,0 +1,2 @@
+split,scene_id,camera,frame_id,target_id,command,runtime_total,runtime_load_sample,runtime_pointcloud_processing,runtime_sampling,runtime_feature_extraction,runtime_scoring
+ocid_grasp,ARID10/floor/bottom/box/seq03,ocid,result_2018-08-27-15-54-58,1,pick the cereal box,0.06571887500103912,0.015170583999861265,0.020750791001773905,0.0027974999975413084,0.02690933299891185,9.0667002950795e-05
