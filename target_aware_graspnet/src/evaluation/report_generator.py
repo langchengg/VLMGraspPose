@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+from pandas.errors import EmptyDataError
+
+from evaluation.split_evaluator import SplitEvaluator
+
+
+def generate_reports(output_root: Path, thresholds: dict, mode: str = "proxy") -> None:
+    output_root = Path(output_root)
+    evaluator = SplitEvaluator(thresholds, mode=mode)
+    split_rows = evaluator.evaluate_by_split(output_root)
+    scene_rows = evaluator.evaluate_by_scene(output_root)
+    pd.DataFrame(split_rows).to_csv(output_root / "metrics_by_split.csv", index=False)
+    pd.DataFrame(scene_rows).to_csv(output_root / "metrics_by_scene.csv", index=False)
+    runtime_rows = []
+    for best in output_root.glob("**/best_grasp.json"):
+        import json
+        with open(best) as f:
+            rec = json.load(f)
+        runtime_rows.append({
+            "split": rec.get("split"),
+            "scene_id": rec.get("scene_id"),
+            "camera": rec.get("camera"),
+            "frame_id": rec.get("frame_id"),
+            "target_id": rec.get("target_id"),
+            "command": rec.get("command"),
+            "runtime_total": sum(rec.get("runtime", {}).values()),
+            **{f"runtime_{k}": v for k, v in rec.get("runtime", {}).items()},
+        })
+    pd.DataFrame(runtime_rows).to_csv(output_root / "runtime_report.csv", index=False)
+    failure_rows = []
+    existing_failure_csv = output_root / "failure_cases.csv"
+    if existing_failure_csv.exists() and existing_failure_csv.stat().st_size > 0:
+        try:
+            failure_rows.extend(pd.read_csv(existing_failure_csv).to_dict("records"))
+        except EmptyDataError:
+            pass
+    for err in output_root.glob("**/error.json"):
+        import json
+        with open(err) as f:
+            rec = json.load(f)
+        sample = rec.get("sample", {})
+        failure_rows.append({
+            "split": sample.get("split"),
+            "scene_id": sample.get("scene_id"),
+            "camera": sample.get("camera"),
+            "frame_id": sample.get("frame_id"),
+            "target_id": sample.get("metadata", {}).get("target_id"),
+            "command": sample.get("metadata", {}).get("command"),
+            "error": rec.get("error_message"),
+        })
+    pd.DataFrame(failure_rows).to_csv(output_root / "failure_cases.csv", index=False)

@@ -1,0 +1,2 @@
+split,scene_id,camera,frame_id,target_id,command,status,error,runtime_total,final_score,target_overlap,center_distance,collision_penalty
+test_seen,scene_0100,realsense,0000,58,pick the camel figurine,success,,0.2939027080010419,0.7159265377234268,0.8122774677407136,0.019930690494228354,0.19136423400926866

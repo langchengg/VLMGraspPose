@@ -1,0 +1,10 @@
+proxy_thresholds:
+  target_overlap: 0.10
+  center_alignment: 0.30
+  collision_penalty: 0.50
+  depth_stability: 0.30
+  gripper_width_match: 0.30
+annotation_thresholds:
+  position_distance: 0.03
+  orientation_angle_deg: 30.0
+  width_tolerance: 0.02

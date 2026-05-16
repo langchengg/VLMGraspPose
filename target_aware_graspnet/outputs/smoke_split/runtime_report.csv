@@ -1,0 +1,2 @@
+split,scene_id,camera,frame_id,target_id,command,runtime_total,runtime_load_sample,runtime_target_selection,runtime_pointcloud_processing,runtime_sampling,runtime_feature_extraction,runtime_scoring
+test_seen,scene_0100,realsense,0000,58,pick the camel figurine,0.2939027080010419,0.03446420799991756,0.006758999999874504,0.07283704099972965,0.0022591249999095453,0.17748866700094368,9.466700066695921e-05

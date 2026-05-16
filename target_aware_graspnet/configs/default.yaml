@@ -1,0 +1,58 @@
+dataset:
+  root: ../data/raw/graspnet
+  output_root: outputs
+  camera: realsense
+  depth_scale: 1000.0
+  depth_trunc: 2.0
+  fallback_intrinsics:
+    width: 1280
+    height: 720
+    fx: 927.17
+    fy: 927.37
+    cx: 651.32
+    cy: 349.62
+processing:
+  voxel_size: 0.005
+  outlier_nb_neighbors: 20
+  outlier_std_ratio: 2.0
+  table_distance_threshold: 0.01
+  table_ransac_n: 3
+  table_num_iterations: 100
+  normal_radius: 0.02
+  normal_max_nn: 30
+sampler:
+  top_k: 5
+  min_width: 0.02
+  max_width: 0.10
+  width_margin: 0.01
+  top_down_samples: 8
+  side_samples: 8
+  bbox_samples: 8
+  normal_samples: 32
+  min_table_clearance: 0.015
+scoring:
+  weights:
+    initial_geometric_score: 0.20
+    target_overlap: 0.25
+    center_alignment: 0.15
+    gripper_width_match: 0.10
+    depth_stability: 0.10
+    approach_direction_score: 0.10
+    collision_penalty: -0.07
+    boundary_penalty: -0.03
+evaluation:
+  proxy_thresholds:
+    target_overlap: 0.10
+    center_alignment: 0.30
+    collision_penalty: 0.50
+    depth_stability: 0.30
+    gripper_width_match: 0.30
+  annotation_thresholds:
+    position_distance: 0.03
+    orientation_angle_deg: 30.0
+    width_tolerance: 0.02
+target_mapping:
+  command_mode: auto
+  default_full_evaluation: all_targets_per_frame
+  default_debug: one_target_per_frame
+  category_labels_path: ../data/metadata/object_id_to_name.json
