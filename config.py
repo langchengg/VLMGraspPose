@@ -1,5 +1,5 @@
 """
-VLMGraspPose — Central Configuration (local Florence-2-base + GraspNet + MLP stack)
+VLMGraspPose — Central Configuration (local Florence-2-base + RGB-D geometric + MLP stack)
 ====================================================================
 All paths, hyperparameters, object mappings, and text templates
 are defined here so every module shares a single source of truth.
@@ -79,25 +79,20 @@ MODELS_DIR = PROJECT_ROOT / "models"
 
 # Default local thesis stack
 DEFAULT_GROUNDING = "seg"
-DEFAULT_DETECTOR = "graspnet"
+DEFAULT_DETECTOR = "geometric"
 DEFAULT_RERANKER = "mlp"
 
 # Stage 1: Florence-2 base fine-tuned
 FLORENCE2_MODEL_ID  = "microsoft/Florence-2-base-ft"
 FLORENCE2_MODEL_DIR = MODELS_DIR / "florence2_base_ft"
 
-# Stage 2: GraspNet baseline detector
-GRASP_DETECTOR_DIR  = MODELS_DIR / "grasp_detector"
-GRASPNET_BASELINE_ROOT = PROJECT_ROOT / "external" / "graspnet-baseline"
-GRASPNET_CHECKPOINT_PATH = GRASP_DETECTOR_DIR / "checkpoint-rs.tar"
-GRASPNET_NUM_POINT = 20000
-GRASPNET_NUM_VIEW = 300
-GRASPNET_COLLISION_THRESH = -1.0
-GRASPNET_VOXEL_SIZE = 0.01
+# Stage 3: local RGB-D geometric sampler
+TARGET_MIN_POINTS = 30
+TABLE_PLANE_MAX_POINTS = 8000
+TABLE_PLANE_DISTANCE_THRESH = 0.01
 
-# Stage 4: Trained rerankers
-RERANKER_LOGREG_PATH = MODELS_DIR / "reranker_logreg_graspnet_predicted.pkl"
-RERANKER_MLP_PATH    = MODELS_DIR / "reranker_mlp_graspnet_predicted.pt"
+# Stage 5: trained MLP reranker
+RERANKER_MLP_PATH    = MODELS_DIR / "reranker_mlp_geometric_predicted.pt"
 
 # ═════════════════════════════════════════════════════════════════════
 #  RESULTS  (Steps 10–11)
@@ -116,29 +111,33 @@ VIEW_STRIDE  = 16                  # subsample: every Nth view
 # ═════════════════════════════════════════════════════════════════════
 #  GRASP GENERATION
 # ═════════════════════════════════════════════════════════════════════
-GRASP_TOP_K     = 50               # candidates per scene view
+GRASP_TOP_K     = 50               # candidates per text-target sample
 GRASP_MIN_WIDTH = 0.02             # metres
 GRASP_MAX_WIDTH = 0.10
 VOXEL_SIZE      = 0.005            # point-cloud down-sampling
 NORMAL_RADIUS   = 0.02
 NORMAL_MAX_NN   = 30
-ANTIPODAL_MAX_POINTS_FOR_SAMPLING = 5000
+GEOMETRIC_MAX_POINTS_FOR_SAMPLING = 5000
+GEOMETRIC_NUM_CENTER_SAMPLES = 300
+GEOMETRIC_LOCAL_RADIUS = 0.035
+GEOMETRIC_MIN_NEIGHBORS = 12
 
 # ═════════════════════════════════════════════════════════════════════
 #  FEATURE EXTRACTION  (Step 8)
 # ═════════════════════════════════════════════════════════════════════
 FEATURE_NAMES = [
-    "detector_score",          # f1
-    "dist_target_3d",          # f2
-    "proj_dist_2d",            # f3
-    "proj_overlap",            # f4
-    "target_points_ratio",     # f5
-    "nontarget_points_ratio",  # f6
-    "collision_risk",          # f7
-    "depth_consistency",       # f8
-    "florence_conf",           # f9
+    "target_overlap",             # f1
+    "center_alignment",           # f2
+    "distance_to_target_center",  # f3
+    "gripper_width_match",        # f4
+    "approach_direction_score",   # f5
+    "depth_stability",            # f6
+    "collision_penalty",          # f7
+    "boundary_penalty",           # f8
+    "initial_geometric_score",    # f9
+    "grounding_score",            # f10
 ]
-FEATURE_DIM = len(FEATURE_NAMES)   # 9
+FEATURE_DIM = len(FEATURE_NAMES)   # 10
 FEATURE_MAX_SCENE_POINTS = 50000
 
 # ═════════════════════════════════════════════════════════════════════
@@ -146,12 +145,15 @@ FEATURE_MAX_SCENE_POINTS = 50000
 # ═════════════════════════════════════════════════════════════════════
 # Rule-based weights
 RULE_WEIGHTS = {
-    "detector_score":       0.25,
-    "dist_target_3d":       0.15,   # applied as (1 − f)
-    "proj_overlap":         0.20,
-    "target_points_ratio":  0.20,
-    "collision_risk":       0.10,   # applied as (1 − f)
-    "florence_conf":        0.10,
+    "initial_geometric_score":  0.20,
+    "target_overlap":          0.25,
+    "center_alignment":        0.15,
+    "gripper_width_match":     0.10,
+    "depth_stability":         0.10,
+    "approach_direction_score": 0.10,
+    "collision_penalty":       0.07,
+    "boundary_penalty":        0.03,
+    "grounding_score":         0.05,
 }
 
 # MLP architecture

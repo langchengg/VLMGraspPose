@@ -3,7 +3,7 @@ scripts/step10_inference.py — Full-chain test-time inference
 ==============================================================
 Step 10: Run the complete pipeline on unseen test views.
 
-    Florence-2-base → depth→pcd → GraspNet baseline → features → MLP reranker → top-K
+    Florence-2-base → depth→pcd → RGB-D geometric sampler → features → MLP reranker → top-K
 
 Usage:
     python scripts/step10_inference.py --splits test_seen
@@ -27,12 +27,11 @@ from src.data_utils import (
     load_grasp_candidates,
 )
 from src.point_cloud import (
-    backproject_depth, add_colors,
-    crop_point_cloud_by_mask, crop_point_cloud_by_bbox,
-    crop_points_by_binary_mask,
+    backproject_depth,
 )
+from src.target_point_cloud import build_point_cloud_representation
 from src.grounding import get_grounder
-from src.grasp_detector import GraspNetDetector
+from src.grasp_detector import RGBDGeometricGraspSampler
 from src.feature_extractor import FeatureExtractor
 from src.reranker import get_reranker
 from src.label_builder import associate_grasp_to_object
@@ -97,17 +96,14 @@ def _find_model_path(reranker_name: str, detector: str) -> Path:
     if reranker_name in ("detector", "rule"):
         return None  # no model file needed
 
-    ext = ".pkl" if reranker_name == "logistic" else ".pt"
+    ext = ".pt"
     base_name = {
-        "logistic": "reranker_logreg",
         "mlp": "reranker_mlp",
-        "pairwise": "reranker_pairwise",
     }.get(reranker_name, f"reranker_{reranker_name}")
 
     # Search order: tagged (step09 output) → legacy untagged
     candidates = [
         config.RERANKER_MLP_PATH if reranker_name == "mlp" else None,
-        config.RERANKER_LOGREG_PATH if reranker_name == "logistic" else None,
         # Current naming: explicit grounding tags
         config.MODELS_DIR / f"{base_name}_{detector}_predicted{ext}",
         config.MODELS_DIR / f"{base_name}_{detector}_auto{ext}",
@@ -125,7 +121,7 @@ def _find_model_path(reranker_name: str, detector: str) -> Path:
         f"No trained {reranker_name} model found for detector={detector}.\n"
         f"Searched: {searched}\n"
         "Run: python scripts/step09_train_reranker.py --model mlp "
-        "--grounding predicted --detector graspnet"
+        "--grounding predicted --detector geometric"
     )
 
 
@@ -153,12 +149,11 @@ def run_inference(
     # Create detector for live inference (--no-cache)
     det = None
     if not use_cached_grasps:
-        if detector == "graspnet":
-            det = GraspNetDetector()
-        else:
+        if detector != "geometric":
             raise ValueError(
-                f"--no-cache requires detector type 'graspnet', got '{detector}'."
+                f"--no-cache requires detector type 'geometric', got '{detector}'."
             )
+        det = RGBDGeometricGraspSampler()
 
     # Warm up Florence-2 model before the timing loop (ISSUE-9 fix)
     if hasattr(grounder, '_ensure_loaded'):
@@ -222,35 +217,21 @@ def run_inference(
                     # GT label loaded ONLY for evaluation, never for features
                     gt_label = load_label(scene_dir, frame_id, camera)
 
-                    if use_cached_grasps:
-                        candidates = load_grasp_candidates(view_sample_id, detector)
-                    else:
-                        scene_points_live, scene_pixel_coords_live = backproject_depth(
-                            depth, K
-                        )
-                        colors = add_colors(rgb, scene_pixel_coords_live)
-                        candidates = det.detect(scene_points_live, colors)
-
                     pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
                     if pcd_path.exists():
                         pcd_data = np.load(str(pcd_path))
                         scene_points = pcd_data["points"]
                         scene_pixel_coords = pcd_data["pixel_coords"]
                     else:
-                        if use_cached_grasps:
-                            scene_points, scene_pixel_coords = backproject_depth(
-                                depth, K
-                            )
-                        else:
-                            scene_points = scene_points_live
-                            scene_pixel_coords = scene_pixel_coords_live
+                        scene_points, scene_pixel_coords = backproject_depth(
+                            depth, K
+                        )
 
                     ctx = {
                         "rgb": rgb,
                         "depth": depth,
                         "K": K,
                         "gt_label": gt_label,
-                        "candidates": candidates,
                         "scene_points": scene_points,
                         "scene_pixel_coords": scene_pixel_coords,
                     }
@@ -260,7 +241,6 @@ def run_inference(
                 depth = ctx["depth"]
                 K = ctx["K"]
                 gt_label = ctx["gt_label"]
-                candidates = ctx["candidates"]
                 scene_points = ctx["scene_points"]
                 scene_pixel_coords = ctx["scene_pixel_coords"]
 
@@ -275,49 +255,54 @@ def run_inference(
                 if grounding is None:
                     failure_reason = "grounding_failed"
                 else:
-                    # ── 3. Reuse grasp candidates ────────────────────
-                    if not candidates:
-                        failure_reason = "no_candidates"
+                    # ── 3. Build target point cloud from GROUNDING source
+                    if grounder_name == "gt":
+                        target_mask = (gt_label == target_mask_val)
                     else:
-                        # ── 4. Build target_mask from GROUNDING source
-                        if grounder_name == "gt":
-                            target_mask = (gt_label == target_mask_val)
+                        target_mask = grounding.mask
+
+                    pcr = build_point_cloud_representation(
+                        scene_points,
+                        scene_pixel_coords,
+                        grounding.bbox,
+                        target_mask=target_mask,
+                    )
+                    if len(pcr.clean_target_points) < config.TARGET_MIN_POINTS:
+                        failure_reason = "target_point_cloud_too_small"
+                    else:
+                        # ── 4. Generate or load target-conditioned candidates
+                        if use_cached_grasps:
+                            candidates = load_grasp_candidates(sample_id, detector)
                         else:
-                            target_mask = grounding.mask
+                            candidates = det.detect(pcr.clean_target_points)
 
-                        if target_mask is not None and target_mask.any():
-                            target_pts = crop_points_by_binary_mask(
-                                scene_points, scene_pixel_coords, target_mask,
-                            )
+                        if not candidates:
+                            failure_reason = "no_candidates"
                         else:
-                            target_pts, _ = crop_point_cloud_by_bbox(
-                                scene_points, scene_pixel_coords, grounding.bbox,
+                            # ── 5. Extract target-conditioned features
+                            features = extractor.extract_batch(
+                                candidates=candidates,
+                                target_bbox=grounding.bbox,
+                                target_mask=target_mask,
+                                target_points=pcr.clean_target_points,
+                                scene_points=scene_points,
+                                scene_pixel_coords=scene_pixel_coords,
+                                grounding_score=grounding.confidence,
+                                depth=depth,
+                                intrinsics=K,
                             )
 
-                        # ── 5. Extract features (NO GT label passed) ─
-                        features = extractor.extract_batch(
-                            candidates=candidates,
-                            target_bbox=grounding.bbox,
-                            target_mask=target_mask,
-                            target_points=target_pts,
-                            scene_points=scene_points,
-                            scene_pixel_coords=scene_pixel_coords,
-                            florence_conf=grounding.confidence,
-                            depth=depth,
-                            intrinsics=K,
-                        )
+                            # ── 6. Re-rank and select best grasp
+                            ranked = reranker.select_top_k(features, candidates, k=5)
 
-                        # ── 6. Rerank ────────────────────────────────
-                        ranked = reranker.select_top_k(features, candidates, k=5)
-
-                        # ── 7. Evaluate on-target using GT label ─────
-                        for g in ranked:
-                            cid = g["candidate_id"]
-                            c = candidates[cid]
-                            assoc = associate_grasp_to_object(
-                                c, scene_points, scene_pixel_coords, gt_label,
-                            )
-                            g["is_on_target"] = (assoc == target_mask_val)
+                            # ── 7. Evaluate on-target using GT label only
+                            for g in ranked:
+                                cid = g["candidate_id"]
+                                c = candidates[cid]
+                                assoc = associate_grasp_to_object(
+                                    c, scene_points, scene_pixel_coords, gt_label,
+                                )
+                                g["is_on_target"] = (assoc == target_mask_val)
 
             except Exception as e:
                 failure_reason = f"exception: {type(e).__name__}: {e}"
@@ -375,15 +360,15 @@ def main():
     )
     parser.add_argument(
         "--reranker", type=str, default=config.DEFAULT_RERANKER,
-        choices=["detector", "rule", "logistic", "mlp", "pairwise"],
+        choices=["detector", "rule", "mlp"],
     )
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--no-cache", action="store_true",
                         help="Don't use cached candidates, run detector live")
     parser.add_argument(
         "--detector", type=str, default=config.DEFAULT_DETECTOR,
-        choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's cached candidates to use (default: graspnet).",
+        choices=["geometric"],
+        help="Which detector's cached candidates to use (default: geometric).",
     )
     args = parser.parse_args()
 

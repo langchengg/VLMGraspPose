@@ -8,6 +8,7 @@ derived/
 # ── Model weights (download via scripts/download_weights.py) ────────
 models/
 external/
+.hf_cache/
 
 # ── Results (reproducible from pipeline) ────────────────────────────
 results/

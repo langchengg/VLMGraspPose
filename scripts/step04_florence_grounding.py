@@ -87,10 +87,12 @@ def run_grounding(
 
                 record = {
                     "sample_id": query["sample_id"],
+                    "target_label": query.get("object_name") or text_query,
                     "text_query": text_query,
                     "pred_bbox": result.bbox,
                     "pred_mask_path": pred_mask_path,
-                    "florence_confidence": result.confidence,
+                    "grounding_score": result.confidence,
+                    "center_2d": result.center_2d,
                     "grounding_latency": elapsed,
                     "split": split,
                 }

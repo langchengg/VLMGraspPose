@@ -6,7 +6,7 @@ language-conditioned target grasps.
 
 Usage:
     python scripts/step09_train_reranker.py
-    python scripts/step09_train_reranker.py --grounding predicted --detector graspnet
+    python scripts/step09_train_reranker.py --grounding predicted --detector geometric
 """
 
 import argparse
@@ -18,9 +18,7 @@ import pandas as pd
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
-from src.reranker import (
-    LogisticReranker, MLPReranker, PairwiseMLPReranker,
-)
+from src.reranker import MLPReranker
 
 
 def _find_feature_file(split: str, grounding: str = None,
@@ -37,7 +35,7 @@ def _find_feature_file(split: str, grounding: str = None,
     Args:
         split: split name (train, val, ...)
         grounding: 'oracle' or 'predicted'. If None, auto-detect.
-        detector: detector type to match (antipodal, graspnet, precomputed).
+        detector: detector type to match (geometric).
     """
     if grounding == "oracle":
         # Current naming first, then legacy
@@ -168,15 +166,11 @@ def load_train_val_data(grounding: str = None, detector: str = config.DEFAULT_DE
 def _model_save_path(model_name: str, detector: str, grounding: str) -> Path:
     """Generate a unique model save path including detector and grounding tags.
 
-    e.g. models/reranker_mlp_antipodal_predicted.pt
+    e.g. models/reranker_mlp_geometric_predicted.pt
     """
     grounding_tag = grounding or "auto"
-    if model_name == "logistic":
-        return config.MODELS_DIR / f"reranker_logreg_{detector}_{grounding_tag}.pkl"
-    elif model_name == "mlp":
+    if model_name == "mlp":
         return config.MODELS_DIR / f"reranker_mlp_{detector}_{grounding_tag}.pt"
-    elif model_name == "pairwise":
-        return config.MODELS_DIR / f"reranker_pairwise_{detector}_{grounding_tag}.pt"
     return config.MODELS_DIR / f"reranker_{model_name}_{detector}_{grounding_tag}.pt"
 
 
@@ -207,8 +201,8 @@ def train_reranker(model_name: str = config.DEFAULT_RERANKER, grounding: str = N
     train_file = _find_feature_file("train", grounding, detector)
     if train_file and "_oracle_" in train_file.name:
         print("  [WARN] Training on oracle features. Default inference uses")
-        print("         grounder=seg (predicted features). f5/f6/f9 may")
-        print("         have different distributions at test time. Consider:")
+        print("         grounder=seg (predicted features). Target geometry may")
+        print("         have a different distribution at test time. Consider:")
         print("           --grounding predicted")
         print("         or run step10 with --grounder gt.")
 
@@ -220,23 +214,9 @@ def train_reranker(model_name: str = config.DEFAULT_RERANKER, grounding: str = N
 
     save_path = _model_save_path(model_name, detector, grounding)
 
-    if model_name == "logistic":
-        reranker = LogisticReranker()
-        reranker.train(X_train, y_train)
-        reranker.save(save_path)
-        print(f"  Model saved → {save_path}")
-
-    elif model_name == "mlp":
+    if model_name == "mlp":
         reranker = MLPReranker(feature_dim=len(config.FEATURE_NAMES))
         reranker.train(X_train, y_train)
-        reranker.save(save_path)
-        print(f"  Model saved → {save_path}")
-
-    elif model_name == "pairwise":
-        # sample_ids_train comes from the MERGED table, guaranteeing
-        # exact row-correspondence with X_train/y_train.
-        reranker = PairwiseMLPReranker(feature_dim=len(config.FEATURE_NAMES))
-        reranker.train(X_train, y_train, sample_ids=sample_ids_train)
         reranker.save(save_path)
         print(f"  Model saved → {save_path}")
 
@@ -258,7 +238,7 @@ def main():
     )
     parser.add_argument(
         "--model", type=str, default=config.DEFAULT_RERANKER,
-        choices=["logistic", "mlp", "pairwise"],
+        choices=["mlp"],
     )
     parser.add_argument(
         "--grounding", type=str, default=None,
@@ -268,8 +248,8 @@ def main():
     )
     parser.add_argument(
         "--detector", type=str, default=config.DEFAULT_DETECTOR,
-        choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's features/labels to use (default: graspnet).",
+        choices=["geometric"],
+        help="Which detector's features/labels to use (default: geometric).",
     )
     args = parser.parse_args()
     train_reranker(

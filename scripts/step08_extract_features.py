@@ -1,7 +1,7 @@
 """
 scripts/step08_extract_features.py — Extract candidate-specific features
 ==========================================================================
-Step 8: Turn each candidate into a 9-dim semantic-geometric feature vector.
+Step 8: Turn each candidate into a target-conditioned feature vector.
 
 Usage:
     python scripts/step08_extract_features.py
@@ -23,10 +23,7 @@ from src.data_utils import (
     load_label, load_depth, load_camera_intrinsics, get_factor_depth,
     load_grasp_candidates,
 )
-from src.point_cloud import (
-    crop_point_cloud_by_mask, crop_point_cloud_by_bbox,
-    crop_points_by_binary_mask,
-)
+from src.target_point_cloud import build_point_cloud_representation
 
 
 from src.feature_extractor import FeatureExtractor
@@ -102,7 +99,7 @@ def extract_features(
                     target_map[rec["sample_id"]] = {
                         "bbox": rec["pred_bbox"],
                         "mask_val": None,
-                        "confidence": rec.get("florence_confidence", 1.0),
+                        "confidence": rec.get("grounding_score", 1.0),
                         "mask_path": rec.get("pred_mask_path"),
                     }
 
@@ -131,46 +128,45 @@ def extract_features(
             if ctx is None:
                 ctx = {"skip": True}
 
-                candidates = load_grasp_candidates(view_sample_id, detector)
-                if candidates:
-                    pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
-                    if pcd_path.exists():
-                        pcd_data = np.load(str(pcd_path))
-                        scene_points = pcd_data["points"]
-                        scene_pixel_coords = pcd_data["pixel_coords"]
+                pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
+                if pcd_path.exists():
+                    pcd_data = np.load(str(pcd_path))
+                    scene_points = pcd_data["points"]
+                    scene_pixel_coords = pcd_data["pixel_coords"]
 
+                    try:
+                        factor = get_factor_depth(scene_dir, camera)
+                        depth = load_depth(scene_dir, frame_id, camera, factor)
+                        K = load_camera_intrinsics(scene_dir, camera)
+                    except Exception:
+                        depth = None
+                        K = None
+
+                    label = None
+                    if grounding == "oracle" and depth is not None and K is not None:
                         try:
-                            factor = get_factor_depth(scene_dir, camera)
-                            depth = load_depth(scene_dir, frame_id, camera, factor)
-                            K = load_camera_intrinsics(scene_dir, camera)
+                            label = load_label(scene_dir, frame_id, camera)
                         except Exception:
-                            depth = None
-                            K = None
+                            label = None
 
-                        label = None
-                        if grounding == "oracle" and depth is not None and K is not None:
-                            try:
-                                label = load_label(scene_dir, frame_id, camera)
-                            except Exception:
-                                label = None
-
-                        if depth is not None and K is not None and (grounding != "oracle" or label is not None):
-                            ctx = {
-                                "skip": False,
-                                "candidates": candidates,
-                                "scene_points": scene_points,
-                                "scene_pixel_coords": scene_pixel_coords,
-                                "depth": depth,
-                                "intrinsics": K,
-                                "label": label,
-                            }
+                    if depth is not None and K is not None and (grounding != "oracle" or label is not None):
+                        ctx = {
+                            "skip": False,
+                            "scene_points": scene_points,
+                            "scene_pixel_coords": scene_pixel_coords,
+                            "depth": depth,
+                            "intrinsics": K,
+                            "label": label,
+                        }
 
                 view_cache[view_sample_id] = ctx
 
             if ctx["skip"]:
                 continue
 
-            candidates = ctx["candidates"]
+            candidates = load_grasp_candidates(sample_id, detector)
+            if not candidates:
+                continue
             scene_points = ctx["scene_points"]
             scene_pixel_coords = ctx["scene_pixel_coords"]
             depth = ctx["depth"]
@@ -194,25 +190,23 @@ def extract_features(
                 if mask_path.exists():
                     target_mask = np.load(str(mask_path))
 
-            # Get target points using the grounding-consistent mask
-            if target_mask is not None and target_mask.any():
-                target_pts = crop_points_by_binary_mask(
-                    scene_points, scene_pixel_coords, target_mask,
-                )
-            else:
-                target_pts, _ = crop_point_cloud_by_bbox(
-                    scene_points, scene_pixel_coords, target["bbox"],
-                )
+            # Build the same PointCloudRepresentation contract used by Step 6.
+            pcr = build_point_cloud_representation(
+                scene_points,
+                scene_pixel_coords,
+                target["bbox"],
+                target_mask=target_mask,
+            )
 
             # Extract features (NO GT label passed)
             features = extractor.extract_batch(
                 candidates=candidates,
                 target_bbox=target["bbox"],
                 target_mask=target_mask,
-                target_points=target_pts,
+                target_points=pcr.clean_target_points,
                 scene_points=scene_points,
                 scene_pixel_coords=scene_pixel_coords,
-                florence_conf=target["confidence"],
+                grounding_score=target["confidence"],
                 depth=depth,
                 intrinsics=K,
             )
@@ -265,8 +259,8 @@ def main():
     )
     parser.add_argument(
         "--detector", type=str, default=config.DEFAULT_DETECTOR,
-        choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's candidates to use (default: graspnet).",
+        choices=["geometric"],
+        help="Which detector's candidates to use (default: geometric).",
     )
     args = parser.parse_args()
 

@@ -18,7 +18,7 @@ def _candidate(candidate_id: int) -> GraspCandidate:
         rotation=np.eye(3, dtype=np.float32).flatten().tolist(),
         width=0.05,
         detector_score=0.9,
-        source="antipodal",
+        source="geometric",
     )
 
 
@@ -99,13 +99,13 @@ class TrainingViewCacheTests(unittest.TestCase):
                 mock.patch.object(step07, "load_label", side_effect=counted_label),
                 mock.patch.object(step07, "associate_grasp_to_object", side_effect=counted_associate),
             ):
-                step07.build_labels(splits=["train"], detector="antipodal")
+                step07.build_labels(splits=["train"], detector="geometric")
 
-            self.assertEqual(counts["candidates"], 1)
+            self.assertEqual(counts["candidates"], 2)
             self.assertEqual(counts["pcd"], 1)
             self.assertEqual(counts["label"], 1)
-            self.assertEqual(counts["associate"], 1)
-            self.assertTrue((labels_dir / "train_antipodal_labels.parquet").exists())
+            self.assertEqual(counts["associate"], 2)
+            self.assertTrue((labels_dir / "train_geometric_labels.parquet").exists())
 
     def test_step08_reuses_view_level_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -199,15 +199,15 @@ class TrainingViewCacheTests(unittest.TestCase):
                 mock.patch.object(step08, "get_factor_depth", side_effect=counted_factor),
                 mock.patch.object(step08, "FeatureExtractor", return_value=fake_extractor),
             ):
-                step08.extract_features(splits=["train"], grounding="oracle", detector="antipodal")
+                step08.extract_features(splits=["train"], grounding="oracle", detector="geometric")
 
-            self.assertEqual(counts["candidates"], 1)
+            self.assertEqual(counts["candidates"], 2)
             self.assertEqual(counts["pcd"], 1)
             self.assertEqual(counts["label"], 1)
             self.assertEqual(counts["depth"], 1)
             self.assertEqual(counts["intrinsics"], 1)
             self.assertEqual(counts["factor"], 1)
-            self.assertTrue((features_dir / "train_oracle_antipodal_features.parquet").exists())
+            self.assertTrue((features_dir / "train_oracle_geometric_features.parquet").exists())
 
 
 if __name__ == "__main__":

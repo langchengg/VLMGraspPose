@@ -10,10 +10,11 @@ Implementations:
         - Box grounding:    <CAPTION_TO_PHRASE_GROUNDING>
         - Mask refinement:  <REFERRING_EXPRESSION_SEGMENTATION>
 
-Unified output: GroundingResult {bbox, mask, confidence}
+Unified output: GroundingResult {label, bbox, mask, confidence, center_2d}
 """
 
 import abc
+import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -25,6 +26,13 @@ from PIL import Image
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
+
+
+def prepare_florence_environment() -> None:
+    """Prepare local runtime defaults for Florence-2 remote code loading."""
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("HF_HOME", str(config.PROJECT_ROOT / ".hf_cache"))
+    Path(os.environ["HF_HOME"]).mkdir(parents=True, exist_ok=True)
 
 
 def ensure_florence_transformers_compat(version: str) -> None:
@@ -63,11 +71,25 @@ class GroundingResult:
     bbox: List[int]              # [x1, y1, x2, y2]
     mask: Optional[np.ndarray]   # HxW bool or None
     confidence: float            # 0–1
+    label: Optional[str] = None
 
     def to_dict(self) -> dict:
-        d = {"bbox": self.bbox, "confidence": self.confidence}
+        d = {
+            "label": self.label,
+            "bbox": self.bbox,
+            "confidence": self.confidence,
+            "center_2d": self.center_2d,
+        }
         d["has_mask"] = self.mask is not None
         return d
+
+    @property
+    def center_2d(self) -> List[float]:
+        if self.mask is not None and self.mask.any():
+            ys, xs = np.where(self.mask)
+            return [float(xs.mean()), float(ys.mean())]
+        x1, y1, x2, y2 = self.bbox
+        return [(x1 + x2) / 2.0, (y1 + y2) / 2.0]
 
 
 # ── Base class ───────────────────────────────────────────────────────
@@ -117,7 +139,7 @@ class GroundTruthGrounder(TargetGrounder):
             return None
 
         bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
-        return GroundingResult(bbox=bbox, mask=mask, confidence=1.0)
+        return GroundingResult(bbox=bbox, mask=mask, confidence=1.0, label=text_query)
 
 
 # ── Florence-2 Grounder (base, fine-tuned) ──────────────────────────
@@ -162,6 +184,8 @@ class Florence2Grounder(TargetGrounder):
     def _ensure_loaded(self):
         if self._model is not None:
             return
+
+        prepare_florence_environment()
 
         import torch
         import transformers
@@ -231,7 +255,10 @@ class Florence2Grounder(TargetGrounder):
             image_size=(W, H),
         )
 
-        return self._extract_result(parsed, task_prompt, W, H)
+        result = self._extract_result(parsed, task_prompt, W, H)
+        if result is not None:
+            result.label = text_query
+        return result
 
     def _extract_result(
         self, parsed: dict, task_prompt: str, W: int, H: int,

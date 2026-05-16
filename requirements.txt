@@ -1,6 +1,5 @@
 numpy>=1.24
 scipy>=1.10
-scikit-learn>=1.3
 torch>=2.0
 Pillow>=9.0
 tqdm>=4.60
@@ -15,6 +14,3 @@ transformers>=4.40,<5
 einops>=0.7
 timm>=0.9
 gdown>=5.0
-# Official GraspNet baseline is installed from external/graspnet-baseline.
-# It includes compiled pointnet2/knn operators and is not a plain pip dep.
-# Install graspnetAPI from source as described in README.md.

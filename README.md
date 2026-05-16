@@ -1,224 +1,416 @@
 # VLMGraspPose
 
-**Target-aware 6-DoF grasp selection with Florence-2-base, GraspNet baseline, and an MLP semantic-geometric reranker.**
+Language-guided target-aware RGB-D grasping pipeline.
 
-This repository is a local, script-driven research pipeline for the following
-framework:
+Core flow:
 
 ```text
-RGB-D scene + text target
-  -> Florence-2-base-ft target grounding
-  -> full-scene GraspNet baseline proposals
-  -> semantic-geometric feature extraction
-  -> MLP scoring head
-  -> top-K / top-1 target-aware 6-DoF grasp
+Text Command + RGB-D Image
+-> Target Grounding
+-> Target Point Cloud Extraction
+-> Open3D-based RGB-D Geometric Grasp Sampler
+-> Target-Conditioned Semantic-Geometric Re-Ranker
+-> Best Grasp Pose Selection
+-> Simulation / Robot Execution
 ```
 
-Dataset files are expected in the official GraspNet-1Billion layout under
-`data/raw/graspnet/`, and model weights are downloaded from Hugging Face /
-Google Drive with the provided scripts.
+The project no longer uses Kaggle code paths, official GraspNet baseline
+inference, or CUDA-only grasp proposal networks. The local proposal module is
+`RGBDGeometricGraspSampler`, which runs from target RGB-D point-cloud geometry.
+
+Dataset files are expected under:
+
+```text
+data/raw/graspnet/scenes/scene_0000 ... scene_0189
+```
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    A["Input: RGB-D scene"] --> B["Depth to point cloud"]
-    C["Input: text target, e.g. pick the mug"] --> D["Florence-2-base-ft grounding"]
-    A --> D
-    D --> E["Target bbox / mask"]
-    B --> F["Official GraspNet baseline"]
-    F --> G["Top-K 6-DoF grasp proposals"]
-    E --> H["Semantic-geometric feature extraction"]
-    B --> H
-    G --> H
-    H --> I["9-dim feature vector per candidate"]
-    I --> J["MLP scoring head"]
-    J --> K["Target-aware ranked grasps"]
-    K --> L["Top-1 grasp pose"]
+    A["Text command"] --> B["Target Grounding"]
+    C["RGB image"] --> B
+    C --> D["RGB-D to Point Cloud Processing"]
+    E["Depth image"] --> D
+    F["Camera intrinsics"] --> D
+    B --> G["TargetRegion: label, bbox, mask, score, center_2d"]
+    G --> D
+    D --> H["PointCloudRepresentation: scene_pcd, target_pcd, table_plane, center, AABB, OBB, normals"]
+    H --> I["Open3D-based RGB-D Geometric Grasp Sampler"]
+    I --> J["GraspCandidates: position, orientation, approach, closing, width, type, initial score"]
+    J --> K["Candidate-Target Feature Association"]
+    G --> K
+    H --> K
+    K --> L["CandidateFeatureVector"]
+    L --> M["Target-Conditioned Semantic-Geometric Re-Ranker"]
+    J --> M
+    M --> N["ScoredGrasps"]
+    N --> O["Best Grasp Pose Selection"]
+    O --> P["Visualization / Simulation / Robot Execution"]
 ```
 
-## Implemented Stack
+## Module Contracts
 
-| Stage | Implementation |
-|---|---|
-| Target grounding | `microsoft/Florence-2-base-ft`, frozen, `seg` by default |
-| Grasp proposals | Official `graspnet/graspnet-baseline`, RealSense checkpoint by default |
-| Feature vector | 9 semantic-geometric features in camera frame |
-| Scoring | `MLPReranker`, 2-layer MLP scoring head |
-| Evaluation | Target-ranking metrics: Success@K, Precision@K, AP |
+### Module 0: System Input
 
-The older rule/logistic/pairwise rerankers and antipodal sampler remain importable
-for regression tests and legacy artifacts, but the default local path is
-`Florence-2-base-ft + GraspNet baseline + MLP`.
+Input:
 
-## Local Setup
-
-### 1. Python Environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+```text
+Text command: "pick the red mug"
+RGB image: H x W x 3
+Depth image: H x W
+Camera intrinsics: fx, fy, cx, cy
 ```
 
-### 2. Install Official GraspNet Baseline
+Output:
 
-The GraspNet baseline contains compiled CUDA/C++ operators, so it is not vendored
-inside this repository.
-
-```bash
-mkdir -p external
-git clone https://github.com/graspnet/graspnet-baseline external/graspnet-baseline
-
-cd external/graspnet-baseline
-pip install -r requirements.txt
-
-cd pointnet2
-python setup.py install
-
-cd ../knn
-python setup.py install
-
-cd ../..
-git clone https://github.com/graspnet/graspnetAPI external/graspnetAPI
-cd external/graspnetAPI
-pip install -e .
-cd ../..
+```text
+Raw observation bundle used by every downstream module.
 ```
 
-If you keep the baseline somewhere else, set:
+Why this output is needed:
 
-```bash
-export GRASPNET_BASELINE_ROOT=/absolute/path/to/graspnet-baseline
+Language tells the system what to pick. RGB localizes visual target regions.
+Depth and intrinsics convert pixels into metric 3D points.
+
+Next module use:
+
+`Target Grounding` consumes text + RGB. `Point Cloud Processing` consumes RGB-D
+and intrinsics.
+
+### Module 1: Target Grounding
+
+Implementation:
+
+```text
+src/grounding.py
+scripts/step04_florence_grounding.py
+Default model: microsoft/Florence-2-base-ft
 ```
 
-### 3. Download Data and Weights
+Input:
 
-```bash
-# GraspNet data into data/raw/graspnet/
-python scripts/download_data.py --all
-
-# Florence-2-base-ft and GraspNet RealSense checkpoint
-python scripts/download_weights.py --all --camera realsense
+```text
+Text command
+RGB image
 ```
 
-For a smaller first run, download only the test split and required labels, then
-run the pipeline on `test_seen` or a small `--max-samples` subset.
+Output:
+
+```python
+TargetRegion = {
+    "label": "red mug",
+    "bbox": [x1, y1, x2, y2],
+    "mask": "H x W binary mask or None",
+    "grounding_score": 1.0,
+    "center_2d": [u, v],
+}
+```
+
+Why this output is needed:
+
+It identifies the user-specified object. The bbox/mask defines where to extract
+the target point cloud. The score is a confidence channel for reranking.
+
+Next module use:
+
+`Target Point Cloud Extraction` uses bbox/mask to isolate target RGB-D points.
+`Candidate-Target Association` uses bbox/mask/score to compute target-aware
+features.
+
+### Module 2: Target Point Cloud Extraction
+
+Implementation:
+
+```text
+src/target_point_cloud.py
+src/point_cloud.py
+scripts/step05_depth_to_pcd.py
+```
+
+Input:
+
+```text
+RGB image
+Depth image
+Camera intrinsics
+TargetRegion bbox / mask
+```
+
+Output:
+
+```python
+PointCloudRepresentation = {
+    "scene_pcd": "all valid RGB-D scene points",
+    "target_pcd": "raw target points from mask or bbox",
+    "clean_target_pcd": "Open3D-denoised/downsampled target cloud",
+    "table_plane": [a, b, c, d] or None,
+    "target_center_3d": [x, y, z],
+    "target_aabb": {"min": [...], "max": [...], "extent": [...]},
+    "target_obb": {"center": [...], "rotation": [...], "extent": [...]},
+    "surface_normals": "N x 3 target normals",
+}
+```
+
+Why this output is needed:
+
+The sampler needs 3D target shape, size, pose, normals, and table context. The
+scene cloud remains available for collision and evaluation.
+
+Next module use:
+
+`RGBDGeometricGraspSampler` uses `clean_target_pcd`. Feature association uses
+target center, target points, scene points, and table/geometry cues.
+
+### Module 3: Open3D-based RGB-D Geometric Grasp Sampler
+
+Implementation:
+
+```text
+src/grasp_detector.py
+scripts/step06_grasp_candidates.py
+```
+
+Input:
+
+```python
+SamplerInput = {
+    "clean_target_pcd": target points,
+    "surface_normals": target normals,
+    "target_obb": oriented bounding box,
+    "table_plane": optional plane,
+    "gripper_config": {
+        "min_width": 0.02,
+        "max_width": 0.10,
+    },
+}
+```
+
+Output:
+
+```python
+GraspCandidate = {
+    "position": [x, y, z],
+    "orientation": "3 x 3 rotation matrix flattened",
+    "approach_vector": [ax, ay, az],
+    "closing_direction": [cx, cy, cz],
+    "gripper_width": 0.045,
+    "grasp_type": "normal_based",
+    "initial_geometric_score": 0.72,
+}
+```
+
+Why this output is needed:
+
+It proposes physically meaningful 6-DoF grasp poses from target geometry. It is
+not the final decision; it only creates candidate actions.
+
+Next module use:
+
+`Candidate-Target Association` computes a feature vector for every candidate.
+`Re-Ranker` uses the candidate pose and initial score as part of final scoring.
+
+### Module 4: Candidate-Target Feature Association
+
+Implementation:
+
+```text
+src/feature_extractor.py
+scripts/step08_extract_features.py
+```
+
+Input:
+
+```text
+GraspCandidates
+TargetRegion
+PointCloudRepresentation
+Depth image
+Camera intrinsics
+```
+
+Output:
+
+```python
+CandidateFeatureVector = {
+    "target_overlap": 0.82,
+    "center_alignment": 0.76,
+    "distance_to_target_center": 0.028,
+    "gripper_width_match": 0.91,
+    "approach_direction_score": 0.80,
+    "depth_stability": 0.74,
+    "collision_penalty": 0.12,
+    "boundary_penalty": 0.18,
+    "initial_geometric_score": 0.72,
+    "grounding_score": 1.0,
+}
+```
+
+Why this output is needed:
+
+The sampler only says what is geometrically plausible. These features measure
+whether the candidate is aligned with the specified target and safe enough to
+execute.
+
+Next module use:
+
+The MLP re-ranker consumes this vector and outputs a final target-conditioned
+score.
+
+### Module 5: Target-Conditioned Semantic-Geometric Re-Ranker
+
+Implementation:
+
+```text
+src/reranker.py
+scripts/step09_train_reranker.py
+```
+
+Input:
+
+```text
+GraspCandidates
+CandidateFeatureVectors
+Grounding confidence
+```
+
+Output:
+
+```python
+ScoredGrasp = {
+    "candidate": "GraspCandidate fields",
+    "feature_vector": [...],
+    "final_score": 0.86,
+    "rank": 1,
+}
+```
+
+Why this output is needed:
+
+The system must choose the grasp most likely to pick the intended object, not
+just any stable grasp.
+
+Next module use:
+
+`Best Grasp Pose Selector` takes the ranked list and emits Top-1 plus fallback
+grasps.
+
+### Module 6: Best Grasp Pose Selection
+
+Implementation:
+
+```text
+src/reranker.py select_top_k()
+scripts/step10_inference.py
+```
+
+Input:
+
+```text
+ScoredGrasps
+```
+
+Output:
+
+```python
+BestGrasp = {
+    "position": [x, y, z],
+    "orientation": "3 x 3 rotation matrix flattened",
+    "approach_vector": [ax, ay, az],
+    "closing_direction": [cx, cy, cz],
+    "gripper_width": 0.045,
+    "score": 0.86,
+    "fallback_grasps": ["rank 2", "rank 3", "rank 4"],
+}
+```
+
+Why this output is needed:
+
+It is the executable grasp command. Top-K fallback grasps allow retry without
+rerunning the complete perception pipeline.
+
+Next module use:
+
+Visualization, simulation, or robot execution consumes the final pose.
+
+### Module 7: Visualization / Simulation / Robot Execution
+
+Implementation:
+
+```text
+vis/
+scripts/step10_inference.py output JSON
+```
+
+Input:
+
+```text
+BestGrasp
+Top-K ScoredGrasps
+Scene point cloud
+Target point cloud
+Robot model optional
+```
+
+Output:
+
+```text
+Visualization: scene cloud, target cloud, candidates, best grasp
+Simulation: success/failure, collision, lift result
+Robot: pre-grasp pose, grasp pose, close gripper, lift pose
+```
+
+Why this output is needed:
+
+It supports debugging, reporting, and eventual execution. Real robot execution
+is optional and outside the required local pipeline.
 
 ## Run Pipeline
 
-Run the steps in order:
-
 ```bash
-# Step 1: index GraspNet views
 python scripts/step01_build_index.py
-
-# Step 2: create text queries from visible object IDs
 python scripts/step02_create_queries.py
-
-# Step 3: build oracle target boxes/masks from GT labels
 python scripts/step03_oracle_targets.py
-
-# Step 4: run Florence-2-base-ft grounding
-python scripts/step04_florence_grounding.py --splits train val test_seen
-
-# Step 5: convert depth maps to point clouds
+python scripts/step04_florence_grounding.py --splits train val test_seen --task seg
 python scripts/step05_depth_to_pcd.py
-
-# Step 6: generate full-scene GraspNet baseline candidates
-python scripts/step06_grasp_candidates.py --splits train val test_seen
-
-# Step 7: build target-aware labels for MLP training
-python scripts/step07_build_labels.py --splits train val
-
-# Step 8: extract semantic-geometric features
-python scripts/step08_extract_features.py --splits train val
-
-# Step 9: train the MLP scoring head
-python scripts/step09_train_reranker.py --model mlp --grounding predicted
-
-# Step 10: run full inference
-python scripts/step10_inference.py --splits test_seen
-
-# Step 11: evaluate target-aware ranking
-python scripts/step11_evaluate.py --splits test_seen --grounder seg --reranker mlp --detector graspnet
+python scripts/step06_grasp_candidates.py --splits train val test_seen --grounding predicted --task seg --detector geometric
+python scripts/step07_build_labels.py --splits train val --detector geometric
+python scripts/step08_extract_features.py --splits train val --grounding predicted --task seg --detector geometric
+python scripts/step09_train_reranker.py --model mlp --grounding predicted --detector geometric
+python scripts/step10_inference.py --splits test_seen --grounder seg --reranker mlp --detector geometric
+python scripts/step11_evaluate.py --splits test_seen --grounder seg --reranker mlp --detector geometric
 ```
 
-Default configuration is centralized in `config.py`:
-
-```python
-DEFAULT_GROUNDING = "seg"
-DEFAULT_DETECTOR = "graspnet"
-DEFAULT_RERANKER = "mlp"
-FLORENCE2_MODEL_ID = "microsoft/Florence-2-base-ft"
-```
-
-## Feature Vector
-
-Each grasp candidate is represented by 9 features:
-
-| Feature | Meaning |
-|---|---|
-| `detector_score` | GraspNet baseline score |
-| `dist_target_3d` | 3D distance from grasp center to target centroid |
-| `proj_dist_2d` | 2D projected distance to target center |
-| `proj_overlap` | Projected overlap with target bbox/mask |
-| `target_points_ratio` | Fraction of target-mask points near gripper |
-| `nontarget_points_ratio` | Fraction of non-target points near gripper |
-| `collision_risk` | Local geometry collision heuristic |
-| `depth_consistency` | Grasp depth consistency with target region |
-| `florence_conf` | Grounding confidence placeholder; Florence-2 does not expose calibrated confidence |
+For a fast smoke test, pass `--max-samples` to Step 4 and Step 10, and restrict
+`--splits` to one split.
 
 ## Outputs
 
-| Directory | Contents |
+| Path | Contents |
 |---|---|
-| `derived/grounding_pred/` | Florence-2 grounding results |
-| `derived/pointclouds/` | View-level point clouds |
-| `derived/grasp_candidates/graspnet/` | GraspNet candidate caches |
-| `derived/rank_features/` | Feature parquet files |
-| `derived/rank_labels/` | Training label parquet files |
-| `models/` | Florence-2, GraspNet checkpoint, trained MLP |
-| `results/` | Predictions and metrics |
+| `derived/grounding_pred/` | TargetRegion records and predicted masks |
+| `derived/pointclouds/` | View-level RGB-D scene point clouds |
+| `derived/grasp_candidates/geometric/` | Target-level grasp candidate caches keyed by `sample_id` |
+| `derived/rank_features/` | CandidateFeatureVector parquet files |
+| `derived/rank_labels/` | Training labels for target-conditioned reranking |
+| `models/reranker_mlp_geometric_predicted.pt` | Trained MLP scoring head |
+| `results/` | BestGrasp, Top-K fallback grasps, metrics |
 
-## Evaluation Scope
+## Current Scope
 
-The implemented metrics evaluate target-aware ranking:
+Included:
 
-- `Target Success@1`
-- `Target Success@5`
-- `Precision@K`
-- target-ranking `Average Precision`
-- failure rate
+- Florence-2-base-ft target grounding
+- Target point-cloud extraction with Open3D fallback behavior
+- Open3D-based RGB-D geometric grasp sampling
+- Target-conditioned semantic-geometric features
+- MLP scoring head
+- Target-aware offline evaluation and visualization outputs
 
-They do **not** claim physical grasp execution success, force closure, or
-official GraspNet μ-AP. Robot execution is out of scope for this local pipeline.
+Not included:
 
-## Visualization
-
-```bash
-python -m vis.vis_2d --sample <sample_id> --grounder seg --reranker mlp
-python -m vis.vis_3d --sample <sample_id> --grounder seg --reranker mlp
-python -m vis.compare_gt --grounder seg --reranker mlp
-```
-
-Visualization outputs are written to `vis_output/`.
-
-## Troubleshooting
-
-If Step 6 fails with an import error, check:
-
-```bash
-echo $GRASPNET_BASELINE_ROOT
-python -c "from graspnetAPI import GraspGroup; print('graspnetAPI ok')"
-python -c "import sys; sys.path.insert(0, 'external/graspnet-baseline/models'); from graspnet import GraspNet, pred_decode; print('baseline ok')"
-```
-
-If Step 10 fails because no MLP checkpoint is found, run Step 9 first. Inference
-with `--reranker mlp` intentionally fails rather than silently using an untrained
-scorer.
-
-## License
-
-MIT for this repository. GraspNet data, code, and checkpoints are governed by
-their upstream licenses and non-commercial terms.
+- Official GraspNet baseline inference
+- Kaggle-specific paths or notebooks
+- CUDA-only custom grasp proposal operators
+- End-to-end VLM-to-6DoF training
+- Guaranteed robot hardware execution

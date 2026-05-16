@@ -26,7 +26,7 @@ class Step10InferenceTests(unittest.TestCase):
                 "split": "test_seen",
                 "grounder": "seg",
                 "reranker": "mlp",
-                "detector": "antipodal",
+                "detector": "geometric",
                 "best_grasp": {"candidate_id": 2},
                 "failure_reason": None,
             },
@@ -42,7 +42,7 @@ class Step10InferenceTests(unittest.TestCase):
                 "split": "test_seen",
                 "grounder": "seg",
                 "reranker": "mlp",
-                "detector": "antipodal",
+                "detector": "geometric",
                 "best_grasp": {"candidate_id": 4},
                 "failure_reason": None,
             },
@@ -58,7 +58,7 @@ class Step10InferenceTests(unittest.TestCase):
                 "split": "test_seen",
                 "grounder": "seg",
                 "reranker": "mlp",
-                "detector": "antipodal",
+                "detector": "geometric",
                 "best_grasp": {"candidate_id": 1},
                 "failure_reason": None,
             },
@@ -120,7 +120,7 @@ class Step10InferenceTests(unittest.TestCase):
                 rotation=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 width=0.04,
                 detector_score=0.9,
-                source="antipodal",
+                source="geometric",
             )
             fake_grounding = SimpleNamespace(
                 bbox=[0, 0, 4, 4],
@@ -137,7 +137,7 @@ class Step10InferenceTests(unittest.TestCase):
 
             class FakeExtractor:
                 def extract_batch(self, **kwargs):
-                    return np.zeros((1, 9), dtype=np.float32)
+                    return np.zeros((1, len(step10_inference.config.FEATURE_NAMES)), dtype=np.float32)
 
             class FakeReranker:
                 def select_top_k(self, features, candidates, k=5):
@@ -147,8 +147,11 @@ class Step10InferenceTests(unittest.TestCase):
                         "position": candidates[0].position,
                         "rotation": candidates[0].rotation,
                         "width": candidates[0].width,
-                        "grasp_score": candidates[0].detector_score,
-                        "rerank_score": 0.95,
+                        "initial_geometric_score": candidates[0].detector_score,
+                        "final_score": 0.95,
+                        "approach_vector": candidates[0].approach_vector,
+                        "closing_direction": candidates[0].closing_direction,
+                        "grasp_type": candidates[0].grasp_type,
                     }]
 
             points = np.array([[0.0, 0.0, 0.5]], dtype=np.float32)
@@ -166,6 +169,7 @@ class Step10InferenceTests(unittest.TestCase):
                  mock.patch.object(step10_inference.config, "RESULTS_DIR", results_dir), \
                  mock.patch.object(step10_inference.config, "POINTCLOUDS_DIR", root / "pointclouds"), \
                  mock.patch.object(step10_inference.config, "SCENES_DIR", scenes_dir), \
+                 mock.patch.object(step10_inference.config, "TARGET_MIN_POINTS", 1), \
                  mock.patch.object(step10_inference, "get_grounder", return_value=FakeGrounder()), \
                  mock.patch.object(step10_inference, "get_reranker", return_value=FakeReranker()), \
                  mock.patch.object(step10_inference, "FeatureExtractor", return_value=FakeExtractor()), \
@@ -181,7 +185,7 @@ class Step10InferenceTests(unittest.TestCase):
                     splits=["test_seen"],
                     grounder_name="seg",
                     reranker_name="rule",
-                    detector="antipodal",
+                    detector="geometric",
                 )
 
             self.assertEqual(load_rgb.call_count, 1)
@@ -189,12 +193,12 @@ class Step10InferenceTests(unittest.TestCase):
             self.assertEqual(load_depth.call_count, 1)
             self.assertEqual(load_intrinsics.call_count, 1)
             self.assertEqual(load_label.call_count, 1)
-            self.assertEqual(load_candidates.call_count, 1)
+            self.assertEqual(load_candidates.call_count, 2)
             self.assertEqual(backproject_depth.call_count, 1)
 
             grouped_path = (
                 results_dir
-                / "top1_by_view_test_seen_seg_rule_antipodal.json"
+                / "top1_by_view_test_seen_seg_rule_geometric.json"
             )
             self.assertTrue(grouped_path.exists())
 

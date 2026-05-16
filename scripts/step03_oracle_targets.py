@@ -71,8 +71,10 @@ def build_oracle_targets(splits: list = None):
 
                 record = {
                     "sample_id": query["sample_id"],
+                    "target_label": query.get("object_name"),
                     "target_object_id": obj_id,
                     "gt_bbox": gt_bbox,
+                    "center_2d": [(gt_bbox[0] + gt_bbox[2]) / 2.0, (gt_bbox[1] + gt_bbox[3]) / 2.0],
                     "gt_mask_val": int(mask_val),
                     "gt_visible_pixels": n_pixels,
                     "label_path": str(

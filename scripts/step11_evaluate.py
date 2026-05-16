@@ -224,9 +224,9 @@ def main():
     parser.add_argument("--grounder", type=str, default=None,
                         help="Filter by grounder (gt, phrase, seg)")
     parser.add_argument("--reranker", type=str, default=None,
-                        help="Filter by reranker (detector, rule, logistic, mlp, pairwise)")
+                        help="Filter by reranker (detector, rule, mlp)")
     parser.add_argument("--detector", type=str, default=None,
-                        help="Filter by detector (antipodal, graspnet, precomputed)")
+                        help="Filter by detector (geometric)")
     parser.add_argument("--ablation", action="store_true",
                         help="Run oracle vs predicted grounding ablation")
     args = parser.parse_args()

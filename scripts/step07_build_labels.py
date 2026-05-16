@@ -51,7 +51,7 @@ def _build_view_candidate_cache(
 
 
 def build_labels(splits: list = None, detector: str = config.DEFAULT_DETECTOR):
-    """Build training labels for all candidates."""
+    """Build training labels for target-conditioned candidates."""
     if splits is None:
         splits = config.TRAIN_SPLITS + config.VAL_SPLITS
 
@@ -94,49 +94,44 @@ def build_labels(splits: list = None, detector: str = config.DEFAULT_DETECTOR):
             if ctx is None:
                 ctx = {"skip": True}
 
-                candidates = load_grasp_candidates(view_sample_id, detector)
-                if candidates:
-                    pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
-                    if pcd_path.exists():
-                        pcd_data = np.load(str(pcd_path))
-                        scene_points = pcd_data["points"]
-                        scene_pixel_coords = pcd_data["pixel_coords"]
+                pcd_path = config.POINTCLOUDS_DIR / f"{view_sample_id}.npz"
+                if pcd_path.exists():
+                    pcd_data = np.load(str(pcd_path))
+                    scene_points = pcd_data["points"]
+                    scene_pixel_coords = pcd_data["pixel_coords"]
 
-                        scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
-                        try:
-                            label = load_label(scene_dir, frame_id, camera)
-                        except Exception:
-                            label = None
+                    scene_dir = config.SCENES_DIR / f"scene_{scene_id:04d}"
+                    try:
+                        label = load_label(scene_dir, frame_id, camera)
+                    except Exception:
+                        label = None
 
-                        if label is not None:
-                            ctx = {
-                                "skip": False,
-                                "candidates": candidates,
-                                "scene_points": scene_points,
-                                "scene_pixel_coords": scene_pixel_coords,
-                                "label": label,
-                            }
+                    if label is not None:
+                        ctx = {
+                            "skip": False,
+                            "scene_points": scene_points,
+                            "scene_pixel_coords": scene_pixel_coords,
+                            "label": label,
+                        }
 
                 view_cache[view_sample_id] = ctx
 
             if ctx["skip"]:
                 continue
 
-            candidates = ctx["candidates"]
+            candidates = load_grasp_candidates(sample_id, detector)
+            if not candidates:
+                continue
             scene_points = ctx["scene_points"]
             scene_pixel_coords = ctx["scene_pixel_coords"]
             label = ctx["label"]
 
-            base_labels = ctx.get("base_labels")
-            if base_labels is None:
-                base_labels = _build_view_candidate_cache(
-                    candidates,
-                    scene_points,
-                    scene_pixel_coords,
-                    label,
-                )
-                ctx["base_labels"] = base_labels
-
+            base_labels = _build_view_candidate_cache(
+                candidates,
+                scene_points,
+                scene_pixel_coords,
+                label,
+            )
             labels = []
             for base in base_labels:
                 is_on_target = base["associated_object_val"] == int(target_mask_val)
@@ -173,8 +168,8 @@ def main():
     parser.add_argument("--splits", nargs="+", default=None)
     parser.add_argument(
         "--detector", type=str, default=config.DEFAULT_DETECTOR,
-        choices=["antipodal", "graspnet", "precomputed"],
-        help="Which detector's candidates to use (default: graspnet).",
+        choices=["geometric"],
+        help="Which detector's candidates to use (default: geometric).",
     )
     args = parser.parse_args()
     build_labels(splits=args.splits, detector=args.detector)

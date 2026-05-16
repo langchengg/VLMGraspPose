@@ -3,22 +3,17 @@ src/feature_extractor.py — Per-candidate semantic-geometric features (Step 8)
 ===============================================================================
 Migrated + rewritten from stage3/feature_extractor.py.
 
-9 candidate-specific features for ranking:
-    f1  detector_score         raw grasp quality
-    f2  dist_target_3d         3D distance: grasp centre → target centroid
-    f3  proj_dist_2d           2D distance: grasp projection → target centre
-    f4  proj_overlap           projected overlap (IoU) with target region
-    f5  target_points_ratio    fraction of target points inside gripper
-    f6  nontarget_points_ratio fraction of non-target points inside gripper
-    f7  collision_risk         collision indicator (detector score proxy)
-    f8  depth_consistency      how close grasp depth matches target depth
-    f9  florence_conf          VLM grounding confidence (placeholder)
-
-Informative features by grounding mode:
-    Mode           Informative         Constant / degraded
-    oracle (GT)    f1–f8               f9=1.0
-    seg (mask)     f1–f8               f9=1.0
-    phrase (bbox)  f1–f4, f7, f8       f5=f6=0.5, f9=1.0
+10 candidate-specific features for target-conditioned ranking:
+    f1   target_overlap
+    f2   center_alignment
+    f3   distance_to_target_center
+    f4   gripper_width_match
+    f5   approach_direction_score
+    f6   depth_stability
+    f7   collision_penalty
+    f8   boundary_penalty
+    f9   initial_geometric_score
+    f10  grounding_score
 
 All spatial computations use **camera frame**.
 """
@@ -36,10 +31,10 @@ from src.grasp_detector import GraspCandidate
 
 
 class FeatureExtractor:
-    """Compute the 9-dim feature vector for each grasp candidate."""
+    """Compute the target-conditioned feature vector for each candidate."""
 
     def __init__(self, max_scene_points: int = config.FEATURE_MAX_SCENE_POINTS):
-        self.feature_dim = config.FEATURE_DIM  # 9
+        self.feature_dim = config.FEATURE_DIM
         self.feature_names = config.FEATURE_NAMES
         self.max_scene_points = max_scene_points
 
@@ -69,13 +64,13 @@ class FeatureExtractor:
         target_points: np.ndarray,
         scene_points: np.ndarray,
         scene_pixel_coords: np.ndarray,
-        florence_conf: float,
+        grounding_score: float,
         depth: np.ndarray,
         intrinsics: np.ndarray,
     ) -> np.ndarray:
         """Compute features for all candidates.
 
-        Returns (num_candidates, 9) float32 array.
+        Returns (num_candidates, config.FEATURE_DIM) float32 array.
         """
         if not candidates:
             return np.zeros((0, self.feature_dim), dtype=np.float32)
@@ -91,8 +86,11 @@ class FeatureExtractor:
                 target_points - target_center_3d, axis=1
             )
             d_max_3d = max(float(dists_to_center.max()) * 3.0, 0.1)
+            target_extent = np.ptp(target_points, axis=0)
+            target_width_scale = max(float(np.median(target_extent[:2])), 1e-3)
         else:
             d_max_3d = 1.0
+            target_width_scale = config.GRASP_MAX_WIDTH
 
         # Target depth stats
         x1, y1, x2, y2 = target_bbox
@@ -140,13 +138,14 @@ class FeatureExtractor:
                 target_points=target_points,
                 scene_points=scene_points,
                 scene_pixel_coords=scene_pixel_coords,
-                florence_conf=florence_conf,
+                grounding_score=grounding_score,
                 depth=depth,
                 intrinsics=intrinsics,
                 d_max_3d=d_max_3d,
                 target_depth_mean=target_depth_mean,
                 target_depth_max=target_depth_max,
                 img_diag=img_diag,
+                target_width_scale=target_width_scale,
             )
             features.append(feat)
 
@@ -163,69 +162,67 @@ class FeatureExtractor:
         target_points,
         scene_points,
         scene_pixel_coords,
-        florence_conf,
+        grounding_score,
         depth,
         intrinsics,
         d_max_3d,
         target_depth_mean,
         target_depth_max,
         img_diag,
+        target_width_scale,
     ) -> List[float]:
         pos_3d = np.array(c.position)
-
-        # ── f1: detector_score ───────────────────────────────────────
-        f1 = c.detector_score
-
-        # ── f2: dist_target_3d ───────────────────────────────────────
         dist_3d = float(np.linalg.norm(pos_3d - target_center_3d))
-        f2 = min(dist_3d / d_max_3d, 1.0)
-
-        # ── f3: proj_dist_2d ─────────────────────────────────────────
         uv = project_to_image(pos_3d.reshape(1, 3), intrinsics)[0]
-        dist_2d = float(np.linalg.norm(uv - target_center_2d))
-        f3 = min(dist_2d / (img_diag * 0.3), 1.0)
 
-        # ── f4: proj_overlap ─────────────────────────────────────────
-        f4 = self._compute_proj_overlap(
+        # f1: target_overlap
+        target_overlap = self._compute_proj_overlap(
             pos_3d, c.width, intrinsics, target_bbox, target_mask,
         )
 
-        # ── f5: target_points_ratio ──────────────────────────────────
-        # Uses target_mask (GT in oracle mode, predicted in VLM mode)
-        f5 = self._target_points_in_gripper(
-            pos_3d, c.width, scene_points, scene_pixel_coords,
-            target_mask, is_target=True,
-        )
+        # f2/f3: center alignment and normalized 3D distance
+        distance_to_target_center = min(dist_3d / d_max_3d, 1.0)
+        center_alignment = 1.0 - distance_to_target_center
 
-        # ── f6: nontarget_points_ratio ───────────────────────────────
-        f6 = self._target_points_in_gripper(
-            pos_3d, c.width, scene_points, scene_pixel_coords,
-            target_mask, is_target=False,
-        )
+        # f4: gripper width compatibility with target size
+        gripper_width_match = self._gripper_width_match(c.width, target_width_scale)
 
-        # ── f7: collision_risk (always geometry heuristic) ───────────
-        # Note: official collision labels are per-grasp-configuration
-        # and can't be indexed by candidate_id. Use heuristic instead.
-        f7 = self._collision_heuristic(
-            pos_3d, c.width, scene_points,
-        )
+        # f5: approach direction consistency
+        approach_direction_score = self._approach_direction_score(c, pos_3d)
 
-        # ── f8: depth_consistency ────────────────────────────────────
+        # f6: depth stability
         d_cand = pos_3d[2]
-        f8 = 1.0 - min(
+        depth_stability = 1.0 - min(
             abs(d_cand - target_depth_mean) / max(target_depth_max, 0.1),
             1.0,
         )
 
-        # ── f9: florence_conf ────────────────────────────────────────
-        # NOTE: Currently non-informative (constant 1.0).
-        # Florence-2 does not output per-prediction confidence scores.
-        # This feature channel is kept as a placeholder for future
-        # grounding models that do provide confidence.  It currently
-        # acts as a bias term and has zero predictive contribution.
-        f9 = florence_conf
+        # f7: collision penalty
+        collision_penalty = self._collision_heuristic(
+            pos_3d, c.width, scene_points,
+        )
 
-        return [f1, f2, f3, f4, f5, f6, f7, f8, f9]
+        # f8: boundary penalty
+        boundary_penalty = self._boundary_penalty(
+            uv, target_bbox, target_mask,
+        )
+
+        # f9/f10: sampler score and grounding confidence
+        initial_geometric_score = float(c.detector_score)
+        grounding_score = float(grounding_score)
+
+        return [
+            target_overlap,
+            center_alignment,
+            distance_to_target_center,
+            gripper_width_match,
+            approach_direction_score,
+            depth_stability,
+            collision_penalty,
+            boundary_penalty,
+            initial_geometric_score,
+            grounding_score,
+        ]
 
     # ── Feature helpers ──────────────────────────────────────────────
 
@@ -336,3 +333,51 @@ class FeatureExtractor:
         collision_radius = width * 0.6
         nearby = np.sum(dists < collision_radius)
         return min(float(nearby) / max(len(scene_points) * 0.01, 1), 1.0)
+
+    def _gripper_width_match(self, width: float, target_width_scale: float) -> float:
+        desired = np.clip(target_width_scale * 1.15, self._min_width(), self._max_width())
+        denom = max(self._max_width() - self._min_width(), 1e-6)
+        return float(np.clip(1.0 - abs(width - desired) / denom, 0.0, 1.0))
+
+    def _approach_direction_score(self, candidate: GraspCandidate, pos_3d: np.ndarray) -> float:
+        approach = np.asarray(candidate.approach_vector, dtype=np.float32)
+        if np.linalg.norm(approach) < 1e-6:
+            approach = candidate.rotation_matrix[:, 0]
+        approach = approach / (np.linalg.norm(approach) + 1e-8)
+        view_dir = -pos_3d / (np.linalg.norm(pos_3d) + 1e-8)
+        return float(np.clip(np.dot(-approach, view_dir), 0.0, 1.0))
+
+    def _boundary_penalty(
+        self,
+        uv: np.ndarray,
+        bbox: list,
+        mask: Optional[np.ndarray],
+    ) -> float:
+        u, v = float(uv[0]), float(uv[1])
+        if mask is not None and mask.any():
+            try:
+                import cv2
+
+                dist = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 3)
+                H, W = mask.shape[:2]
+                ui = int(np.clip(round(u), 0, W - 1))
+                vi = int(np.clip(round(v), 0, H - 1))
+                max_dist = max(float(dist.max()), 1.0)
+                return float(1.0 - np.clip(dist[vi, ui] / max_dist, 0.0, 1.0))
+            except Exception:
+                pass
+
+        x1, y1, x2, y2 = bbox
+        if u < x1 or u > x2 or v < y1 or v > y2:
+            return 1.0
+        dist_to_edge = min(u - x1, x2 - u, v - y1, y2 - v)
+        norm = max(min(x2 - x1, y2 - y1) * 0.5, 1.0)
+        return float(1.0 - np.clip(dist_to_edge / norm, 0.0, 1.0))
+
+    @staticmethod
+    def _min_width() -> float:
+        return config.GRASP_MIN_WIDTH
+
+    @staticmethod
+    def _max_width() -> float:
+        return config.GRASP_MAX_WIDTH

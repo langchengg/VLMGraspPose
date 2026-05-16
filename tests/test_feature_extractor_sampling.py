@@ -16,7 +16,7 @@ class FeatureExtractorSamplingTests(unittest.TestCase):
             rotation=np.eye(3, dtype=np.float32).flatten().tolist(),
             width=0.05,
             detector_score=0.9,
-            source="antipodal",
+            source="geometric",
         )
 
         scene_points = np.random.RandomState(0).rand(100, 3).astype(np.float32)
@@ -29,7 +29,7 @@ class FeatureExtractorSamplingTests(unittest.TestCase):
         def fake_compute_single(c, **kwargs):
             seen["num_scene_points"] = len(kwargs["scene_points"])
             seen["num_pixel_coords"] = len(kwargs["scene_pixel_coords"])
-            return [0.0] * 9
+            return [0.0] * len(extractor.feature_names)
 
         with mock.patch.object(extractor, "_compute_single", side_effect=fake_compute_single):
             features = extractor.extract_batch(
@@ -39,12 +39,12 @@ class FeatureExtractorSamplingTests(unittest.TestCase):
                 target_points=target_points,
                 scene_points=scene_points,
                 scene_pixel_coords=scene_pixel_coords,
-                florence_conf=1.0,
+                grounding_score=1.0,
                 depth=depth,
                 intrinsics=intrinsics,
             )
 
-        self.assertEqual(features.shape, (1, 9))
+        self.assertEqual(features.shape, (1, len(extractor.feature_names)))
         self.assertEqual(seen["num_scene_points"], 20)
         self.assertEqual(seen["num_pixel_coords"], 20)
 

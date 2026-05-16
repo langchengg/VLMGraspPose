@@ -262,11 +262,11 @@ def load_collision_labels(
 # ═════════════════════════════════════════════════════════════════════
 
 def load_grasp_candidates(
-    view_sample_id: str,
-    detector: str = "antipodal",
+    sample_id: str,
+    detector: str = "geometric",
     candidates_dir: Path = None,
 ) -> list:
-    """Load cached grasp candidates for a view.
+    """Load cached grasp candidates for a text-target sample.
 
     Searches detector-specific subdirectory first (new layout),
     then falls back to flat layout (legacy).
@@ -279,16 +279,24 @@ def load_grasp_candidates(
         candidates_dir = config.GRASP_CANDIDATES_DIR
 
     # New layout: derived/grasp_candidates/{detector}/{sample_id}.npz
-    path = candidates_dir / detector / f"{view_sample_id}.npz"
+    path = candidates_dir / detector / f"{sample_id}.npz"
     if not path.exists():
         # Legacy fallback: derived/grasp_candidates/{sample_id}.npz
-        path = candidates_dir / f"{view_sample_id}.npz"
+        path = candidates_dir / f"{sample_id}.npz"
     if not path.exists():
         return []
 
     data = np.load(str(path), allow_pickle=True)
     candidates = []
-    n = int(data.get("num_candidates", 0))
+    n = int(data["num_candidates"]) if "num_candidates" in data.files else len(data["positions"])
+    sources = data["sources"] if "sources" in data.files else np.array(["geometric"] * n)
+    approach_vectors = (
+        data["approach_vectors"] if "approach_vectors" in data.files else None
+    )
+    closing_directions = (
+        data["closing_directions"] if "closing_directions" in data.files else None
+    )
+    grasp_types = data["grasp_types"] if "grasp_types" in data.files else None
     for i in range(n):
         candidates.append(GraspCandidate(
             candidate_id=i,
@@ -296,7 +304,13 @@ def load_grasp_candidates(
             rotation=data["rotations"][i].tolist(),
             width=float(data["widths"][i]),
             detector_score=float(data["detector_scores"][i]),
-            source=str(data["sources"][i]),
+            source=str(sources[i]),
+            approach_vector=(
+                approach_vectors[i].tolist() if approach_vectors is not None else None
+            ),
+            closing_direction=(
+                closing_directions[i].tolist() if closing_directions is not None else None
+            ),
+            grasp_type=str(grasp_types[i]) if grasp_types is not None else "normal_based",
         ))
     return candidates
-

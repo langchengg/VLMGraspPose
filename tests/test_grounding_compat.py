@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from src import grounding
 
@@ -20,6 +21,13 @@ class FlorenceTransformersCompatTests(unittest.TestCase):
     def test_disables_generation_cache_for_florence(self):
         kwargs = grounding.florence_generation_kwargs()
         self.assertFalse(kwargs["use_cache"])
+
+    def test_prepares_local_florence_environment(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            grounding.prepare_florence_environment()
+            import os
+            self.assertEqual(os.environ["USE_TF"], "0")
+            self.assertIn(".hf_cache", os.environ["HF_HOME"])
 
 
 if __name__ == "__main__":

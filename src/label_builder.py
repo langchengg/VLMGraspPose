@@ -146,7 +146,7 @@ def generate_labels_for_sample(
     Two approaches:
       1. If candidates come from the official grasp set with matching indices,
          collision_labels can be used (not implemented — needs grasp matching).
-      2. Otherwise (antipodal sampler / GraspNet detector output after NMS),
+      2. Otherwise (local geometric sampler output),
          we use the detector score as a quality proxy instead.
 
     Returns list of label dicts, one per candidate.
