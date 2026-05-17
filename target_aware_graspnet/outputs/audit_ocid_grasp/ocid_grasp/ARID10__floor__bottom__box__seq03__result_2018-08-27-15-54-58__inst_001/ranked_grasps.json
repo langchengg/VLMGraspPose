@@ -1,0 +1,121 @@
+[
+  {
+    "candidate": {
+      "position": [
+        -0.010875498298470796,
+        -0.163237126856661,
+        0.7802781086093273
+      ],
+      "orientation": [
+        0.47962248899471305,
+        0.5195789334167776,
+        -0.47962248899471305,
+        0.5195789334167776
+      ],
+      "approach_vector": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "closing_direction": [
+        0.9957902950926516,
+        0.07976763200398437,
+        0.045153217867245916
+      ],
+      "gripper_width": 0.1,
+      "grasp_type": "top_down",
+      "initial_geometric_score": 0.75,
+      "metadata": {
+        "sampler": "top_down",
+        "axis_index": 0
+      }
+    },
+    "features": {
+      "target_overlap": 1.0,
+      "center_alignment": 0.8035585113055758,
+      "distance_to_target_center": 0.045299540920839876,
+      "gripper_width_match": 1.0,
+      "approach_direction_score": 1.0,
+      "depth_stability": 0.9955512285232544,
+      "collision_penalty": 0.0,
+      "boundary_penalty": 0.3444367051124573,
+      "initial_geometric_score": 0.75,
+      "grounding_score": 1.0,
+      "metadata": {}
+    },
+    "final_score": 0.8097557983947881,
+    "rank": 1,
+    "metadata": {
+      "score_breakdown": {
+        "initial_geometric_score": 0.15000000000000002,
+        "target_overlap": 0.25,
+        "center_alignment": 0.12053377669583636,
+        "gripper_width_match": 0.1,
+        "depth_stability": 0.09955512285232544,
+        "approach_direction_score": 0.1,
+        "collision_penalty": -0.0,
+        "boundary_penalty": -0.010333101153373717
+      }
+    }
+  },
+  {
+    "candidate": {
+      "position": [
+        -0.010875498298470796,
+        -0.163237126856661,
+        0.7349785676884875
+      ],
+      "orientation": [
+        0.7070736076891253,
+        0.0068493291266315875,
+        -0.7070736076891253,
+        0.0068493291266315875
+      ],
+      "approach_vector": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "closing_direction": [
+        0.011591335654167888,
+        -0.5982453390023358,
+        0.8012291528019513
+      ],
+      "gripper_width": 0.1,
+      "grasp_type": "bbox_aligned",
+      "initial_geometric_score": 0.8979032135541207,
+      "metadata": {
+        "sampler": "bbox_aligned",
+        "obb_axis": 2,
+        "axis_rank": 0
+      }
+    },
+    "features": {
+      "target_overlap": 1.0,
+      "center_alignment": 1.0,
+      "distance_to_target_center": 0.0,
+      "gripper_width_match": 1.0,
+      "approach_direction_score": 0.0,
+      "depth_stability": 0.995943009853363,
+      "collision_penalty": 0.0,
+      "boundary_penalty": 0.23005706071853638,
+      "initial_geometric_score": 0.8979032135541207,
+      "grounding_score": 1.0,
+      "metadata": {}
+    },
+    "final_score": 0.7722732318746044,
+    "rank": 2,
+    "metadata": {
+      "score_breakdown": {
+        "initial_geometric_score": 0.17958064271082416,
+        "target_overlap": 0.25,
+        "center_alignment": 0.15,
+        "gripper_width_match": 0.1,
+        "depth_stability": 0.09959430098533631,
+        "approach_direction_score": 0.0,
+        "collision_penalty": -0.0,
+        "boundary_penalty": -0.006901711821556091
+      }
+    }
+  }
+]

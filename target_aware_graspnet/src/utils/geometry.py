@@ -43,6 +43,43 @@ def project_points(points: np.ndarray, intrinsics: np.ndarray) -> np.ndarray:
     return np.stack([u, v], axis=1)
 
 
+def grasp_rectangle_2d(
+    position: np.ndarray,
+    closing_direction: np.ndarray,
+    gripper_width: float,
+    intrinsics: np.ndarray,
+    height_px: float = 18.0,
+    min_width_px: float = 8.0,
+    max_width_px: float = 220.0,
+) -> list[list[float]]:
+    position = np.asarray(position, dtype=float)
+    closing = normalize(closing_direction, np.array([1.0, 0.0, 0.0]))
+    K = np.asarray(intrinsics, dtype=float)
+    center = project_points(position.reshape(1, 3), K)[0]
+    half_width_3d = max(float(gripper_width), 1e-4) * 0.5
+    edge_points = np.stack([
+        position - closing * half_width_3d,
+        position + closing * half_width_3d,
+    ])
+    edge_uv = project_points(edge_points, K)
+    axis = edge_uv[1] - edge_uv[0]
+    axis_norm = np.linalg.norm(axis)
+    if axis_norm < 1e-6:
+        axis = np.array([1.0, 0.0])
+        axis_norm = 1.0
+    direction = axis / axis_norm
+    width_px = float(np.clip(axis_norm, min_width_px, max_width_px))
+    height_px = float(max(height_px, 4.0))
+    normal = np.array([-direction[1], direction[0]])
+    corners = np.stack([
+        center - 0.5 * width_px * direction - 0.5 * height_px * normal,
+        center + 0.5 * width_px * direction - 0.5 * height_px * normal,
+        center + 0.5 * width_px * direction + 0.5 * height_px * normal,
+        center - 0.5 * width_px * direction + 0.5 * height_px * normal,
+    ])
+    return corners.tolist()
+
+
 def distance_to_plane(points: np.ndarray, plane: np.ndarray | None) -> np.ndarray:
     points = np.asarray(points, dtype=float)
     if plane is None:

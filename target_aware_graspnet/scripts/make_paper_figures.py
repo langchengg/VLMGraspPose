@@ -5,10 +5,10 @@ import json
 import shutil
 from pathlib import Path
 
+from _common import ROOT
 import matplotlib.pyplot as plt
 import pandas as pd
-
-from _common import ROOT
+from pandas.errors import EmptyDataError
 
 
 def _best_records(output_root: Path) -> list[dict]:
@@ -77,10 +77,14 @@ def main() -> None:
 
     failure_csv = output_root / "failure_cases.csv"
     if failure_csv.exists() and failure_csv.stat().st_size > 0:
-        failures = pd.read_csv(failure_csv).head(args.num_failure)
-        fail_dir = figure_root / "failure_cases"
-        fail_dir.mkdir(parents=True, exist_ok=True)
-        failures.to_csv(fail_dir / "selected_failure_cases.csv", index=False)
+        try:
+            failures = pd.read_csv(failure_csv).head(args.num_failure)
+        except EmptyDataError:
+            failures = pd.DataFrame()
+        if not failures.empty:
+            fail_dir = figure_root / "failure_cases"
+            fail_dir.mkdir(parents=True, exist_ok=True)
+            failures.to_csv(fail_dir / "selected_failure_cases.csv", index=False)
 
     metric_csv = output_root / "metrics_by_split.csv"
     runtime_csv = output_root / "runtime_report.csv"

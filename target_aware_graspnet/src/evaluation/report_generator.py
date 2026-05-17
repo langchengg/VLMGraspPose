@@ -31,6 +31,7 @@ def generate_reports(output_root: Path, thresholds: dict, mode: str = "proxy") -
             **{f"runtime_{k}": v for k, v in rec.get("runtime", {}).items()},
         })
     pd.DataFrame(runtime_rows).to_csv(output_root / "runtime_report.csv", index=False)
+    failure_columns = ["split", "scene_id", "camera", "frame_id", "target_id", "command", "error"]
     failure_rows = []
     existing_failure_csv = output_root / "failure_cases.csv"
     if existing_failure_csv.exists() and existing_failure_csv.stat().st_size > 0:
@@ -52,4 +53,4 @@ def generate_reports(output_root: Path, thresholds: dict, mode: str = "proxy") -
             "command": sample.get("metadata", {}).get("command"),
             "error": rec.get("error_message"),
         })
-    pd.DataFrame(failure_rows).to_csv(output_root / "failure_cases.csv", index=False)
+    pd.DataFrame(failure_rows, columns=failure_columns).to_csv(output_root / "failure_cases.csv", index=False)
