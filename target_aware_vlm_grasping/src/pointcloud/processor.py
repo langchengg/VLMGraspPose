@@ -3,8 +3,9 @@ from __future__ import annotations
 import numpy as np
 
 from pointcloud.bbox_estimation import compute_aabb, compute_center, compute_obb
+from pointcloud.mask_refinement import refine_bbox_mask_with_depth, should_refine_target_mask
 from pointcloud.normal_estimation import estimate_normals, orient_normals_towards_camera
-from pointcloud.plane_segmentation import segment_table_plane
+from pointcloud.plane_segmentation import remove_plane_points, segment_table_plane
 from pointcloud.preprocessing import preprocess_target_pcd
 from pointcloud.rgbd_to_pointcloud import rgbd_to_pointcloud
 from pointcloud.target_extraction import crop_pointcloud_by_bbox, extract_target_pointcloud_from_mask
@@ -29,6 +30,14 @@ class PointCloudProcessor:
             depth_scale=1.0,
             depth_trunc=self.config.get("depth_trunc", 2.0),
         )
+        refinement_cfg = self.config.get("mask_refinement", {})
+        if target.bbox is not None and should_refine_target_mask(target.target_source, target.metadata, refinement_cfg):
+            refined_mask, refinement_meta = refine_bbox_mask_with_depth(target.bbox, depth, refinement_cfg)
+            target.mask = refined_mask
+            target.center_2d = _mask_center(refined_mask)
+            target.metadata["target_mask_source"] = refinement_meta["status"]
+            target.metadata["mask_refinement"] = refinement_meta
+
         if target.mask is not None:
             target_pcd = extract_target_pointcloud_from_mask(
                 np.asarray(scene_pcd.points), rgb, depth, target.mask, intrinsics
@@ -44,6 +53,12 @@ class PointCloudProcessor:
             self.config.get("table_ransac_n", 3),
             self.config.get("table_num_iterations", 100),
         )
+        if bool(self.config.get("remove_plane_from_target", True)):
+            target_pcd = remove_plane_points(
+                target_pcd,
+                plane,
+                self.config.get("target_plane_distance_threshold", self.config.get("table_distance_threshold", 0.01)),
+            )
         clean_target = preprocess_target_pcd(target_pcd, self.config)
         clean_target = estimate_normals(
             clean_target,
@@ -62,3 +77,10 @@ class PointCloudProcessor:
             target_obb=compute_obb(clean_target),
             surface_normals=normals,
         )
+
+
+def _mask_center(mask: np.ndarray) -> tuple[float, float] | None:
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return None
+    return float(xs.mean()), float(ys.mean())

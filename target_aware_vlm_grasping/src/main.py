@@ -156,6 +156,7 @@ class TargetAwareGraspPipeline:
                     "intrinsics": data["intrinsics"].tolist(),
                     "target_source_requested": target_source,
                     "scorer": scorer or self.scoring_cfg.get("method", "rule_based"),
+                    "scoring_weights": self.scoring_cfg.get("weights", {}),
                 },
             )
             self._save_outputs(result, data, pcr)
@@ -322,6 +323,8 @@ class TargetAwareGraspPipeline:
             "final_score": best_grasp["final_score"],
             "scorer": best.scorer_type,
             "scorer_type": best.scorer_type,
+            "scoring_weights": best.metadata.get("scoring_weights", result.metadata.get("scoring_weights", {})),
+            "scoring_formula": best.metadata.get("scoring_formula"),
             "feature_breakdown": best.features.to_json(),
             "gt_grasp_rectangles": result.metadata.get("gt_grasp_rectangles", []),
             "top_k_fallback_candidates": fallback,

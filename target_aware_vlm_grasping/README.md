@@ -14,6 +14,8 @@ Text command + RGB image + depth image + camera intrinsics
    - oracle mode: use dataset bbox / mask
    - VLM mode: optional Florence-2 / other grounding backend
 → target bbox / mask
+→ depth-based bbox mask refinement for bbox-only VLM output
+→ table/floor plane removal inside target region
 → target point cloud extraction
 → Open3D RGB-D geometric grasp sampler
 → candidate-target semantic-geometric feature extraction
@@ -134,6 +136,22 @@ python scripts/run_dataset.py \
   --resume
 ```
 
+Run every OCID-VLG refer split and train/val/test split with resume:
+
+```bash
+python scripts/run_dataset.py \
+  --dataset ocid_vlg \
+  --dataset-root data/OCID-VLG \
+  --refer-split all \
+  --split all \
+  --target-source vlm \
+  --vlm-backend florence2 \
+  --scorer rule_based \
+  --output-root outputs/vlm_all \
+  --top-k 5 \
+  --resume
+```
+
 OCID-Grasp fallback:
 
 ```bash
@@ -211,8 +229,45 @@ The output path includes the language-conditioned sample id, so multiple targets
 - GT and predicted bbox fields where available
 - best grasp pose, quaternion, approach vector, closing direction, width, type, score
 - feature breakdown
+- scoring weights and formula
 - Top-K fallback candidates
 - runtime
+
+## Important Parameters
+
+The VLM path is bbox-first. If the backend does not return a segmentation mask, the point cloud module refines the coarse bbox with depth before sampling grasps:
+
+```yaml
+# configs/pointcloud.yaml
+remove_plane_from_target: true
+target_plane_distance_threshold: 0.012
+mask_refinement:
+  enabled: true
+  apply_to_sources:
+    - vlm
+  foreground_percentile: 30.0
+  depth_band_m: 0.08
+  bbox_expansion_ratio: 0.30
+  bbox_bottom_expansion_ratio: 0.60
+  open_kernel: 3
+  close_kernel: 5
+  dilate_pixels: 3
+```
+
+The ranking stage is active by default. Rule-based scoring parameters are configurable:
+
+```yaml
+# configs/scoring.yaml
+weights:
+  initial_geometric_score: 0.20
+  target_overlap: 0.25
+  center_alignment: 0.15
+  gripper_width_match: 0.10
+  depth_stability: 0.10
+  approach_direction_score: 0.10
+  collision_penalty: -0.07
+  boundary_penalty: -0.03
+```
 
 ## Tests
 

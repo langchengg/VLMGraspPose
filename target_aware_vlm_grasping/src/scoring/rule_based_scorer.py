@@ -38,7 +38,16 @@ class RuleBasedScorer(ScorerInterface):
                 + self.weights.get("collision_penalty", -0.07) * feat.collision_penalty
                 + self.weights.get("boundary_penalty", -0.03) * feat.boundary_penalty
             )
-            metadata = {"score_breakdown": self._breakdown(feat)}
+            metadata = {
+                "score_breakdown": self._breakdown(feat),
+                "scoring_weights": dict(self.weights),
+                "scoring_formula": (
+                    "0.20*initial_geometric_score + 0.25*target_overlap + "
+                    "0.15*center_alignment + 0.10*gripper_width_match + "
+                    "0.10*depth_stability + 0.10*approach_direction_score - "
+                    "0.07*collision_penalty - 0.03*boundary_penalty"
+                ),
+            }
             scored.append(ScoredGrasp(candidate, feat, clamp_score(raw), rank=0, scorer_type="rule_based", metadata=metadata))
         scored.sort(key=lambda x: x.final_score, reverse=True)
         for i, sg in enumerate(scored, start=1):

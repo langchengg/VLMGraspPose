@@ -26,6 +26,10 @@ class VLMTargetGrounder(BaseTargetGrounder):
             if self._backend is None:
                 self._backend = build_vlm_backend(self.backend_name, self.backend_config)
             target = self._backend.ground(rgb_image, sample.command, target_id=sample.target_id)
+            target.metadata["vlm_predicted_label"] = target.label
+            if sample.target_label:
+                target.label = sample.target_label
+            target.command = sample.command
             target.target_source = "vlm"
             target.metadata["target_bbox_pred"] = target.bbox
             target.metadata["target_bbox_gt"] = sample.target_bbox_gt
@@ -42,4 +46,3 @@ class VLMTargetGrounder(BaseTargetGrounder):
             target.metadata["vlm_error"] = f"{type(exc).__name__}: {exc}"
             target.metadata["target_source_requested"] = "vlm"
             return target
-

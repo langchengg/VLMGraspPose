@@ -34,12 +34,34 @@ def _default_dataset_root(dataset: str) -> Path:
 def build_samples(args, output_root: Path):
     dataset_root = _resolve(args.dataset_root or _default_dataset_root(args.dataset))
     if args.dataset == "ocid_vlg":
-        return OCIDVLGIndexBuilder(dataset_root, output_root).build(
-            refer_split=args.refer_split,
-            split=args.split,
-            max_samples=args.max_samples,
-        )
+        builder = OCIDVLGIndexBuilder(dataset_root, output_root)
+        refer_splits = _resolve_refer_splits(dataset_root, args.refer_split)
+        splits = _resolve_splits(args.split)
+        samples = []
+        for refer_split in refer_splits:
+            for split in splits:
+                expressions = dataset_root / "refer" / refer_split / f"{split}_expressions.json"
+                if not expressions.exists():
+                    continue
+                remaining = None if args.max_samples is None else max(args.max_samples - len(samples), 0)
+                if remaining == 0:
+                    return samples
+                samples.extend(builder.build(refer_split=refer_split, split=split, max_samples=remaining))
+        return samples
     return OCIDGraspIndexBuilder(dataset_root, output_root).build(max_samples=args.max_samples)
+
+
+def _resolve_refer_splits(dataset_root: Path, value: str) -> list[str]:
+    if value != "all":
+        return [value]
+    refer_root = dataset_root / "refer"
+    return sorted(path.name for path in refer_root.iterdir() if path.is_dir())
+
+
+def _resolve_splits(value: str) -> list[str]:
+    if value != "all":
+        return [value]
+    return ["train", "val", "test"]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -47,8 +69,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dataset", choices=["ocid_vlg", "ocid_grasp"], default="ocid_vlg")
     parser.add_argument("--dataset-root", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=Path("outputs"))
-    parser.add_argument("--refer-split", default="multiple")
-    parser.add_argument("--split", default="test")
+    parser.add_argument("--refer-split", default="multiple", help="OCID-VLG refer split, or 'all'.")
+    parser.add_argument("--split", default="test", help="OCID-VLG split: train/val/test, or 'all'.")
     parser.add_argument("--target-source", choices=["oracle", "vlm"], default="oracle")
     parser.add_argument("--vlm-backend", default="florence2")
     parser.add_argument("--scorer", choices=["rule_based", "mlp"], default="rule_based")
