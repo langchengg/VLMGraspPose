@@ -1,153 +1,178 @@
-# Target-Aware OCID-VLG
+# Target-Aware VLM RGB-D Grasping
 
-Mac-compatible prototype for language-guided target-aware RGB-D grasping. OCID-VLG is the primary dataset. GraspNet support is kept only as a legacy/fallback path because GraspNet does not provide reliable object category names or natural-language referring expressions.
+Mac-compatible Python project for language-guided target-aware RGB-D grasping.
 
-The pipeline is:
+Primary dataset: OCID-VLG.  
+Auxiliary dataset: OCID-Grasp.  
+Legacy GraspNet code is archived under `legacy/graspnet_optional/` and is not part of the active pipeline.
+
+## Architecture
 
 ```text
-Text command + RGB-D image + camera intrinsics
--> Florence-2 target grounding or dataset target supervision
--> target point cloud extraction
--> Open3D RGB-D geometric grasp sampler
--> candidate-target semantic-geometric features
--> MLP scoring head target-conditioned re-ranking
--> Top-1 / Top-K grasp pose outputs
--> OCID 2D rectangle metrics and qualitative figures
+Text command + RGB image + depth image + camera intrinsics
+→ Target grounding
+   - oracle mode: use dataset bbox / mask
+   - VLM mode: optional Florence-2 / other grounding backend
+→ target bbox / mask
+→ target point cloud extraction
+→ Open3D RGB-D geometric grasp sampler
+→ candidate-target semantic-geometric feature extraction
+→ rule-based or optional MLP re-ranker
+→ Top-1 / Top-K grasp output
+→ evaluation and visualization
 ```
 
-This version intentionally avoids CUDA-only dependencies. It does not use the official GraspNet baseline, MinkowskiEngine, spconv, PointNet++ custom ops, or Isaac Sim.
+## What Each Module Does
 
-## Install
+- `src/dataset/`: loads OCID-VLG language-conditioned samples and OCID-Grasp fallback samples.
+- `src/target/`: target grounding abstraction. `OracleTargetGrounder` needs no VLM. `VLMTargetGrounder` lazy-loads optional backends.
+- `src/pointcloud/`: RGB-D to Open3D point cloud, target extraction, filtering, table plane segmentation, normals, AABB/OBB.
+- `src/grasp_sampler/`: CPU geometric grasp candidates: top-down, bbox-aligned, side, normal-based.
+- `src/association/`: features per candidate: overlap, center alignment, width match, depth stability, approach score, collision and boundary penalties.
+- `src/scoring/`: rule-based scorer and optional NumPy MLP scoring head.
+- `src/evaluation/`: proxy metrics, OCID 2D grasp rectangle metrics, grounding metrics, grouped reports.
+- `src/visualization/`: RGB overlay, Top-K projected grasps, 3D point cloud plot, export helpers.
+
+## Installation
 
 ```bash
-cd /Users/delaynomore/Downloads/VLMGraspPose/target_aware_graspnet
+cd /Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping
 python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
 ```
 
-Florence-2 grounding is optional because it requires local model dependencies and weights:
+Core dependencies are CPU/Mac compatible. Optional VLM dependencies are separate:
 
 ```bash
-python -m pip install -r requirements-florence.txt
+.venv/bin/pip install -r requirements-vlm.txt
 ```
 
-## Primary Dataset: OCID-VLG
+The core pipeline does not require CUDA, MinkowskiEngine, spconv, PointNet++ custom ops, Isaac Sim, AnyGrasp, or the official GraspNet baseline.
 
-Expected dataset root:
+## Dataset Setup
+
+OCID-VLG is expected by default at:
 
 ```text
-/Users/delaynomore/Downloads/VLMGraspPose/data/raw/OCID-VLG
+../data/raw/OCID-VLG
 ```
 
-Expected OCID-VLG fields:
+The loader expects OCID-VLG samples with:
+
+- RGB image
+- depth image
+- sentence / referring expression
+- target label
+- target bbox
+- target mask if available
+- 2D grasp rectangles if available
+- fallback camera intrinsics from config
+
+OCID-Grasp can be used as auxiliary data. If language is missing, commands are generated from class labels, for example:
 
 ```text
-refer/{unique,multiple,novel-classes,novel-instances}/{train,val,test}_expressions.json
-ARID*/.../rgb/*.png
-ARID*/.../depth/*.png
-ARID*/.../seg_mask_instances_combi/*.png
-grasps from expression JSON or Grasps_per_instance
+pick the cup
+pick the left cup
+pick the right bottle
 ```
 
-Each OCID-VLG processing unit is:
+## Run One Sample
 
-```text
-(image_id, sentence, target_label, target_bbox, target_mask)
-```
-
-The `sentence` / `question` field is used directly as the command. Pseudo object-id commands are not generated unless language is missing.
-
-## OCID Commands
-
-Run one OCID-VLG language target:
+Oracle mode uses dataset target bbox / mask:
 
 ```bash
-python scripts/run_ocid_one.py \
+python scripts/run_one_sample.py \
+  --dataset ocid_vlg \
   --dataset-root ../data/raw/OCID-VLG \
-  --refer-split multiple \
-  --split test \
   --index 0 \
-  --output-root outputs/ocid_debug \
+  --target-source oracle \
+  --scorer rule_based \
+  --output-root outputs/debug \
   --top-k 5 \
   --overwrite
 ```
 
-Run with Florence-2 target grounding instead of dataset-provided target boxes/masks:
+VLM mode uses text + RGB to predict the target region. Backends are optional:
 
 ```bash
-python scripts/run_ocid_one.py \
+python scripts/run_one_sample.py \
+  --dataset ocid_vlg \
   --dataset-root ../data/raw/OCID-VLG \
-  --refer-split multiple \
-  --split test \
   --index 0 \
-  --output-root outputs/ocid_florence_debug \
+  --target-source vlm \
+  --vlm-backend florence2 \
+  --scorer rule_based \
+  --output-root outputs/debug_vlm \
+  --top-k 5
+```
+
+If the selected VLM backend is not installed or cached, the script fails clearly and recommends oracle mode. It does not import VLM packages during oracle mode.
+
+## Run Dataset
+
+```bash
+python scripts/run_dataset.py \
+  --dataset ocid_vlg \
+  --dataset-root ../data/raw/OCID-VLG \
+  --target-source oracle \
+  --scorer rule_based \
+  --max-samples 20 \
+  --output-root outputs/ocid_vlg \
   --top-k 5 \
-  --target-grounder florence2 \
-  --florence-model-id microsoft/Florence-2-base-ft \
-  --overwrite
+  --resume
 ```
 
-Run an OCID-VLG split:
+OCID-Grasp fallback:
 
 ```bash
-python scripts/run_ocid_split.py \
+python scripts/run_dataset.py \
+  --dataset ocid_grasp \
   --dataset-root ../data/raw/OCID-VLG \
-  --refer-split multiple \
-  --split test \
+  --target-source oracle \
+  --scorer rule_based \
   --max-samples 20 \
-  --output-root outputs/ocid_debug \
-  --top-k 5
+  --output-root outputs/ocid_grasp
 ```
 
-Evaluate against 2D grasp rectangles:
+MLP scoring head:
 
 ```bash
-python scripts/evaluate_outputs.py \
-  --output-root outputs/ocid_debug \
-  --mode ocid_2d
-```
-
-Run OCID-Grasp fallback samples without referring expressions:
-
-```bash
-python scripts/run_ocid_grasp.py \
+python scripts/run_one_sample.py \
+  --dataset ocid_vlg \
   --dataset-root ../data/raw/OCID-VLG \
-  --max-samples 20 \
-  --output-root outputs/ocid_grasp_debug \
-  --top-k 5
+  --index 0 \
+  --target-source oracle \
+  --scorer mlp \
+  --output-root outputs/mlp_debug
 ```
 
-## Legacy GraspNet Support
+If an MLP checkpoint is missing, the project falls back to a rule-initialized CPU MLP / rule behavior instead of making training mandatory.
 
-The old GraspNet scripts still exist:
+## Evaluation
 
-```text
-scripts/run_one_frame.py
-scripts/run_split.py
-scripts/run_all.py
-```
-
-Use them only for non-language proxy experiments.
-
-Export paper figures:
+Proxy evaluation:
 
 ```bash
-python scripts/make_paper_figures.py \
-  --output-root outputs \
-  --num-success 12 \
-  --num-failure 6
+python scripts/evaluate_outputs.py --output-root outputs/ocid_vlg --mode proxy
 ```
 
-## Per-Target Output
+OCID 2D grasp rectangle evaluation:
 
-Each OCID-VLG processing unit writes to:
-
-```text
-outputs/ocid_vlg/{refer_split}/{split}/{image_id}/
+```bash
+python scripts/evaluate_outputs.py --output-root outputs/ocid_vlg --mode ocid_2d
 ```
 
-Files:
+Generated reports:
+
+- `metrics_by_dataset.csv`
+- `metrics_by_split.csv`
+- `metrics_by_scene.csv`
+- `runtime_report.csv`
+- `failure_cases.csv`
+
+## Output Files
+
+Each processed language-conditioned target sample writes:
 
 ```text
 target_mask.png
@@ -155,30 +180,38 @@ target_pointcloud.ply
 grasp_candidates.json
 ranked_grasps.json
 best_grasp.json
+score_breakdown.json
 visualization_rgb.png
 visualization_3d.png
-score_breakdown.json
 ```
 
-`best_grasp.json` contains split, image id, scene path, frame id, target id, target label, sentence command, bbox, 3D pose, projected 2D grasp center, projected 2D grasp rectangles, GT grasp rectangles, final score, feature breakdown, and Top-K fallbacks.
+The output path includes the language-conditioned sample id, so multiple targets from the same RGB-D image do not overwrite each other.
 
-## Global Outputs
+`best_grasp.json` includes:
 
-```text
-outputs/summary.csv
-outputs/metrics_by_dataset.csv
-outputs/metrics_by_split.csv
-outputs/metrics_by_scene.csv
-outputs/failure_cases.csv
-outputs/runtime_report.csv
-outputs/paper_figures/
+- dataset name
+- sample id / image id
+- command / sentence
+- target label and target id
+- target source: `oracle` or `vlm`
+- GT and predicted bbox fields where available
+- best grasp pose, quaternion, approach vector, closing direction, width, type, score
+- feature breakdown
+- Top-K fallback candidates
+- runtime
+
+## Tests
+
+```bash
+python -m pytest tests
 ```
+
+The test suite includes a full synthetic RGB-D smoke test that verifies non-empty point clouds, candidate generation, scoring, `best_grasp.json`, and RGB visualization output.
 
 ## Known Limitations
 
-- OCID-VLG uses dataset-provided target boxes/masks by default for reproducible offline benchmarking. Use `--target-grounder florence2` to run Florence-2 phrase grounding when local weights are installed.
-- The MLP scoring head defaults to a rule-based initialization. Train or load a checkpoint before treating it as a learned ranker.
-- OCID-Grasp fallback generates class commands from `catalog.csv` only when natural language is missing.
-- The sampler is geometric and CPU-only. It is suitable for an offline Mac prototype, not a learned GraspNet baseline replacement.
-- OCID 2D evaluation includes projected center hit rate and rectangle IoU/angle matching. It is still 2D evaluation, not full robot execution validation.
-- Depth scale, intrinsics, mask alignment, and coordinate conventions should be checked visually on a small subset before running all scenes.
+- VLM mode is an optional interface; Florence-2 weights are not bundled.
+- SAM refinement is not bundled in the Mac core path.
+- The geometric sampler is a CPU prototype, not a learned 6-DoF grasp detector.
+- 3D grasp quality is evaluated with proxy metrics unless richer annotations are available.
+- OCID 2D grasp rectangle evaluation uses projected grasp rectangles and is an approximation.

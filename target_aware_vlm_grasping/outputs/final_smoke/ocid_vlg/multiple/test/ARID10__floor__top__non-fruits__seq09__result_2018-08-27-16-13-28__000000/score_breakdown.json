@@ -1,0 +1,203 @@
+{
+  "features": [
+    {
+      "target_overlap": 0.8113854595336076,
+      "center_alignment": 0.7962216717868075,
+      "distance_to_target_center": 0.015619450455627404,
+      "gripper_width_match": 0.9651594400601662,
+      "approach_direction_score": 1.0,
+      "depth_stability": 0.9974602460861206,
+      "collision_penalty": 0.0,
+      "boundary_penalty": 0.3132375478744507,
+      "initial_geometric_score": 0.75,
+      "grounding_score": 1.0,
+      "metadata": {}
+    },
+    {
+      "target_overlap": 0.8360000000000001,
+      "center_alignment": 1.0,
+      "distance_to_target_center": 0.0,
+      "gripper_width_match": 1.0,
+      "approach_direction_score": 0.0,
+      "depth_stability": 0.9983075857162476,
+      "collision_penalty": 0.0,
+      "boundary_penalty": 0.19999998807907104,
+      "initial_geometric_score": 0.9,
+      "grounding_score": 1.0,
+      "metadata": {}
+    },
+    {
+      "target_overlap": 0.8536,
+      "center_alignment": 0.518417189901029,
+      "distance_to_target_center": 0.04503113000643187,
+      "gripper_width_match": 0.98005673179083,
+      "approach_direction_score": 0.112342354464249,
+      "depth_stability": 0.9978512525558472,
+      "collision_penalty": 0.0,
+      "boundary_penalty": 0.0,
+      "initial_geometric_score": 0.8660207169038093,
+      "grounding_score": 1.0,
+      "metadata": {}
+    }
+  ],
+  "score_breakdown": [
+    {
+      "initial_geometric_score": 0.15000000000000002,
+      "target_overlap": 0.2028463648834019,
+      "center_alignment": 0.11943325076802111,
+      "gripper_width_match": 0.09651594400601662,
+      "depth_stability": 0.09974602460861207,
+      "approach_direction_score": 0.1,
+      "collision_penalty": -0.0,
+      "boundary_penalty": -0.00939712643623352
+    },
+    {
+      "initial_geometric_score": 0.18000000000000002,
+      "target_overlap": 0.20900000000000002,
+      "center_alignment": 0.15,
+      "gripper_width_match": 0.1,
+      "depth_stability": 0.09983075857162477,
+      "approach_direction_score": 0.0,
+      "collision_penalty": -0.0,
+      "boundary_penalty": -0.005999999642372131
+    },
+    {
+      "initial_geometric_score": 0.17320414338076187,
+      "target_overlap": 0.2134,
+      "center_alignment": 0.07776257848515435,
+      "gripper_width_match": 0.098005673179083,
+      "depth_stability": 0.09978512525558472,
+      "approach_direction_score": 0.011234235446424901,
+      "collision_penalty": -0.0,
+      "boundary_penalty": -0.0
+    }
+  ],
+  "gt_grasp_rectangles": [
+    [
+      [
+        264.0,
+        381.0
+      ],
+      [
+        276.0,
+        382.0
+      ],
+      [
+        275.003,
+        393.959
+      ],
+      [
+        263.003,
+        392.959
+      ]
+    ],
+    [
+      [
+        269.0,
+        380.0
+      ],
+      [
+        286.0,
+        381.0
+      ],
+      [
+        285.178,
+        394.976
+      ],
+      [
+        268.178,
+        393.976
+      ]
+    ],
+    [
+      [
+        279.0,
+        379.0
+      ],
+      [
+        300.0,
+        382.0
+      ],
+      [
+        297.737,
+        397.839
+      ],
+      [
+        276.737,
+        394.839
+      ]
+    ],
+    [
+      [
+        287.0,
+        382.0
+      ],
+      [
+        304.0,
+        385.0
+      ],
+      [
+        301.567,
+        398.787
+      ],
+      [
+        284.567,
+        395.787
+      ]
+    ],
+    [
+      [
+        298.0,
+        385.0
+      ],
+      [
+        313.0,
+        387.0
+      ],
+      [
+        311.15,
+        400.877
+      ],
+      [
+        296.15,
+        398.877
+      ]
+    ],
+    [
+      [
+        313.0,
+        386.0
+      ],
+      [
+        330.0,
+        385.0
+      ],
+      [
+        331.116,
+        403.967
+      ],
+      [
+        314.116,
+        404.967
+      ]
+    ],
+    [
+      [
+        320.0,
+        385.0
+      ],
+      [
+        338.0,
+        385.0
+      ],
+      [
+        338.0,
+        404.0
+      ],
+      [
+        320.0,
+        404.0
+      ]
+    ]
+  ]
+}
