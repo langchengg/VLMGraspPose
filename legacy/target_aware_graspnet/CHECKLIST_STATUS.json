@@ -1,0 +1,56 @@
+{
+  "overall_status": "PARTIAL",
+  "repository_structure": "COMPLETE",
+  "dataset_loader": "COMPLETE for OCID-VLG, PARTIAL for OCID-Grasp fallback split management",
+  "target_mapping": "PARTIAL: OCID-VLG real sentences supported and optional Florence-2 grounding added; default benchmark still uses annotations unless --target-grounder florence2 is passed",
+  "multi_object_per_image": "COMPLETE for OCID-VLG language-target samples",
+  "pointcloud": "PARTIAL",
+  "grasp_sampler": "PARTIAL",
+  "feature_association": "PARTIAL",
+  "reranker": "COMPLETE: MLP scoring head is default with rule-based initialization; learned checkpoint loading is supported",
+  "output_writer": "COMPLETE for smoke-tested OCID outputs",
+  "evaluation": "PARTIAL: standard OCID 2D rectangle IoU/angle metrics added; full 3D annotation matching remains limited",
+  "visualization": "PARTIAL: RGB Top-K grasp rectangles added; full paper multi-panel generation remains limited",
+  "cli": "PARTIAL",
+  "unit_tests": "COMPLETE",
+  "smoke_test": "COMPLETE",
+  "mac_compatibility": "SAFE",
+  "fixes_applied": [
+    {
+      "file": "scripts/make_paper_figures.py",
+      "issue": "Failed on empty failure_cases.csv and imported Matplotlib before writable cache setup",
+      "status": "FIXED"
+    },
+    {
+      "file": "src/evaluation/report_generator.py",
+      "issue": "Generated empty failure_cases.csv without headers when there were no failures",
+      "status": "FIXED"
+    },
+    {
+      "file": "src/evaluation/metrics.py",
+      "issue": "OCID 2D evaluation only used grasp-center hits",
+      "status": "FIXED_WITH_RECTANGLE_IOU_AND_ANGLE"
+    },
+    {
+      "file": "src/evaluation/split_evaluator.py",
+      "issue": "Metrics grouped by output directory instead of true dataset/split/scene fields",
+      "status": "FIXED"
+    },
+    {
+      "file": "src/visualization/visualize_rgb.py",
+      "issue": "RGB overlay did not draw Top-K grasp candidates",
+      "status": "FIXED"
+    },
+    {
+      "file": "src/target/florence2_grounder.py",
+      "issue": "Florence-2 was not available as target grounding model",
+      "status": "ADDED_OPTIONAL_CPU_WRAPPER"
+    },
+    {
+      "file": "src/scoring/mlp_scorer.py",
+      "issue": "MLP Scoring Head was not implemented",
+      "status": "ADDED_DEFAULT_SCORER"
+    }
+  ],
+  "final_recommendation": "Ready for small OCID-VLG prototype experiments, but needs evaluation and visualization improvements before full paper-grade experiments."
+}

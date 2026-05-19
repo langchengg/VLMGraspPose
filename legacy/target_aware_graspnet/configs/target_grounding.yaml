@@ -1,0 +1,9 @@
+method: annotation
+fallback_to_annotation: true
+florence2:
+  model_id: microsoft/Florence-2-base-ft
+  task_prompt: "<CAPTION_TO_PHRASE_GROUNDING>"
+  device: cpu
+  max_new_tokens: 1024
+  num_beams: 3
+  trust_remote_code: true

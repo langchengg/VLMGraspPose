@@ -1,0 +1,11 @@
+target_source: oracle
+method: oracle
+vlm_backend: florence2
+fallback_to_oracle: false
+florence2:
+  model_id: microsoft/Florence-2-base-ft
+  task_prompt: "<CAPTION_TO_PHRASE_GROUNDING>"
+  device: cpu
+  max_new_tokens: 1024
+  num_beams: 3
+  trust_remote_code: true

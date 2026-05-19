@@ -1,0 +1,10 @@
+checkpoint_path: null
+feature_names:
+  - initial_geometric_score
+  - target_overlap
+  - center_alignment
+  - gripper_width_match
+  - depth_stability
+  - approach_direction_score
+  - collision_penalty
+  - boundary_penalty

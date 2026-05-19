@@ -1,0 +1,13 @@
+root: ../data/raw/OCID-VLG
+output_root: outputs
+primary: true
+depth_scale: 1000.0
+refer_split: multiple
+split: test
+fallback_intrinsics:
+  width: 640
+  height: 480
+  fx: 579.411
+  fy: 579.411
+  cx: 320.0
+  cy: 240.0

@@ -1,2 +1,0 @@
-split,scene_id,camera,frame_id,target_id,command,runtime_total,runtime_load_sample,runtime_target_selection,runtime_pointcloud_processing,runtime_sampling,runtime_feature_extraction,runtime_scoring
-test_seen,scene_0100,realsense,0000,58,pick object_058,0.25297737500295625,0.030831791998934932,0.006033040999682271,0.04950345900033426,0.0022392910013877554,0.16430037500140315,6.941700121387839e-05

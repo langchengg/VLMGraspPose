@@ -1,0 +1,10 @@
+top_k: 5
+min_width: 0.02
+max_width: 0.10
+width_margin: 0.01
+top_down_samples: 8
+side_samples: 8
+bbox_samples: 8
+normal_samples: 32
+min_table_clearance: 0.015
+normal_pair_max_points: 1500

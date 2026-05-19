@@ -1,0 +1,2 @@
+dataset_name,split,sample_id,scene_id,camera,frame_id,image_id,target_source,target_id,target_label,command,status,error,runtime_total,scorer_type,final_score,target_overlap,center_distance,collision_penalty
+OCID-VLG,test,ARID10__floor__top__non-fruits__seq09__result_2018-08-27-16-13-28__000000,ARID10/floor/top/non-fruits/seq09,ocid,result_2018-08-27-16-13-28,ARID10__floor__top__non-fruits__seq09__result_2018-08-27-16-13-28__000000,oracle,2,flashlight_1,Grasp the flashlight,success,,0.11968529000296257,rule_based,0.7591444578298182,0.8113854595336076,0.015619450455627404,0.0

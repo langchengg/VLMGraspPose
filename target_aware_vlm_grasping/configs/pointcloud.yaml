@@ -1,0 +1,9 @@
+voxel_size: 0.005
+outlier_nb_neighbors: 20
+outlier_std_ratio: 2.0
+table_distance_threshold: 0.01
+table_ransac_n: 3
+table_num_iterations: 100
+normal_radius: 0.02
+normal_max_nn: 30
+depth_trunc: 2.0

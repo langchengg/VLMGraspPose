@@ -1,0 +1,22 @@
+method: rule_based
+weights:
+  initial_geometric_score: 0.20
+  target_overlap: 0.25
+  center_alignment: 0.15
+  gripper_width_match: 0.10
+  depth_stability: 0.10
+  approach_direction_score: 0.10
+  collision_penalty: -0.07
+  boundary_penalty: -0.03
+mlp:
+  init: rule_based
+  checkpoint_path: null
+  feature_names:
+    - initial_geometric_score
+    - target_overlap
+    - center_alignment
+    - gripper_width_match
+    - depth_stability
+    - approach_direction_score
+    - collision_penalty
+    - boundary_penalty

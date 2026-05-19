@@ -1,0 +1,86 @@
+dataset:
+  root: ../data/raw/OCID-VLG
+  output_root: outputs
+  camera: ocid
+  depth_scale: 1000.0
+  depth_trunc: 2.0
+  fallback_intrinsics:
+    width: 1280
+    height: 720
+    fx: 927.17
+    fy: 927.37
+    cx: 651.32
+    cy: 349.62
+processing:
+  voxel_size: 0.005
+  outlier_nb_neighbors: 20
+  outlier_std_ratio: 2.0
+  table_distance_threshold: 0.01
+  table_ransac_n: 3
+  table_num_iterations: 100
+  normal_radius: 0.02
+  normal_max_nn: 30
+sampler:
+  top_k: 5
+  min_width: 0.02
+  max_width: 0.10
+  width_margin: 0.01
+  top_down_samples: 8
+  side_samples: 8
+  bbox_samples: 8
+  normal_samples: 32
+  min_table_clearance: 0.015
+scoring:
+  method: rule_based
+  weights:
+    initial_geometric_score: 0.20
+    target_overlap: 0.25
+    center_alignment: 0.15
+    gripper_width_match: 0.10
+    depth_stability: 0.10
+    approach_direction_score: 0.10
+    collision_penalty: -0.07
+    boundary_penalty: -0.03
+  mlp:
+    init: rule_based
+    checkpoint_path: null
+    feature_names:
+      - initial_geometric_score
+      - target_overlap
+      - center_alignment
+      - gripper_width_match
+      - depth_stability
+      - approach_direction_score
+      - collision_penalty
+      - boundary_penalty
+target_grounding:
+  target_source: oracle
+  method: oracle
+  fallback_to_oracle: false
+  florence2:
+    model_id: microsoft/Florence-2-base-ft
+    task_prompt: "<CAPTION_TO_PHRASE_GROUNDING>"
+    device: cpu
+    max_new_tokens: 1024
+    num_beams: 3
+    trust_remote_code: true
+evaluation:
+  proxy_thresholds:
+    target_overlap: 0.10
+    center_alignment: 0.30
+    collision_penalty: 0.50
+    depth_stability: 0.30
+    gripper_width_match: 0.30
+  annotation_thresholds:
+    position_distance: 0.03
+    orientation_angle_deg: 30.0
+    width_tolerance: 0.02
+  ocid_2d_thresholds:
+    grasp_rectangle_iou: 0.25
+    grasp_angle_threshold_deg: 30.0
+target_mapping:
+  command_mode: auto
+  default_full_evaluation: all_targets_per_frame
+  default_debug: one_target_per_frame
+  category_labels_path: null
+  category_labels_trusted: false

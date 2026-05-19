@@ -1,0 +1,2 @@
+dataset,processed_frames,successful_frames,failure_rate,mean_final_score,mean_target_overlap,mean_center_distance,mean_collision_penalty,collision_free_proxy_rate,top1_proxy_valid_rate,top3_proxy_valid_rate,top5_proxy_valid_rate,mean_runtime_per_frame
+OCID-VLG,1,1,0.0,0.7591444578298182,0.8113854595336076,0.015619450455627404,0.0,1.0,1.0,1.0,1.0,0.11635054397629574

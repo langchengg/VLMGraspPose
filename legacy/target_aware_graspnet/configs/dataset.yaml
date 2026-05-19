@@ -1,0 +1,25 @@
+root: ../data/raw/graspnet
+output_root: outputs
+camera: realsense
+depth_scale: 1000.0
+depth_trunc: 2.0
+path_templates:
+  rgb: scenes/{scene_id}/{camera}/rgb/{frame_id}.png
+  depth: scenes/{scene_id}/{camera}/depth/{frame_id}.png
+  label: scenes/{scene_id}/{camera}/label/{frame_id}.png
+  annotation: scenes/{scene_id}/{camera}/annotations/{frame_id}.xml
+  camera_intrinsic: scenes/{scene_id}/{camera}/camK.npy
+  meta: scenes/{scene_id}/{camera}/meta/{frame_id}.mat
+fallback_intrinsics:
+  width: 1280
+  height: 720
+  fx: 927.17
+  fy: 927.37
+  cx: 651.32
+  cy: 349.62
+target_mapping:
+  default_full_evaluation: all_targets_per_frame
+  default_debug: one_target_per_frame
+  command_mode: auto
+  category_labels_path: null
+  category_labels_trusted: false

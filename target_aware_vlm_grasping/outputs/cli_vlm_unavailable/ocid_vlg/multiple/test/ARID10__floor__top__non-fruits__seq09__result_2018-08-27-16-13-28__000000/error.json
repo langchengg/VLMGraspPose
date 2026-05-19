@@ -1,0 +1,322 @@
+{
+  "sample": {
+    "dataset_name": "OCID-VLG",
+    "sample_id": "ARID10__floor__top__non-fruits__seq09__result_2018-08-27-16-13-28__000000",
+    "rgb_path": "/Users/delaynomore/Downloads/VLMGraspPose/data/raw/OCID-VLG/ARID10/floor/top/non-fruits/seq09/rgb/result_2018-08-27-16-13-28.png",
+    "depth_path": "/Users/delaynomore/Downloads/VLMGraspPose/data/raw/OCID-VLG/ARID10/floor/top/non-fruits/seq09/depth/result_2018-08-27-16-13-28.png",
+    "sentence": "Grasp the flashlight",
+    "target_label": "flashlight_1",
+    "split": "test",
+    "image_id": "ARID10__floor__top__non-fruits__seq09__result_2018-08-27-16-13-28__000000",
+    "camera_intrinsics": null,
+    "target_id": 2,
+    "target_bbox_gt": [
+      259,
+      381,
+      344,
+      408
+    ],
+    "target_mask_gt": null,
+    "grasp_annotations": [
+      [
+        [
+          264.0,
+          381.0
+        ],
+        [
+          276.0,
+          382.0
+        ],
+        [
+          275.003,
+          393.959
+        ],
+        [
+          263.003,
+          392.959
+        ]
+      ],
+      [
+        [
+          269.0,
+          380.0
+        ],
+        [
+          286.0,
+          381.0
+        ],
+        [
+          285.178,
+          394.976
+        ],
+        [
+          268.178,
+          393.976
+        ]
+      ],
+      [
+        [
+          279.0,
+          379.0
+        ],
+        [
+          300.0,
+          382.0
+        ],
+        [
+          297.737,
+          397.839
+        ],
+        [
+          276.737,
+          394.839
+        ]
+      ],
+      [
+        [
+          287.0,
+          382.0
+        ],
+        [
+          304.0,
+          385.0
+        ],
+        [
+          301.567,
+          398.787
+        ],
+        [
+          284.567,
+          395.787
+        ]
+      ],
+      [
+        [
+          298.0,
+          385.0
+        ],
+        [
+          313.0,
+          387.0
+        ],
+        [
+          311.15,
+          400.877
+        ],
+        [
+          296.15,
+          398.877
+        ]
+      ],
+      [
+        [
+          313.0,
+          386.0
+        ],
+        [
+          330.0,
+          385.0
+        ],
+        [
+          331.116,
+          403.967
+        ],
+        [
+          314.116,
+          404.967
+        ]
+      ],
+      [
+        [
+          320.0,
+          385.0
+        ],
+        [
+          338.0,
+          385.0
+        ],
+        [
+          338.0,
+          404.0
+        ],
+        [
+          320.0,
+          404.0
+        ]
+      ]
+    ],
+    "scene_id": "ARID10/floor/top/non-fruits/seq09",
+    "camera": "ocid",
+    "frame_id": "result_2018-08-27-16-13-28",
+    "command": "Grasp the flashlight",
+    "target_index": 2,
+    "target_bbox": [
+      259,
+      381,
+      344,
+      408
+    ],
+    "target_mask_path": "/Users/delaynomore/Downloads/VLMGraspPose/data/raw/OCID-VLG/ARID10/floor/top/non-fruits/seq09/seg_mask_instances_combi/result_2018-08-27-16-13-28.png",
+    "grasp_rectangles": [
+      [
+        [
+          264.0,
+          381.0
+        ],
+        [
+          276.0,
+          382.0
+        ],
+        [
+          275.003,
+          393.959
+        ],
+        [
+          263.003,
+          392.959
+        ]
+      ],
+      [
+        [
+          269.0,
+          380.0
+        ],
+        [
+          286.0,
+          381.0
+        ],
+        [
+          285.178,
+          394.976
+        ],
+        [
+          268.178,
+          393.976
+        ]
+      ],
+      [
+        [
+          279.0,
+          379.0
+        ],
+        [
+          300.0,
+          382.0
+        ],
+        [
+          297.737,
+          397.839
+        ],
+        [
+          276.737,
+          394.839
+        ]
+      ],
+      [
+        [
+          287.0,
+          382.0
+        ],
+        [
+          304.0,
+          385.0
+        ],
+        [
+          301.567,
+          398.787
+        ],
+        [
+          284.567,
+          395.787
+        ]
+      ],
+      [
+        [
+          298.0,
+          385.0
+        ],
+        [
+          313.0,
+          387.0
+        ],
+        [
+          311.15,
+          400.877
+        ],
+        [
+          296.15,
+          398.877
+        ]
+      ],
+      [
+        [
+          313.0,
+          386.0
+        ],
+        [
+          330.0,
+          385.0
+        ],
+        [
+          331.116,
+          403.967
+        ],
+        [
+          314.116,
+          404.967
+        ]
+      ],
+      [
+        [
+          320.0,
+          385.0
+        ],
+        [
+          338.0,
+          385.0
+        ],
+        [
+          338.0,
+          404.0
+        ],
+        [
+          320.0,
+          404.0
+        ]
+      ]
+    ],
+    "output_dir": "/Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping/outputs/cli_vlm_unavailable/ocid_vlg/multiple/test/ARID10__floor__top__non-fruits__seq09__result_2018-08-27-16-13-28__000000",
+    "label_path": "/Users/delaynomore/Downloads/VLMGraspPose/data/raw/OCID-VLG/ARID10/floor/top/non-fruits/seq09/seg_mask_instances_combi/result_2018-08-27-16-13-28.png",
+    "annotation_path": null,
+    "camera_intrinsic_path": null,
+    "metadata": {
+      "dataset": "OCID-VLG",
+      "refer_split": "multiple",
+      "image_filename": "ARID10/floor/top/non-fruits/seq09,result_2018-08-27-16-13-28.png",
+      "raw_box_xywh": [
+        259,
+        381,
+        86,
+        28
+      ],
+      "template": "Pass the <Y>",
+      "concept_map": {
+        "<Y>": "flashlight"
+      }
+    }
+  },
+  "target_region": null,
+  "top_k": [],
+  "best_grasp": null,
+  "runtime": {
+    "load_sample": 0.008315042010508478,
+    "target_grounding": 1.1459007509984076e-05
+  },
+  "status": "failed",
+  "error_message": "RuntimeError: VLM target mode failed with backend 'owlvit': RuntimeError: VLM backend 'owlvit' is not installed in the Mac-compatible core. Install the optional backend or use --target-source oracle.. Use --target-source oracle or install/cache the selected VLM backend.",
+  "metadata": {
+    "traceback": "Traceback (most recent call last):\n  File \"/Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping/src/target/vlm_grounder.py\", line 27, in predict\n    self._backend = build_vlm_backend(self.backend_name, self.backend_config)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping/src/target/grounding_backends.py\", line 12, in build_vlm_backend\n    raise RuntimeError(\nRuntimeError: VLM backend 'owlvit' is not installed in the Mac-compatible core. Install the optional backend or use --target-source oracle.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping/src/main.py\", line 126, in run_dataset_sample\n    target = self._predict_target(sample, data[\"rgb\"], target_source, vlm_backend)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping/src/main.py\", line 220, in _predict_target\n    return self._vlm_grounders[backend].predict(sample, rgb)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping/src/target/vlm_grounder.py\", line 36, in predict\n    raise RuntimeError(\nRuntimeError: VLM target mode failed with backend 'owlvit': RuntimeError: VLM backend 'owlvit' is not installed in the Mac-compatible core. Install the optional backend or use --target-source oracle.. Use --target-source oracle or install/cache the selected VLM backend.\n",
+    "dataset": "OCID-VLG",
+    "target_source_requested": "vlm"
+  }
+}
