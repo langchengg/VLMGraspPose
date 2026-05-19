@@ -38,6 +38,8 @@ def main() -> None:
     print(f"metrics_by_dataset: {args.output_root / 'metrics_by_dataset.csv'}")
     print(f"metrics_by_split: {args.output_root / 'metrics_by_split.csv'}")
     print(f"metrics_by_scene: {args.output_root / 'metrics_by_scene.csv'}")
+    print(f"metrics_by_target_source: {args.output_root / 'metrics_by_target_source.csv'}")
+    print(f"metrics_by_scorer: {args.output_root / 'metrics_by_scorer.csv'}")
     print(f"runtime_report: {args.output_root / 'runtime_report.csv'}")
     print(f"failure_cases: {args.output_root / 'failure_cases.csv'}")
 

@@ -1,2 +1,0 @@
-split,scene_id,camera,frame_id,image_id,target_id,command,status,error,runtime_total,final_score,target_overlap,center_distance,collision_penalty
-ocid_grasp,ARID10/floor/bottom/box/seq03,ocid,result_2018-08-27-15-54-58,ARID10__floor__bottom__box__seq03__result_2018-08-27-15-54-58__inst_001,1,pick the cereal box,success,,0.06571887500103912,0.8097557983947881,1.0,0.045299540920839876,0.0

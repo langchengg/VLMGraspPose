@@ -21,8 +21,14 @@ def _resolve(path: Path) -> Path:
     return path if path.is_absolute() else (ROOT / path).resolve()
 
 
+def _default_dataset_root(dataset: str) -> Path:
+    if dataset == "ocid_grasp":
+        return Path("data/OCID-Grasp")
+    return Path("data/OCID-VLG")
+
+
 def _build_samples(args, output_root: Path):
-    dataset_root = _resolve(args.dataset_root)
+    dataset_root = _resolve(args.dataset_root or _default_dataset_root(args.dataset))
     if args.dataset == "ocid_vlg":
         return OCIDVLGIndexBuilder(dataset_root, output_root).build(
             refer_split=args.refer_split,
@@ -37,7 +43,7 @@ def _build_samples(args, output_root: Path):
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run one language-conditioned RGB-D grasping sample.")
     parser.add_argument("--dataset", choices=["ocid_vlg", "ocid_grasp"], default="ocid_vlg")
-    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--dataset-root", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=Path("outputs/debug"))
     parser.add_argument("--sample-id", default=None)
     parser.add_argument("--index", type=int, default=0)

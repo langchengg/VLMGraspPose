@@ -4,7 +4,7 @@ Mac-compatible Python project for language-guided target-aware RGB-D grasping.
 
 Primary dataset: OCID-VLG.  
 Auxiliary dataset: OCID-Grasp.  
-Legacy GraspNet code is archived under `legacy/graspnet_optional/` and is not part of the active pipeline.
+Legacy reference code, if retained, is archived outside the active project and is not part of the active pipeline.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ Text command + RGB image + depth image + camera intrinsics
 ## Installation
 
 ```bash
-cd /Users/delaynomore/Downloads/VLMGraspPose/target_aware_vlm_grasping
+cd target_aware_vlm_grasping
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -47,14 +47,14 @@ Core dependencies are CPU/Mac compatible. Optional VLM dependencies are separate
 .venv/bin/pip install -r requirements-vlm.txt
 ```
 
-The core pipeline does not require CUDA, MinkowskiEngine, spconv, PointNet++ custom ops, Isaac Sim, AnyGrasp, or the official GraspNet baseline.
+The core pipeline does not require CUDA, MinkowskiEngine, spconv, PointNet++ custom ops, Isaac Sim, AnyGrasp, or any CUDA-only learned grasp baseline.
 
 ## Dataset Setup
 
 OCID-VLG is expected by default at:
 
 ```text
-../data/raw/OCID-VLG
+data/OCID-VLG
 ```
 
 The loader expects OCID-VLG samples with:
@@ -76,6 +76,12 @@ pick the left cup
 pick the right bottle
 ```
 
+OCID-Grasp is expected by default at:
+
+```text
+data/OCID-Grasp
+```
+
 ## Run One Sample
 
 Oracle mode uses dataset target bbox / mask:
@@ -83,7 +89,7 @@ Oracle mode uses dataset target bbox / mask:
 ```bash
 python scripts/run_one_sample.py \
   --dataset ocid_vlg \
-  --dataset-root ../data/raw/OCID-VLG \
+  --dataset-root data/OCID-VLG \
   --index 0 \
   --target-source oracle \
   --scorer rule_based \
@@ -92,12 +98,18 @@ python scripts/run_one_sample.py \
   --overwrite
 ```
 
-VLM mode uses text + RGB to predict the target region. Backends are optional:
+VLM mode uses text + RGB to predict the target region. The default Florence-2 config points to the project-local weights:
+
+```text
+models/vlm/florence2
+```
+
+Backends are optional:
 
 ```bash
 python scripts/run_one_sample.py \
   --dataset ocid_vlg \
-  --dataset-root ../data/raw/OCID-VLG \
+  --dataset-root data/OCID-VLG \
   --index 0 \
   --target-source vlm \
   --vlm-backend florence2 \
@@ -106,14 +118,14 @@ python scripts/run_one_sample.py \
   --top-k 5
 ```
 
-If the selected VLM backend is not installed or cached, the script fails clearly and recommends oracle mode. It does not import VLM packages during oracle mode.
+If the selected VLM backend is not installed or the local model path is missing, the script fails clearly and recommends oracle mode. It does not import VLM packages during oracle mode. The local Florence-2 backend is executable, but target boxes should be evaluated against OCID ground truth before using VLM mode for final metrics.
 
 ## Run Dataset
 
 ```bash
 python scripts/run_dataset.py \
   --dataset ocid_vlg \
-  --dataset-root ../data/raw/OCID-VLG \
+  --dataset-root data/OCID-VLG \
   --target-source oracle \
   --scorer rule_based \
   --max-samples 20 \
@@ -127,7 +139,7 @@ OCID-Grasp fallback:
 ```bash
 python scripts/run_dataset.py \
   --dataset ocid_grasp \
-  --dataset-root ../data/raw/OCID-VLG \
+  --dataset-root data/OCID-Grasp \
   --target-source oracle \
   --scorer rule_based \
   --max-samples 20 \
@@ -139,7 +151,7 @@ MLP scoring head:
 ```bash
 python scripts/run_one_sample.py \
   --dataset ocid_vlg \
-  --dataset-root ../data/raw/OCID-VLG \
+  --dataset-root data/OCID-VLG \
   --index 0 \
   --target-source oracle \
   --scorer mlp \
@@ -167,6 +179,8 @@ Generated reports:
 - `metrics_by_dataset.csv`
 - `metrics_by_split.csv`
 - `metrics_by_scene.csv`
+- `metrics_by_target_source.csv`
+- `metrics_by_scorer.csv`
 - `runtime_report.csv`
 - `failure_cases.csv`
 
@@ -210,7 +224,7 @@ The test suite includes a full synthetic RGB-D smoke test that verifies non-empt
 
 ## Known Limitations
 
-- VLM mode is an optional interface; Florence-2 weights are not bundled.
+- VLM mode is executable with the local Florence-2 directory at `models/vlm/florence2`; optional Python packages are still required. Grounding accuracy is not guaranteed and should be validated with bbox/mask IoU.
 - SAM refinement is not bundled in the Mac core path.
 - The geometric sampler is a CPU prototype, not a learned 6-DoF grasp detector.
 - 3D grasp quality is evaluated with proxy metrics unless richer annotations are available.

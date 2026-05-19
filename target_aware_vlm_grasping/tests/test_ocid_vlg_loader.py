@@ -12,7 +12,7 @@ from dataset.ocid_vlg_loader import OCIDGraspIndexBuilder, OCIDVLGIndexBuilder, 
 
 
 def test_ocid_vlg_index_uses_sentence_as_command_and_target_box() -> None:
-    dataset_root = ROOT.parent / "data" / "raw" / "OCID-VLG"
+    dataset_root = ROOT / "data" / "OCID-VLG"
     samples = OCIDVLGIndexBuilder(dataset_root, ROOT / "outputs" / "test_ocid").build(
         refer_split="multiple",
         split="test",
@@ -31,7 +31,7 @@ def test_ocid_vlg_index_uses_sentence_as_command_and_target_box() -> None:
 
 
 def test_ocid_vlg_loader_loads_depth_in_meters_and_instance_mask() -> None:
-    dataset_root = ROOT.parent / "data" / "raw" / "OCID-VLG"
+    dataset_root = ROOT / "data" / "OCID-VLG"
     sample = OCIDVLGIndexBuilder(dataset_root, ROOT / "outputs" / "test_ocid").build(
         refer_split="multiple",
         split="test",
@@ -50,7 +50,7 @@ def test_ocid_vlg_loader_loads_depth_in_meters_and_instance_mask() -> None:
 
 
 def test_ocid_grasp_fallback_generates_language_from_class_name() -> None:
-    dataset_root = ROOT.parent / "data" / "raw" / "OCID-VLG"
+    dataset_root = ROOT / "data" / "OCID-Grasp"
     samples = OCIDGraspIndexBuilder(dataset_root, ROOT / "outputs" / "test_ocid_grasp").build(
         max_samples=1,
     )

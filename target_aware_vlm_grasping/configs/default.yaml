@@ -1,5 +1,7 @@
 dataset:
-  root: ../data/raw/OCID-VLG
+  root: data/OCID-VLG
+  ocid_vlg_root: data/OCID-VLG
+  ocid_grasp_root: data/OCID-Grasp
   output_root: outputs
   camera: ocid
   depth_scale: 1000.0
@@ -58,12 +60,13 @@ target_grounding:
   method: oracle
   fallback_to_oracle: false
   florence2:
-    model_id: microsoft/Florence-2-base-ft
+    model_id: models/vlm/florence2
     task_prompt: "<CAPTION_TO_PHRASE_GROUNDING>"
     device: cpu
     max_new_tokens: 1024
     num_beams: 3
     trust_remote_code: true
+    local_files_only: true
 evaluation:
   proxy_thresholds:
     target_overlap: 0.10

@@ -1,2 +1,0 @@
-split,scene_id,camera,frame_id,target_id,command,runtime_total,runtime_load_sample,runtime_pointcloud_processing,runtime_sampling,runtime_feature_extraction,runtime_scoring
-test,ARID10/floor/top/non-fruits/seq09,ocid,result_2018-08-27-16-13-28,2,Grasp the flashlight,0.18647237500044866,0.01981254199927207,0.01210387500032084,0.0028553330012073275,0.15161983299913118,8.079200051724911e-05

@@ -1,4 +1,5 @@
 checkpoint_path: null
+default_checkpoint_dir: models/reranker/mlp
 feature_names:
   - initial_geometric_score
   - target_overlap

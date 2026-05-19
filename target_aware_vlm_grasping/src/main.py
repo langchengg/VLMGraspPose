@@ -320,6 +320,8 @@ class TargetAwareGraspPipeline:
             "gripper_width": best_grasp["gripper_width"],
             "grasp_type": best_grasp["grasp_type"],
             "final_score": best_grasp["final_score"],
+            "scorer": best.scorer_type,
+            "scorer_type": best.scorer_type,
             "feature_breakdown": best.features.to_json(),
             "gt_grasp_rectangles": result.metadata.get("gt_grasp_rectangles", []),
             "top_k_fallback_candidates": fallback,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -100,6 +101,12 @@ class OCIDGraspIndexBuilder:
         self.catalog = self._load_catalog()
 
     def build(self, max_samples: Optional[int] = None) -> list[DatasetSample]:
+        samples = self._build_from_box_files(max_samples)
+        if samples:
+            return samples
+        return self._build_from_instance_masks(max_samples)
+
+    def _build_from_box_files(self, max_samples: Optional[int] = None) -> list[DatasetSample]:
         samples: list[DatasetSample] = []
         for boxes_path in sorted(self.dataset_root.glob("ARID*/**/Boxes_per_instance/*.txt")):
             scene_dir = boxes_path.parent.parent
@@ -155,12 +162,106 @@ class OCIDGraspIndexBuilder:
                     return samples
         return samples
 
+    def _build_from_instance_masks(self, max_samples: Optional[int] = None) -> list[DatasetSample]:
+        samples: list[DatasetSample] = []
+        for rgb_path in sorted(self.dataset_root.glob("ARID*/**/rgb/*.png")):
+            scene_dir = rgb_path.parent.parent
+            stem = rgb_path.stem
+            depth_path = scene_dir / "depth" / rgb_path.name
+            mask_path = scene_dir / "seg_mask_instances_combi" / rgb_path.name
+            label_path = scene_dir / "label" / rgb_path.name
+            if not depth_path.exists() or not mask_path.exists():
+                continue
+            mask_image = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+            if mask_image is None:
+                continue
+            if mask_image.ndim == 3:
+                mask_image = mask_image[:, :, 0]
+            label_image = cv2.imread(str(label_path), cv2.IMREAD_UNCHANGED) if label_path.exists() else None
+            if label_image is not None and label_image.ndim == 3:
+                label_image = label_image[:, :, 0]
+            rows = []
+            for inst_idx in sorted(int(v) for v in np.unique(mask_image) if int(v) > 0):
+                instance_mask = mask_image == inst_idx
+                if not instance_mask.any():
+                    continue
+                ys, xs = np.where(instance_mask)
+                subclass_id = self._class_id_from_label_image(label_image, instance_mask)
+                if subclass_id is None:
+                    subclass_id = inst_idx
+                rows.append({
+                    "instance_index": inst_idx,
+                    "subclass_id": int(subclass_id),
+                    "bbox": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+                })
+            commands = self._commands_for_rows(rows)
+            for row in rows:
+                inst_idx = int(row["instance_index"])
+                subclass_id = int(row["subclass_id"])
+                class_grasp_path = scene_dir / "Annotations_per_class" / stem / str(subclass_id) / f"{stem}.txt"
+                grasp_path = class_grasp_path if class_grasp_path.exists() else scene_dir / "Annotations" / f"{stem}.txt"
+                grasps = _parse_grasp_rectangle_txt(grasp_path)
+                if not grasps:
+                    continue
+                scene_rel = scene_dir.relative_to(self.dataset_root).as_posix()
+                image_id = f"{scene_rel.replace('/', '__')}__{stem}__inst_{inst_idx:03d}"
+                target_label = self._target_label(subclass_id)
+                samples.append(DatasetSample(
+                    dataset_name="OCID-Grasp",
+                    sample_id=image_id,
+                    rgb_path=rgb_path,
+                    depth_path=depth_path,
+                    sentence=commands.get(inst_idx, f"pick the {target_label.replace('_', ' ')}"),
+                    target_label=target_label,
+                    split="ocid_grasp",
+                    image_id=image_id,
+                    scene_id=scene_rel,
+                    camera="ocid",
+                    frame_id=stem,
+                    command=commands.get(inst_idx, f"pick the {target_label.replace('_', ' ')}"),
+                    target_id=inst_idx,
+                    target_index=inst_idx,
+                    target_bbox=row["bbox"],
+                    target_bbox_gt=row["bbox"],
+                    target_mask_path=mask_path,
+                    grasp_rectangles=grasps,
+                    grasp_annotations=grasps,
+                    output_dir=self.output_root / "ocid_grasp" / image_id,
+                    label_path=mask_path,
+                    metadata={
+                        "dataset": "OCID-Grasp",
+                        "subclass_id": subclass_id,
+                        "class_name": self._class_name(subclass_id),
+                        "source_layout": "instance_masks",
+                    },
+                ))
+                if max_samples is not None and len(samples) >= max_samples:
+                    return samples
+        return samples
+
     def _load_catalog(self) -> dict[int, dict]:
         path = self.dataset_root / "catalog.csv"
-        if not path.exists():
+        if path.exists():
+            table = pd.read_csv(path, sep="\t")
+            return {int(row["ID"]): row.to_dict() for _, row in table.iterrows()}
+        class_dict = self.dataset_root / "OCID_class_dict.py"
+        if not class_dict.exists():
             return {}
-        table = pd.read_csv(path, sep="\t")
-        return {int(row["ID"]): row.to_dict() for _, row in table.iterrows()}
+        text = class_dict.read_text()
+        rows = {}
+        for name, value in re.findall(r"'([^']+)'\s*:\s*'(\d+)'", text):
+            rows[int(value)] = {"ID": int(value), "class": name, "label": name}
+        return rows
+
+    def _class_id_from_label_image(self, label_image: np.ndarray | None, instance_mask: np.ndarray) -> int | None:
+        if label_image is None:
+            return None
+        values = label_image[instance_mask]
+        values = values[values > 0]
+        if values.size == 0:
+            return None
+        labels, counts = np.unique(values.astype(int), return_counts=True)
+        return int(labels[int(np.argmax(counts))])
 
     def _read_boxes(self, path: Path) -> list[dict]:
         rows = []

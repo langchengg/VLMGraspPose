@@ -1,2 +1,0 @@
-split,processed_frames,successful_frames,failure_rate,mean_final_score,mean_target_overlap,mean_center_distance,mean_collision_penalty,collision_free_proxy_rate,top1_proxy_valid_rate,top3_proxy_valid_rate,top5_proxy_valid_rate,mean_runtime_per_frame,top1_2d_grasp_center_hit_rate,top3_2d_grasp_center_hit_rate,top5_2d_grasp_center_hit_rate
-ocid_vlg,2,2,0.0,0.7531691447732232,0.8389802717089188,0.008094060796493163,0.0,1.0,1.0,1.0,1.0,0.15789366599892674,1.0,1.0,1.0

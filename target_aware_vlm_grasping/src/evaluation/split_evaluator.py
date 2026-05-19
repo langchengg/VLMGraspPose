@@ -47,3 +47,25 @@ class SplitEvaluator:
             row.update(self.evaluator.evaluate_records(records, mode=self.mode))
             rows.append(row)
         return rows
+
+    def evaluate_by_target_source(self, output_root: Path) -> list[dict]:
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for record in self.evaluator.load_best_grasps(output_root):
+            groups[record.get("target_source") or "unknown"].append(record)
+        rows = []
+        for target_source, records in sorted(groups.items()):
+            row = {"target_source": target_source}
+            row.update(self.evaluator.evaluate_records(records, mode=self.mode))
+            rows.append(row)
+        return rows
+
+    def evaluate_by_scorer(self, output_root: Path) -> list[dict]:
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for record in self.evaluator.load_best_grasps(output_root):
+            groups[record.get("scorer") or record.get("scorer_type") or "unknown"].append(record)
+        rows = []
+        for scorer, records in sorted(groups.items()):
+            row = {"scorer": scorer}
+            row.update(self.evaluator.evaluate_records(records, mode=self.mode))
+            rows.append(row)
+        return rows

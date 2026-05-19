@@ -14,9 +14,13 @@ def generate_reports(output_root: Path, thresholds: dict, mode: str = "proxy") -
     dataset_rows = evaluator.evaluate_by_dataset(output_root)
     split_rows = evaluator.evaluate_by_split(output_root)
     scene_rows = evaluator.evaluate_by_scene(output_root)
+    target_source_rows = evaluator.evaluate_by_target_source(output_root)
+    scorer_rows = evaluator.evaluate_by_scorer(output_root)
     pd.DataFrame(dataset_rows).to_csv(output_root / "metrics_by_dataset.csv", index=False)
     pd.DataFrame(split_rows).to_csv(output_root / "metrics_by_split.csv", index=False)
     pd.DataFrame(scene_rows).to_csv(output_root / "metrics_by_scene.csv", index=False)
+    pd.DataFrame(target_source_rows).to_csv(output_root / "metrics_by_target_source.csv", index=False)
+    pd.DataFrame(scorer_rows).to_csv(output_root / "metrics_by_scorer.csv", index=False)
     runtime_rows = []
     for best in output_root.glob("**/best_grasp.json"):
         import json

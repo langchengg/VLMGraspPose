@@ -1,14 +1,34 @@
 # ── Raw data (download via scripts/download_data.py) ────────────────
 data/raw/
+target_aware_vlm_grasping/data/*
 _download_tmp/
+!target_aware_vlm_grasping/data/
+!target_aware_vlm_grasping/data/README.md
+!target_aware_vlm_grasping/data/.gitkeep
 
 # ── Derived outputs (reproducible from pipeline) ────────────────────
 derived/
+target_aware_vlm_grasping/outputs/
+target_aware_vlm_grasping/logs/
+target_aware_vlm_grasping/cache/
+target_aware_vlm_grasping/.cache/
+target_aware_vlm_grasping/.hf_cache/
+target_aware_vlm_grasping/.matplotlib_cache/
+target_aware_vlm_grasping/.pytest_cache/
 
 # ── Model weights (download via scripts/download_weights.py) ────────
 models/
+target_aware_vlm_grasping/models/*
 external/
 .hf_cache/
+!target_aware_vlm_grasping/models/
+!target_aware_vlm_grasping/models/README.md
+!target_aware_vlm_grasping/models/.gitkeep
+!target_aware_vlm_grasping/models/reranker/
+target_aware_vlm_grasping/models/reranker/*
+!target_aware_vlm_grasping/models/reranker/mlp/
+target_aware_vlm_grasping/models/reranker/mlp/*
+!target_aware_vlm_grasping/models/reranker/mlp/.gitkeep
 
 # ── Results (reproducible from pipeline) ────────────────────────────
 results/
@@ -16,6 +36,12 @@ results/
 # ── Trained scorer weights ──────────────────────────────────────────
 *.pkl
 *.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.joblib
 
 # ── Visualization output ────────────────────────────────────────────
 vis_output/
