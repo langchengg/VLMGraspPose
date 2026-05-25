@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import traceback
 
 import cv2
@@ -115,6 +116,8 @@ class TargetAwareGraspPipeline:
         best_path = out / "best_grasp.json"
         if best_path.exists() and not overwrite:
             return FrameResult(sample, None, [], None, {}, "skipped", metadata={"output_dir": str(out)})
+        if overwrite and out.exists():
+            shutil.rmtree(out)
         ensure_dir(out)
 
         runtime: dict = {}

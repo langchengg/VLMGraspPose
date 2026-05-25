@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-from pandas.errors import EmptyDataError
-
 from evaluation.split_evaluator import SplitEvaluator
 
 
@@ -37,26 +35,22 @@ def generate_reports(output_root: Path, thresholds: dict, mode: str = "proxy") -
             **{f"runtime_{k}": v for k, v in rec.get("runtime", {}).items()},
         })
     pd.DataFrame(runtime_rows).to_csv(output_root / "runtime_report.csv", index=False)
-    failure_columns = ["split", "scene_id", "camera", "frame_id", "target_id", "command", "error"]
+    failure_columns = ["dataset", "split", "scene_id", "camera", "frame_id", "target_id", "command", "error"]
     failure_rows = []
-    existing_failure_csv = output_root / "failure_cases.csv"
-    if existing_failure_csv.exists() and existing_failure_csv.stat().st_size > 0:
-        try:
-            failure_rows.extend(pd.read_csv(existing_failure_csv).to_dict("records"))
-        except EmptyDataError:
-            pass
     for err in output_root.glob("**/error.json"):
         import json
         with open(err) as f:
             rec = json.load(f)
         sample = rec.get("sample", {})
+        sample_metadata = sample.get("metadata", {})
         failure_rows.append({
+            "dataset": sample.get("dataset_name") or sample_metadata.get("dataset"),
             "split": sample.get("split"),
             "scene_id": sample.get("scene_id"),
             "camera": sample.get("camera"),
             "frame_id": sample.get("frame_id"),
-            "target_id": sample.get("metadata", {}).get("target_id"),
-            "command": sample.get("metadata", {}).get("command"),
+            "target_id": sample.get("target_id") or sample_metadata.get("target_id"),
+            "command": sample.get("command") or sample.get("sentence") or sample_metadata.get("command"),
             "error": rec.get("error_message"),
         })
     pd.DataFrame(failure_rows, columns=failure_columns).to_csv(output_root / "failure_cases.csv", index=False)

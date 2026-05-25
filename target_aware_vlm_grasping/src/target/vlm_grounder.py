@@ -25,15 +25,24 @@ class VLMTargetGrounder(BaseTargetGrounder):
         try:
             if self._backend is None:
                 self._backend = build_vlm_backend(self.backend_name, self.backend_config)
-            target = self._backend.ground(rgb_image, sample.command, target_id=sample.target_id)
+            try:
+                target = self._backend.ground(
+                    rgb_image,
+                    sample.command,
+                    target_id=sample.target_id,
+                    target_label=sample.target_label,
+                )
+            except TypeError:
+                target = self._backend.ground(rgb_image, sample.command, target_id=sample.target_id)
             target.metadata["vlm_predicted_label"] = target.label
+            target.metadata["target_label_hint"] = sample.target_label
             if sample.target_label:
                 target.label = sample.target_label
             target.command = sample.command
             target.target_source = "vlm"
             target.metadata["target_bbox_pred"] = target.bbox
             target.metadata["target_bbox_gt"] = sample.target_bbox_gt
-            target.metadata["target_mask_source"] = "vlm_bbox"
+            target.metadata.setdefault("target_mask_source", "vlm_bbox")
             return target
         except Exception as exc:
             if not self.fallback_to_oracle:

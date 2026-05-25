@@ -7,7 +7,9 @@ Expected local layout:
 ```text
 models/
 ├── vlm/
-│   └── florence2/
+│   ├── florence2/
+│   ├── florence2-large-ft/
+│   └── sam/
 └── reranker/
     └── mlp/
 ```

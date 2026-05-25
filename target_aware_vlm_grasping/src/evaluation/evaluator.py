@@ -30,13 +30,36 @@ class OutputEvaluator:
             records.append(rec)
         return records
 
-    def evaluate_records(self, records: list[dict], mode: str = "proxy") -> dict:
+    def load_error_records(self, output_root: Path) -> list[dict]:
+        records = []
+        for path in sorted(Path(output_root).glob("**/error.json")):
+            if "paper_figures" in path.parts:
+                continue
+            with open(path) as f:
+                rec = json.load(f)
+            sample = rec.get("sample", {})
+            metadata = rec.get("metadata", {})
+            sample_metadata = sample.get("metadata", {})
+            records.append({
+                "dataset": sample.get("dataset_name") or sample_metadata.get("dataset") or metadata.get("dataset") or "unknown",
+                "split": sample.get("split") or "unknown",
+                "scene_id": sample.get("scene_id") or "unknown",
+                "target_source": metadata.get("target_source_requested") or "unknown",
+                "scorer": metadata.get("scorer") or "unknown",
+                "runtime": rec.get("runtime", {}),
+                "error": rec.get("error_message"),
+                "_path": str(path),
+            })
+        return records
+
+    def evaluate_records(self, records: list[dict], mode: str = "proxy", failures: int = 0) -> dict:
         n = len(records)
+        processed = n + int(failures)
         features = [r.get("feature_breakdown", {}) for r in records]
         row = {
-            "processed_frames": n,
+            "processed_frames": processed,
             "successful_frames": n,
-            "failure_rate": 0.0,
+            "failure_rate": (float(failures) / processed) if processed else 0.0,
             "mean_final_score": mean_or_zero([r.get("final_score", 0.0) for r in records]),
             "mean_target_overlap": mean_or_zero([f.get("target_overlap", 0.0) for f in features]),
             "mean_center_distance": mean_or_zero([f.get("distance_to_target_center", 0.0) for f in features]),

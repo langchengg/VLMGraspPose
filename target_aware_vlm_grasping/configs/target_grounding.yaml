@@ -1,12 +1,30 @@
 target_source: oracle
 method: oracle
-vlm_backend: florence2
+vlm_backend: florence2_sam
 fallback_to_oracle: false
 florence2:
-  model_id: models/vlm/florence2
+  model_id: models/vlm/florence2-large-ft
   task_prompt: "<CAPTION_TO_PHRASE_GROUNDING>"
   device: cpu
   max_new_tokens: 1024
   num_beams: 3
   trust_remote_code: true
   local_files_only: true
+  multi_query: true
+  nms_iou_threshold: 0.65
+  min_selection_score: 0.35
+  min_box_area_ratio: 0.0002
+  max_box_area_ratio: 0.75
+  fail_on_low_quality: true
+  require_query_consistency: true
+  min_query_agreement: 2
+  sam_enabled: true
+  sam_required: true
+  sam_checkpoint: models/vlm/sam/sam_vit_b_01ec64.pth
+  sam_model_type: vit_b
+  sam_device: cpu
+  sam_multimask_output: true
+  sam_min_area_ratio: 0.01
+  sam_max_area_ratio: 1.25
+  sam_bbox_expansion_pixels: 0
+  sam_bbox_expansion_ratio: 0.02
