@@ -61,12 +61,24 @@ def _score_bar(record: dict, out_path: Path) -> None:
 def _export_case(record: dict, case_dir: Path) -> None:
     best_path = Path(record["_path"])
     frame_dir = best_path.parent
-    label = f"{record.get('split')}_{record.get('scene_id')}_{record.get('camera')}_{record.get('frame_id')}_target_{int(record.get('target_id', 0)):03d}"
+    label = "_".join([
+        _safe_label(record.get("split")),
+        _safe_label(record.get("scene_id")),
+        _safe_label(record.get("camera")),
+        _safe_label(record.get("frame_id")),
+        f"target_{_safe_label(record.get('target_id'))}",
+    ])
     target_dir = case_dir / label
     target_dir.mkdir(parents=True, exist_ok=True)
     for name in ["visualization_rgb.png", "visualization_3d.png", "target_mask.png", "score_breakdown.json", "best_grasp.json"]:
         _copy_if_exists(frame_dir / name, target_dir / name)
     _score_bar(record, target_dir / "score_breakdown_bar.png")
+
+
+def _safe_label(value) -> str:
+    text = str(value if value is not None else "unknown")
+    text = text.replace("/", "_").replace("\\", "_").replace(" ", "_")
+    return "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in text)
 
 
 def main() -> None:

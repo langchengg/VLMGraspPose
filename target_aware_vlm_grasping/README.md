@@ -1,6 +1,6 @@
 # Target-Aware VLM RGB-D Grasping
 
-Mac-compatible Python project for language-guided target-aware RGB-D grasping on OCID-VLG and OCID-Grasp.
+Mac-compatible Python project for language-guided target-aware RGB-D grasping on OCID-VLG, OCID-Grasp, and local single-object RGB-D turntable data.
 
 The active default VLM path is now:
 
@@ -35,7 +35,7 @@ Text command + RGB image + depth image + camera intrinsics
 
 ## Modules
 
-- `src/dataset/`: OCID-VLG language-conditioned samples and OCID-Grasp fallback samples.
+- `src/dataset/`: OCID-VLG language-conditioned samples, OCID-Grasp fallback samples, and single-object RGB-D folders.
 - `src/target/`: oracle grounder, Florence-2 VLM grounder, command parsing, relation-aware bbox selection, SAM mask refinement.
 - `src/pointcloud/`: RGB-D to Open3D point cloud, target extraction, depth fallback refinement, table plane segmentation, normals, AABB/OBB.
 - `src/grasp_sampler/`: CPU geometric candidates: top-down, bbox-aligned, side, normal-based.
@@ -105,6 +105,23 @@ OCID-Grasp default:
 data/OCID-Grasp
 ```
 
+Single-object RGB-D default:
+
+```text
+data/
+├── 001_chips_can/
+├── 002_master_chef_can/
+└── 003_cracker_box/
+```
+
+Each single-object folder contains RGB `.jpg`, H5 depth files with a `depth` dataset, and optional PBM masks under `masks/`. The loader resizes RGB/mask to the depth frame, reads H5 depth with scale `10000.0`, and generates commands:
+
+```text
+001_chips_can        -> pick the chips can
+002_master_chef_can  -> pick the master chef can
+003_cracker_box      -> pick the cracker box
+```
+
 OCID-VLG samples are treated as language-conditioned target samples:
 
 ```text
@@ -112,6 +129,19 @@ OCID-VLG samples are treated as language-conditioned target samples:
 ```
 
 One RGB-D image can therefore produce multiple target-conditioned samples.
+
+Single-object samples are treated as one language-conditioned sample per view:
+
+```text
+Single-object RGB-D sample
+→ object_name / category_name
+→ command = "pick the {object_name}"
+→ Florence-2-large-ft + SAM
+→ target point cloud
+→ Open3D geometric grasp sampler
+→ rule-based / MLP / optional XGBoost re-ranker
+→ Top-1 / Top-K grasp output
+```
 
 ## Run One Sample
 
@@ -140,6 +170,22 @@ python scripts/run_one_sample.py \
   --vlm-backend florence2_sam \
   --scorer rule_based \
   --output-root outputs/debug_vlm_large_sam \
+  --top-k 5 \
+  --overwrite
+```
+
+Single-object VLM mode:
+
+```bash
+python scripts/run_one_sample.py \
+  --dataset single_object \
+  --dataset-root data \
+  --objects 001_chips_can \
+  --index 0 \
+  --target-source vlm \
+  --vlm-backend florence2_sam \
+  --scorer rule_based \
+  --output-root outputs/single_object_vlm_debug \
   --top-k 5 \
   --overwrite
 ```
@@ -184,6 +230,37 @@ for refer in multiple novel-classes novel-instances unique; do
 done
 ```
 
+Run the local single-object data:
+
+```bash
+python scripts/run_dataset.py \
+  --dataset single_object \
+  --dataset-root data \
+  --objects 001_chips_can,002_master_chef_can,003_cracker_box \
+  --target-source vlm \
+  --vlm-backend florence2_sam \
+  --scorer rule_based \
+  --output-root outputs/single_object_vlm \
+  --top-k 5 \
+  --overwrite
+```
+
+For quick debugging, cap views per object:
+
+```bash
+python scripts/run_dataset.py \
+  --dataset single_object \
+  --dataset-root data \
+  --objects 001_chips_can,002_master_chef_can,003_cracker_box \
+  --samples-per-object 3 \
+  --target-source vlm \
+  --vlm-backend florence2_sam \
+  --scorer rule_based \
+  --output-root outputs/single_object_vlm_smoke \
+  --top-k 5 \
+  --overwrite
+```
+
 ## Scoring
 
 The rule-based scorer is active by default:
@@ -216,6 +293,23 @@ python scripts/run_one_sample.py \
 ```
 
 If no MLP checkpoint is provided, the system falls back to a rule-initialized CPU MLP / rule-like behavior.
+
+Optional XGBoost scoring:
+
+```bash
+python scripts/run_one_sample.py \
+  --dataset single_object \
+  --dataset-root data \
+  --objects 001_chips_can \
+  --index 0 \
+  --target-source vlm \
+  --vlm-backend florence2_sam \
+  --scorer xgboost \
+  --output-root outputs/xgboost_debug \
+  --overwrite
+```
+
+If no XGBoost checkpoint is configured in `configs/scoring.yaml`, or `xgboost` is not installed, the system safely falls back to the rule-based scorer. This keeps the core pipeline Mac-compatible.
 
 ## Evaluation
 
@@ -285,3 +379,4 @@ The test suite includes a synthetic RGB-D smoke test for non-empty point clouds,
 - CPU SAM is slower than bbox-only mode, especially on full split runs.
 - The geometric sampler is a CPU prototype, not a learned 6-DoF grasp detector.
 - OCID 2D grasp rectangle evaluation uses projected grasp rectangles and is an approximation.
+- Single-object PBM masks in the local turntable data encode the object as the smaller binary component, which the loader handles automatically.
