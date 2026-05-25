@@ -3,6 +3,20 @@ datasets:
     root: data/OCID-VLG
   ocid_grasp:
     root: data/OCID-Grasp
+  single_object:
+    root: data
+    objects:
+      - 001_chips_can
+      - 002_master_chef_can
+      - 003_cracker_box
+    depth_scale: 10000.0
+    fallback_intrinsics:
+      width: 640
+      height: 480
+      fx: 579.411
+      fy: 579.411
+      cx: 320.0
+      cy: 240.0
 output_root: outputs
 camera: ocid
 depth_scale: 1000.0

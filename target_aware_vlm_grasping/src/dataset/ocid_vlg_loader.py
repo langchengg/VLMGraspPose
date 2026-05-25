@@ -355,9 +355,13 @@ class OCIDVLGLoader:
             if mask_image is not None:
                 if mask_image.ndim == 3:
                     mask_image = mask_image[:, :, 0]
-                mask = mask_image.astype(np.int32) == int(sample.target_index)
-                if mask.any():
-                    return clean_binary_mask(mask, kernel_size=3)
+                if sample.target_index is not None:
+                    mask = mask_image.astype(np.int32) == int(sample.target_index)
+                    if mask.any():
+                        return clean_binary_mask(mask, kernel_size=3)
+                binary_mask = mask_image.astype(np.uint8) > 0
+                if binary_mask.any():
+                    return clean_binary_mask(binary_mask, kernel_size=3)
         return bbox_to_mask(sample.target_bbox, shape)
 
 

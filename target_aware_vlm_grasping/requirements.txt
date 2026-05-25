@@ -7,3 +7,4 @@ pandas
 tqdm
 matplotlib
 pillow
+h5py

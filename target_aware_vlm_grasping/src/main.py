@@ -11,6 +11,7 @@ import yaml
 
 from association.feature_extractor import CandidateFeatureExtractor
 from dataset.ocid_vlg_loader import OCIDVLGLoader
+from dataset.single_object_loader import SingleObjectRGBDLoader
 from grasp_sampler.geometric_sampler import GeometricGraspSampler
 from pointcloud.pointcloud_processor import PointCloudProcessor
 from pointcloud.rgbd_to_pointcloud import save_pointcloud
@@ -80,6 +81,14 @@ class TargetAwareGraspPipeline:
                 dataset_cfg.get("fallback_intrinsics", default.get("dataset", {}).get("fallback_intrinsics")),
             ),
         )
+        single_cfg = dataset_cfg.get("datasets", {}).get("single_object", {}) if isinstance(dataset_cfg.get("datasets"), dict) else {}
+        self.single_object_loader = SingleObjectRGBDLoader(
+            depth_scale=single_cfg.get("depth_scale", 10000.0),
+            fallback_intrinsics=single_cfg.get(
+                "fallback_intrinsics",
+                default.get("dataset", {}).get("fallback_intrinsics"),
+            ),
+        )
 
         processing_cfg = _merge_dicts(
             default.get("processing", {}),
@@ -124,7 +133,7 @@ class TargetAwareGraspPipeline:
         data: dict = {}
         try:
             with timed("load_sample", runtime):
-                data = self.ocid_loader.load_sample(sample)
+                data = self._load_sample(sample)
             with timed("target_grounding", runtime):
                 target = self._predict_target(sample, data["rgb"], target_source, vlm_backend)
             with timed("pointcloud_processing", runtime):
@@ -199,6 +208,12 @@ class TargetAwareGraspPipeline:
             top_k=top_k,
             overwrite=overwrite,
         )
+
+    def _load_sample(self, sample: DatasetSample) -> dict:
+        dataset = str(sample.dataset_name or sample.metadata.get("dataset", "")).lower()
+        if dataset in {"singleobjectrgbd", "single_object", "single-object"}:
+            return self.single_object_loader.load_sample(sample)
+        return self.ocid_loader.load_sample(sample)
 
     def _predict_target(
         self,

@@ -51,10 +51,21 @@ def _sample_mask(sample: DatasetSample, shape: tuple[int, int]) -> np.ndarray | 
             return None
         if img.ndim == 3:
             img = img[:, :, 0]
+        if sample.metadata.get("dataset") == "SingleObjectRGBD":
+            positive = img > 0
+            negative = ~positive
+            mask = negative if negative.mean() < positive.mean() else positive
+            if mask.shape != shape:
+                mask = cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+            return mask
         if sample.target_index is not None:
             mask = img.astype(np.int32) == int(sample.target_index)
             if mask.any():
+                if mask.shape != shape:
+                    mask = cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
                 return mask
-        return img.astype(bool)
+        mask = img.astype(bool)
+        if mask.shape != shape:
+            mask = cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+        return mask
     return None
-

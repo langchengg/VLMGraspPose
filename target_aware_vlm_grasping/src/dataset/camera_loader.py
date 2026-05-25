@@ -16,6 +16,16 @@ def load_rgb(path: Path) -> np.ndarray:
 
 
 def load_depth(path: Path, depth_scale: float = 1000.0) -> np.ndarray:
+    if path.suffix.lower() in {".h5", ".hdf5"}:
+        try:
+            import h5py
+        except ImportError as exc:
+            raise ImportError("Reading .h5 depth files requires h5py.") from exc
+        with h5py.File(path, "r") as handle:
+            if "depth" not in handle:
+                raise KeyError(f"Depth H5 file does not contain a 'depth' dataset: {path}")
+            depth_raw = handle["depth"][()]
+        return depth_raw.astype(np.float32) / float(depth_scale)
     depth_raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if depth_raw is None:
         raise FileNotFoundError(f"Could not read depth image: {path}")

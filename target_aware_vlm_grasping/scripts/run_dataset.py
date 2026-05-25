@@ -17,6 +17,7 @@ if str(SRC) not in sys.path:
 
 from dataset.ocid_grasp_loader import OCIDGraspIndexBuilder
 from dataset.ocid_vlg_loader import OCIDVLGIndexBuilder
+from dataset.single_object_loader import SingleObjectIndexBuilder
 from main import TargetAwareGraspPipeline, frame_result_row, load_config, write_summary_csv
 from utils.io_utils import ensure_dir
 
@@ -26,6 +27,8 @@ def _resolve(path: Path) -> Path:
 
 
 def _default_dataset_root(dataset: str) -> Path:
+    if dataset == "single_object":
+        return Path("data")
     if dataset == "ocid_grasp":
         return Path("data/OCID-Grasp")
     return Path("data/OCID-VLG")
@@ -48,7 +51,19 @@ def build_samples(args, output_root: Path):
                     return samples
                 samples.extend(builder.build(refer_split=refer_split, split=split, max_samples=remaining))
         return samples
+    if args.dataset == "single_object":
+        return SingleObjectIndexBuilder(dataset_root, output_root).build(
+            objects=_parse_objects(args.objects),
+            max_samples=args.max_samples,
+            samples_per_object=args.samples_per_object,
+        )
     return OCIDGraspIndexBuilder(dataset_root, output_root).build(max_samples=args.max_samples)
+
+
+def _parse_objects(value: str | None) -> list[str] | None:
+    if not value or value == "all":
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _resolve_refer_splits(dataset_root: Path, value: str) -> list[str]:
@@ -66,14 +81,16 @@ def _resolve_splits(value: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run OCID language-conditioned target-aware RGB-D grasping.")
-    parser.add_argument("--dataset", choices=["ocid_vlg", "ocid_grasp"], default="ocid_vlg")
+    parser.add_argument("--dataset", choices=["ocid_vlg", "ocid_grasp", "single_object"], default="ocid_vlg")
     parser.add_argument("--dataset-root", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=Path("outputs"))
     parser.add_argument("--refer-split", default="multiple", help="OCID-VLG refer split, or 'all'.")
     parser.add_argument("--split", default="test", help="OCID-VLG split: train/val/test, or 'all'.")
+    parser.add_argument("--objects", default="all", help="For single_object: comma-separated object folders or prefixes.")
+    parser.add_argument("--samples-per-object", type=int, default=None)
     parser.add_argument("--target-source", choices=["oracle", "vlm"], default="oracle")
     parser.add_argument("--vlm-backend", default="florence2")
-    parser.add_argument("--scorer", choices=["rule_based", "mlp"], default="rule_based")
+    parser.add_argument("--scorer", choices=["rule_based", "mlp", "xgboost"], default="rule_based")
     parser.add_argument("--mlp-checkpoint", type=Path, default=None)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--max-samples", type=int, default=None)
