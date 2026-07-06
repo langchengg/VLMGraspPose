@@ -1,26 +1,33 @@
-# ── Raw data (download via scripts/download_data.py) ────────────────
-data/raw/
+# ---------------------------------------------------------------------------
+# Repository upload safety
+# ---------------------------------------------------------------------------
+
+# External baseline checkouts are documented as clone-time dependencies.
+# Do not vendor full third-party repositories into this project.
+ranking_baseline/VL-Grasp/
+reproduction/CROG/
+legacy/external_graspnet/
+
+# Local datasets and dataset-like roots.
+data/
+dataset/
+datasets/
 target_aware_vlm_grasping/data/*
-_download_tmp/
 !target_aware_vlm_grasping/data/
 !target_aware_vlm_grasping/data/README.md
 !target_aware_vlm_grasping/data/.gitkeep
+reproduction/OCID-VLG/
+OCID-VLG/
+OCID-Grasp/
+RoboRefIt/
+GraspNet/
+GraspNet-1Billion/
 
-# ── Derived outputs (reproducible from pipeline) ────────────────────
-derived/
-target_aware_vlm_grasping/outputs/
-target_aware_vlm_grasping/logs/
-target_aware_vlm_grasping/cache/
-target_aware_vlm_grasping/.cache/
-target_aware_vlm_grasping/.hf_cache/
-target_aware_vlm_grasping/.matplotlib_cache/
-target_aware_vlm_grasping/.pytest_cache/
-
-# ── Model weights (download via scripts/download_weights.py) ────────
+# Local model/checkpoint/weight roots.
 models/
+weights/
+checkpoints/
 target_aware_vlm_grasping/models/*
-external/
-.hf_cache/
 !target_aware_vlm_grasping/models/
 !target_aware_vlm_grasping/models/README.md
 !target_aware_vlm_grasping/models/.gitkeep
@@ -30,52 +37,88 @@ target_aware_vlm_grasping/models/reranker/*
 target_aware_vlm_grasping/models/reranker/mlp/*
 !target_aware_vlm_grasping/models/reranker/mlp/.gitkeep
 
-# ── Results (reproducible from pipeline) ────────────────────────────
-results/
-
-# ── Trained scorer weights ──────────────────────────────────────────
-*.pkl
-*.pt
+# Model weights and serialized data.
 *.pth
+*.pt
 *.ckpt
 *.safetensors
-*.bin
 *.onnx
+*.bin
+*.pkl
 *.joblib
+*.npy
+*.npz
+*.h5
+*.hdf5
 
-# ── Visualization output ────────────────────────────────────────────
+# Archives and downloaded papers.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.pdf
+
+# Generated outputs and experiment artifacts.
+graphify-out/
+outputs/
+target_aware_vlm_grasping/outputs/*
+!target_aware_vlm_grasping/outputs/
+!target_aware_vlm_grasping/outputs/.gitkeep
+runs/
+logs/
+wandb/
+exp/
+derived/
+results/
 vis_output/
+_download_tmp/
 
-# ── Python ──────────────────────────────────────────────────────────
+# Python build/runtime artifacts.
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.egg-info/
 dist/
 build/
 *.so
+*.dylib
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# ── macOS ───────────────────────────────────────────────────────────
+# Caches used by local VLM and plotting runs.
+.cache/
+.hf_cache/
+.matplotlib_cache/
+target_aware_vlm_grasping/cache/
+target_aware_vlm_grasping/.cache/
+target_aware_vlm_grasping/.hf_cache/
+target_aware_vlm_grasping/.matplotlib_cache/
+target_aware_vlm_grasping/.pytest_cache/
+
+# Virtual environments and local configuration.
+.env
+.env.*
+venv/
+.venv/
+env/
+
+# macOS and editor files.
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# ── IDE ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# ── Jupyter ─────────────────────────────────────────────────────────
+# Jupyter checkpoints.
 .ipynb_checkpoints/
 
-# ── Environment ─────────────────────────────────────────────────────
-.env
-venv/
-.venv/
-
-# ── Old layout (kept temporarily during migration) ──────────────────
+# Old layout kept only as local migration/reference material.
 test_seen/
 train/
 test_similar/
