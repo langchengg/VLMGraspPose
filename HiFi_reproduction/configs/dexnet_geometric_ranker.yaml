@@ -1,0 +1,63 @@
+schema_version: 1
+method: target_aware_geometric_heuristic_v1
+description: >-
+  Transparent, per-sample geometric ranking of frozen post-NMS Dex-Net
+  candidates. These weights are not fitted to OCID-VLG grasp annotations and
+  the resulting score is not a calibrated grasp-success probability.
+
+normalization:
+  lower_quantile: 0.10
+  upper_quantile: 0.90
+  epsilon: 1.0e-12
+  bounded_degenerate_fallback: preserve_raw
+  unbounded_degenerate_fallback: neutral_0.5
+
+geometry:
+  target_mask_dilation_px: 3
+  contact_support_radius_px: 4
+  jaw_endpoint_support_radius_px: 4
+  line_sample_spacing_px: 1.0
+  closing_region_half_height_px: 5.0
+  sweep_region_half_height_px: 8.0
+  interference_target_clearance_px: 3
+  interference_depth_clearance_m: 0.005
+  interference_depth_band_m: 0.020
+  depth_winsor_lower_quantile: 0.05
+  depth_winsor_upper_quantile: 0.95
+  image_safe_margin_px: 20.0
+
+width_plausibility:
+  source: official_antipodal_contact_span_projected_at_center_depth
+  hard_min_m: 0.005
+  preferred_min_m: 0.012
+  preferred_max_m: 0.040
+  hard_max_m: 0.055
+
+depth_component:
+  valid_support_fraction: 0.60
+  low_variance_fraction: 0.40
+
+weights:
+  contact: 0.18
+  axis: 0.10
+  boundary: 0.10
+  antipodal: 0.20
+  depth: 0.12
+  width: 0.08
+  target: 0.12
+  collision: 0.08
+  edge: 0.02
+
+ranking:
+  top_k: 5
+  score_round_decimals_for_sort: 12
+  final_tie_breaker: candidate_id_ascending
+
+evaluation:
+  enabled_when_annotations_available: true
+  label: 2D consistency with OCID-VLG planar grasp annotations
+  predicted_rectangle_height_px: 20.0
+  ground_truth_rectangle_height_px: 20.0
+  ground_truth_width_clip_px: 100.0
+  angle_threshold_deg: 30.0
+  iou_threshold: 0.25

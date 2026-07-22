@@ -1,0 +1,28 @@
+# Copy this file and replace every REQUIRED_REAL_VALUE with measured or
+# otherwise provenance-backed calibration.  Do not run VGN with placeholders.
+default:
+  width: 640
+  height: 480
+  fx: REQUIRED_REAL_VALUE
+  fy: REQUIRED_REAL_VALUE
+  cx: REQUIRED_REAL_VALUE
+  cy: REQUIRED_REAL_VALUE
+  source: REQUIRED_REAL_VALUE
+
+# Per-view overrides are also accepted:
+# top:
+#   width: 640
+#   height: 480
+#   fx: REQUIRED_REAL_VALUE
+#   fy: REQUIRED_REAL_VALUE
+#   cx: REQUIRED_REAL_VALUE
+#   cy: REQUIRED_REAL_VALUE
+#   source: REQUIRED_REAL_VALUE
+# bottom:
+#   width: 640
+#   height: 480
+#   fx: REQUIRED_REAL_VALUE
+#   fy: REQUIRED_REAL_VALUE
+#   cx: REQUIRED_REAL_VALUE
+#   cy: REQUIRED_REAL_VALUE
+#   source: REQUIRED_REAL_VALUE

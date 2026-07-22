@@ -1,0 +1,27 @@
+schema_version: 1
+metric_name: 2D consistency with OCID-VLG planar grasp annotations
+is_physical_grasp_success: false
+
+# These values exactly mirror configs/dexnet_geometric_ranker.yaml:evaluation,
+# which produced the existing geometric Top-1 8/10 and Top-5 10/10 results.
+predicted_rectangle_height_px: 20.0
+ground_truth_rectangle_height_px: 20.0
+ground_truth_width_clip_px: 100.0
+angle_threshold_deg: 30.0
+iou_threshold: 0.25
+top_k: 5
+
+coordinate_convention:
+  image: pixels; u right, v down; origin top-left
+  predicted_center: frozen candidate center_uv
+  predicted_width: official antipodal contact-point span in pixels
+  predicted_angle: atan2(contact_2_v-contact_1_v, contact_2_u-contact_1_u)
+  ground_truth_center: midpoint of annotation corners 1 and 3
+  ground_truth_width: corner 1 to corner 4, clipped to ground_truth_width_clip_px
+  angle_symmetry: modulo pi
+  match: angle difference at or below threshold AND rectangle IoU at or above threshold
+
+first_valid_rank_statistics:
+  rank_indexing: one_based
+  standard_deviation: population
+  exclude_samples_without_any_valid_candidate: true

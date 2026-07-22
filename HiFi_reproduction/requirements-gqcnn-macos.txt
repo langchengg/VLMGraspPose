@@ -1,0 +1,17 @@
+# Native Apple Silicon candidate-only environment for official GQ-CNN v1.3.0.
+# TensorFlow is intentionally excluded: the official TF<=1.15 scoring stack has
+# no Python 3.11/macOS arm64 build. See docs/DEXNET_GQCNN_RUNBOOK.md.
+numpy==1.23.5
+scipy==1.10.1
+matplotlib==3.8.4
+opencv-python==4.11.0.86
+scikit-learn==1.3.2
+scikit-image==0.20.0
+Pillow==12.3.0
+psutil==7.2.2
+GPUtil==1.4.0
+autolab-core==1.1.1
+autolab-perception==1.0.0
+visualization==1.0.0
+ruamel.yaml==0.17.40
+pytest==8.4.2

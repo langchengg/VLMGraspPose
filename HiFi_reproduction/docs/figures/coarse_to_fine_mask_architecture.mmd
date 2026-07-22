@@ -1,0 +1,31 @@
+flowchart LR
+  RGB["RGB image"] --> HIFI["HiFi-CS grounder"]
+  QUERY["Language query"] --> HIFI
+  HIFI --> COARSE["Coarse target mask"]
+
+  COARSE --> PROMPT["Visual prompt builder<br/>expanded box + interior positive points<br/>optional negatives (ablation)"]
+  PROMPT --> SAM["Official SAM 3<br/>visual-prompt refinement"]
+  SAM --> HYP["All candidate refined masks"]
+  HYP --> SELECT["Inference-only mask selector"]
+  COARSE -. "explicit safe fallback" .-> SELECT
+  SELECT --> REFINED["Selected refined target mask"]
+
+  DEPTH["Full depth image<br/>(unchanged)"] ==> DEX["Dex-Net antipodal sampler"]
+  REFINED --> DEX
+  COARSE -. "baseline mask branch" .-> DEX
+  DEX --> CAND["Planar 4-DoF candidates"]
+  CAND --> GQ["GQ-CNN q-value ranking"]
+  CAND --> GEO["Target-aware geometric ranking"]
+  GQ --> OUT["Top-K / Top-1 planar grasp"]
+  GEO --> OUT
+
+  classDef input fill:#f4f6f7,stroke:#8896a3,color:#17212b;
+  classDef hifi fill:#e9f2fb,stroke:#4b83b6,color:#17212b;
+  classDef sam fill:#f2ecfa,stroke:#7c63a8,color:#17212b;
+  classDef grasp fill:#e9f5ec,stroke:#4d9562,color:#17212b;
+  classDef rank fill:#fceeda,stroke:#c98a2e,color:#17212b;
+  class RGB,QUERY,DEPTH input;
+  class HIFI,COARSE hifi;
+  class PROMPT,SAM,HYP,SELECT,REFINED sam;
+  class DEX,CAND grasp;
+  class GQ,GEO,OUT rank;

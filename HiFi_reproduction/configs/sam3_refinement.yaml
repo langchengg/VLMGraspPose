@@ -1,0 +1,50 @@
+schema_version: 1
+
+model:
+  model_id: facebook/sam3
+  revision: null
+  local_files_only: true
+  precision: auto
+  batch_size: 1
+
+prompt:
+  strategy: box_positive_points
+  coarse_mask_threshold: 0.15000000000000002
+  minimum_component_area_px: 20
+  box_expansion_fraction: 0.075
+  positive_point_count: 4
+  point_minimum_separation_px: 20
+  negative_point_count: 3
+  negative_ring_width_px: 12
+
+selector:
+  weights:
+    sam_quality: 0.25
+    coarse_recall: 0.20
+    coarse_precision: 0.10
+    coarse_iou: 0.15
+    positive_points: 0.10
+    largest_component: 0.08
+    depth_consistency: 0.00
+    prompt_box_overlap: 0.07
+    negative_violation: 0.10
+    area_ratio_penalty: 0.10
+    fragmentation_penalty: 0.05
+  area_ratio_penalty:
+    preferred_min: 0.65
+    preferred_max: 1.60
+  depth_consistency:
+    enabled: false
+    minimum_tolerance_m: 0.02
+    mad_multiplier: 3.0
+  fallback:
+    minimum_area_ratio: 0.25
+    maximum_area_ratio: 4.0
+    minimum_coarse_recall: 0.50
+    maximum_outside_box_fraction: 0.10
+    minimum_refinement_score: 0.45
+
+evaluation:
+  change_margin_iou: 0.01
+  boundary_tolerance_px: 2
+
