@@ -1,0 +1,17 @@
+flowchart LR
+    RGB[RGB] --> HIFI[HiFi-CS grounder]
+    LANG[Language] --> HIFI
+    HIFI --> COARSE[Coarse target probability / mask]
+    COARSE --> PROMPT[Prompt builder: box + interior points]
+    PROMPT --> TRACKER[Hugging Face SAM 3 Tracker<br/>macOS CPU, float32]
+    TRACKER --> SELECT[No-GT mask selector + safe fallback]
+    COARSE -. HiFi-CS fallback .-> SELECT
+    SELECT --> REFINED[Refined target mask]
+    REFINED --> DEX[Dex-Net antipodal sampler]
+    COARSE -. frozen baseline .-> DEX
+    DEPTH[Full depth, unchanged] --> DEX
+    DEX --> FIXED[Fixed planar 4-DoF candidates]
+    FIXED --> GQ[GQ-CNN-2.1 q-value ranking]
+    FIXED --> GEO[Target-aware geometric re-ranking]
+    GQ --> EVAL[Paired 2D consistency evaluation]
+    GEO --> EVAL

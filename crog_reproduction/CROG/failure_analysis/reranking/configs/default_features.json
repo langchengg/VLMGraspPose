@@ -1,0 +1,24 @@
+{
+  "boundary_tolerance_px": 2,
+  "candidate_generation": {
+    "k": 5,
+    "min_distance": 2,
+    "peak_threshold": 0.4
+  },
+  "depth_tolerance_mm": 10.0,
+  "jaw_band_thickness_ratio": 0.15,
+  "mask_threshold": 0.35,
+  "minimum_angle_pixels": 3,
+  "minimum_depth_pixels": 3,
+  "q_patch_radius_px": 2,
+  "q_ring_inner_radius_px": 3,
+  "q_ring_outer_radius_px": 7,
+  "width_max_hole_px": 2,
+  "width_scan_offsets_px": [
+    -2,
+    -1,
+    0,
+    1,
+    2
+  ]
+}

@@ -57,10 +57,12 @@ def save_candidate_grid(
     for axis, mask, record in zip(axes.flat, masks, metrics):
         axis.imshow(rgb)
         axis.imshow(np.ma.masked_where(~np.asarray(mask, dtype=bool), mask), cmap="spring", alpha=0.45)
-        axis.set_title(
-            f"{record['candidate_id']} sam={float(record['sam_quality']):.3f} "
-            f"score={float(record['refinement_score']):.3f}"
-        )
+        quality = record.get("sam_quality")
+        quality_text = "n/a" if quality is None else f"{float(quality):.3f}"
+        title = f"{record['candidate_id']} sam={quality_text}"
+        if record.get("refinement_score") is not None:
+            title += f" score={float(record['refinement_score']):.3f}"
+        axis.set_title(title)
         axis.axis("off")
     return _save(figure, path)
 

@@ -157,6 +157,7 @@ class OcidVlgBundleIndex:
         mask_erode_px: int = 0,
         mask_dilate_px: int = 0,
         verify_checksums: bool = True,
+        allow_empty_mask: bool = False,
     ) -> OcidVlgGraspSample:
         if sample_id not in self.by_id:
             raise KeyError(f"Unknown sample_id: {sample_id}")
@@ -235,9 +236,9 @@ class OcidVlgBundleIndex:
             erode_radius_px=int(mask_erode_px),
             dilate_radius_px=int(mask_dilate_px),
         )
-        if not np.any(processing.original_binary):
+        if not allow_empty_mask and not np.any(processing.original_binary):
             raise ValueError(f"Original target mask is empty: {sample_id}")
-        if not np.any(processing.processed):
+        if not allow_empty_mask and not np.any(processing.processed):
             raise ValueError(f"Processed target mask has no valid target depth: {sample_id}")
 
         values = dict(intrinsics_json)

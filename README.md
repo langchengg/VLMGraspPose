@@ -72,17 +72,21 @@ The current local checkout contains these relevant areas:
 ```text
 .
 ├── target_aware_vlm_grasping/      # Active implementation, configs, scripts, tests
-├── legacy/                         # Archived earlier implementations and helpers
-├── ranking_baseline/               # Local VL-Grasp checkout and reranking experiments; ignored for Git upload
-├── reproduction/                   # Local CROG checkout, OCID-VLG data, and third-party PDF; ignored for Git upload
+├── HiFi_reproduction/              # HiFi/SAM3 + Dex-Net/GQ-CNN/VGN integration
+├── LAVT_reproduction/              # Isolated GPLv3 LAVT reproduction source
+├── crog_reproduction/CROG/         # MIT CROG source and reranking experiments
+├── legacy/                         # Archived implementations and GraspNet adapters
+├── ranking_baseline/               # Local VL-Grasp clone-time dependency
+├── scripts/                        # Fixed-version external repository bootstrap
 ├── graphify-out/                   # Generated graph output; ignored for Git upload
+├── THIRD_PARTY_NOTICES.md          # Upstream SHAs and license boundaries
 ├── CLEANUP_REPORT.md               # Prior cleanup and active-tree notes
 ├── LICENSE                         # Repository license
 ├── README.md                       # This file
 └── .gitignore                      # Upload safety rules
 ```
 
-Only lightweight source code, configs, scripts, tests, and documentation should be committed. Local datasets, model weights, downloaded paper PDFs, generated outputs, caches, and full third-party baseline clones are intentionally excluded.
+Only lightweight source code, configs, scripts, tests, and documentation are committed. Local datasets, model weights, downloaded paper PDFs, generated outputs, caches, and license-restricted third-party clones are intentionally excluded.
 
 ## Installation
 
@@ -199,13 +203,9 @@ python scripts/train_mlp_reranker.py --output outputs/checkpoints/mlp_rule_initi
 
 ### CROG
 
-CROG is a referring grasp synthesis baseline for language-guided robot grasping. The local machine has a CROG checkout under `reproduction/CROG/`, including Mac/MPS reproduction notes and single-device experiments, but the full third-party checkout, checkpoints, and generated experiment outputs are not committed here.
+CROG is a referring grasp synthesis baseline for language-guided robot grasping. A source-only snapshot is included under `crog_reproduction/CROG/` at upstream commit `1eeee85de1fe6bffdc66c9ed9a622028ea04578e`, together with the local Mac/MPS and reranking work. Datasets, checkpoints, generated outputs, and two upstream entrypoints containing an embedded external-service credential are excluded.
 
-To reproduce CROG separately:
-
-```bash
-git clone https://github.com/HilbertXu/CROG.git reproduction/CROG
-```
+Use `train_crog_mac.py` for the included single-device training path.
 
 Follow the upstream dataset and CUDA/DDP instructions for full training. The local Mac path can run preprocessing, inspection, visualization, and limited single-device experiments, but exact full training is better suited to an NVIDIA CUDA server.
 
@@ -217,7 +217,11 @@ HiFi-CS is treated as a visual-grounding baseline:
 RGB + text -> target mask -> depth/point cloud -> grasp detector -> confidence-only top-1 grasp
 ```
 
-It is not vendored in this repository. Use the upstream project as a reference implementation for the grounding stage.
+HiFi-CS itself is not vendored because the upstream repository does not declare a repository-wide license. The project-owned adapters, scripts, tests, and SAM3 integration remain under `HiFi_reproduction/`. Recreate the exact upstream clone with:
+
+```bash
+bash scripts/fetch_external_repositories.sh
+```
 
 ### VL-Grasp
 
@@ -229,11 +233,15 @@ RGB + text -> bbox/mask -> point-cloud filter -> 6-DoF candidates -> confidence-
 
 The local `ranking_baseline/VL-Grasp/` checkout contains experimental reranking work, but the full external baseline repo, RoboRefIt files, GraspNet files, compiled extensions, and generated outputs are intentionally excluded from Git.
 
-To reproduce VL-Grasp separately:
+The same bootstrap script recreates VL-Grasp and other clone-time dependencies at their audited commits without overwriting an existing local checkout.
 
-```bash
-git clone https://github.com/luyh20/VL-Grasp.git ranking_baseline/VL-Grasp
-```
+### LAVT
+
+`LAVT_reproduction/` contains an isolated GPLv3 source snapshot at upstream commit `1da0af9f21b637c0cae9ea1363d2dd9b40e19628`, plus the OCID-VLG adaptation, configs, scripts, and tests. Its GPLv3 license applies to that subtree; the root MIT license does not relicense it.
+
+### VGN
+
+`HiFi_reproduction/third_party/vgn/` contains the BSD-3-Clause VGN `corl2020` source snapshot at commit `d7af0622433f52ae88ebe81533f12b46b33e951a`. Local VGN adapters, runners, requirements, and tests are in `HiFi_reproduction/`.
 
 ### Confidence-Only Selection
 
@@ -273,7 +281,7 @@ The active evaluator writes grouped CSV reports such as `metrics_by_dataset.csv`
 - Collision and clearance in the active pipeline are proxy features, not a full robot collision checker.
 - Full CUDA-based grasp detectors may require Linux, NVIDIA GPUs, and compiled custom extensions.
 - macOS can run README-level setup, preprocessing, visualization, oracle mode, VLM grounding, and ranking logic, but heavy 6-DoF inference or full baseline training may need a remote GPU server.
-- External baseline folders in the local checkout are not license-reviewed as vendored source for this repository, so they are documented as clone-time dependencies instead of committed wholesale.
+- Third-party source is included only where redistribution terms were verified and preserved. Restricted, mixed-license, or unlicensed upstream repositories remain fixed-version clone-time dependencies.
 
 ## Related Work and Citations
 
@@ -291,4 +299,4 @@ Downloaded third-party paper PDFs should stay outside Git. Add BibTeX entries he
 
 This repository is released under the MIT License. See `LICENSE`.
 
-Third-party baselines, datasets, and model checkpoints keep their own licenses and terms. Check the upstream repository or dataset page before using or redistributing them.
+Third-party baselines, datasets, and model checkpoints keep their own licenses and terms. See `THIRD_PARTY_NOTICES.md` for exact upstream commits, included components, and clone-time dependencies.

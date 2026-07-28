@@ -12,6 +12,7 @@ from scripts.build_dexnet_full_review import (
     validate_review_paths,
     verified_summary_rows,
 )
+from scripts.run_hifics_dexnet_candidates import _write_completed_summary
 from scripts.verify_full_dexnet_candidate_run import aggregate_statistics, safe_int
 
 
@@ -105,3 +106,15 @@ def test_failed_unreadable_input_gets_auditable_placeholders(tmp_path: Path) -> 
     ):
         assert (destination / name).is_file(), name
 
+
+def test_completed_run_publishes_stable_summary_and_clears_failures(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "failures.jsonl").write_text("stale failure\n", encoding="utf-8")
+    _write_completed_summary(
+        tmp_path,
+        [{"sample_id": "sample-1", "status": "success_nonempty"}],
+    )
+    summary = (tmp_path / "summary.csv").read_text(encoding="utf-8")
+    assert "sample-1" in summary
+    assert (tmp_path / "failures.jsonl").read_text(encoding="utf-8") == ""

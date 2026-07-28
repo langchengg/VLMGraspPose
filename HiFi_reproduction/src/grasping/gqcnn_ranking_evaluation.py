@@ -49,6 +49,8 @@ POSE_ARRAY_KEYS = (
 PER_SAMPLE_FIELDS = (
     "sample_id",
     "query",
+    "scoring_status",
+    "valid_empty",
     "candidate_count",
     "finite_q_count",
     "top1_candidate_id",
@@ -125,6 +127,140 @@ def load_evaluation_config(path: Path | str) -> dict[str, Any]:
     return result
 
 
+def load_ocid_vlg_annotation_index(
+    annotation_path: Path | str,
+) -> dict[int, dict[str, Any]]:
+    """Parse OCID-VLG annotations once and index them by ``question_index``."""
+
+    path = Path(annotation_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise EvaluationDataError(
+            "annotation_unavailable", f"cannot read {path}: {error}"
+        ) from error
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        raise EvaluationDataError(
+            "annotation_unavailable", f"{path} has no annotation data list"
+        )
+    index: dict[int, dict[str, Any]] = {}
+    for position, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise EvaluationDataError(
+                "annotation_unavailable", f"annotation position {position} is not an object"
+            )
+        try:
+            question_index = int(item["question_index"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise EvaluationDataError(
+                "annotation_unavailable",
+                f"annotation position {position} has no integer question_index",
+            ) from error
+        if question_index in index:
+            raise EvaluationDataError(
+                "annotation_unavailable",
+                f"question_index {question_index} occurs more than once",
+            )
+        index[question_index] = dict(item)
+    return index
+
+
+def _read_json_object(path: Path, category: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise EvaluationDataError(category, f"cannot read {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise EvaluationDataError(category, f"{path} is not a JSON object")
+    return dict(payload)
+
+
+def load_skipped_valid_empty_metrics(
+    source_sample_dir: Path | str,
+    scored_sample_dir: Path | str,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one terminal empty sample and return its end-to-end failure row."""
+
+    source_sample_dir = Path(source_sample_dir)
+    scored_sample_dir = Path(scored_sample_dir)
+    metadata = _read_json_object(
+        source_sample_dir / "metadata.json", "mapping_or_geometry_error"
+    )
+    marker = _read_json_object(
+        source_sample_dir / "_SUCCESS.json", "mapping_or_geometry_error"
+    )
+    sample_id = str(metadata.get("sample_id", source_sample_dir.name))
+    if sample_id != source_sample_dir.name or scored_sample_dir.name != sample_id:
+        raise EvaluationDataError(
+            "mapping_or_geometry_error", "source/scored directory sample_id mapping differs"
+        )
+    counts = metadata.get("counts")
+    marker_counts = marker.get("candidate_counts")
+    if (
+        not isinstance(counts, dict)
+        or not isinstance(marker_counts, dict)
+        or int(counts.get("post_nms", -1)) != 0
+        or marker.get("status") != "success_empty"
+        or int(marker_counts.get("post_nms", -1)) != 0
+    ):
+        raise EvaluationDataError(
+            "mapping_or_geometry_error", f"{sample_id} is not a validated empty source"
+        )
+    source_candidates, _ = _read_candidate_payload(source_sample_dir / "candidates.json")
+    if source_candidates:
+        raise EvaluationDataError(
+            "mapping_or_geometry_error", f"{sample_id} empty source contains candidates"
+        )
+
+    scoring_metadata = _read_json_object(
+        scored_sample_dir / "scoring_metadata.json", "invalid_gqcnn_scores"
+    )
+    if (
+        scoring_metadata.get("sample_id") != sample_id
+        or scoring_metadata.get("scoring_status") != "skipped_valid_empty"
+        or int(scoring_metadata.get("source_candidate_count", -1)) != 0
+        or int(scoring_metadata.get("gqcnn_scored_count", -1)) != 0
+        or scoring_metadata.get("top1_candidate_id") is not None
+    ):
+        raise EvaluationDataError(
+            "invalid_gqcnn_scores",
+            f"{sample_id} has no valid skipped_valid_empty terminal metadata",
+        )
+    reason = str(metadata.get("failure_reason") or marker.get("failure_reason") or "")
+    if not reason:
+        raise EvaluationDataError(
+            "mapping_or_geometry_error", f"{sample_id} empty source has no failure reason"
+        )
+    return {
+        "sample_id": sample_id,
+        "query": str(metadata.get("query", "")),
+        "scoring_status": "skipped_valid_empty",
+        "valid_empty": True,
+        "candidate_count": 0,
+        "finite_q_count": 0,
+        "top1_candidate_id": None,
+        "top1_q_value": None,
+        "top1_consistent": False,
+        "top5_consistent": False,
+        "first_valid_rank": None,
+        "first_valid_candidate_id": None,
+        "first_valid_q_value": None,
+        "total_valid_candidate_count": 0,
+        "best_valid_q_value": None,
+        "candidate_generation_success": False,
+        "failure_categories": ["no_candidates"],
+        "failure_type": "no_candidates",
+        "failure_reason": reason,
+        "annotation_count": None,
+        "consistency_iou_threshold": float(config["iou_threshold"]),
+        "consistency_angle_threshold_deg": float(config["angle_threshold_deg"]),
+        "valid_candidate_ids": [],
+        "data_valid": True,
+    }
+
+
 def _read_candidate_payload(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -153,7 +289,13 @@ def _load_npz_arrays(path: Path, required: Sequence[str], category: str) -> dict
 
 def _record_pose_value(record: Mapping[str, Any], name: str) -> Any:
     if name == "center_uv":
-        return record.get("center_uv", [record.get("center_u_px"), record.get("center_v_px")])
+        return record.get(
+            "center_uv",
+            [
+                record.get("center_u_px", record.get("centre_u_px")),
+                record.get("center_v_px", record.get("centre_v_px")),
+            ],
+        )
     if name == "endpoints_uv":
         return record.get(
             "endpoints_uv",
@@ -218,27 +360,43 @@ def rank_stored_q_values(records: Sequence[Mapping[str, Any]]) -> list[dict[str,
     return ranked
 
 
-def load_verified_scored_candidates(sample_dir: Path | str) -> dict[str, Any]:
-    """Cross-check stored q-values and poses, then reconstruct exact q ranking."""
+def load_verified_scored_candidates(
+    source_sample_dir: Path | str,
+    scored_sample_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Cross-check stored q-values and poses, then reconstruct exact q ranking.
 
-    sample_dir = Path(sample_dir)
-    metadata_path = sample_dir / "metadata.json"
+    ``scored_sample_dir`` defaults to ``source_sample_dir`` for compatibility
+    with the historical ten-sample, colocated output.  Full-dataset scoring
+    keeps the immutable source and scored artifacts in separate roots.
+    """
+
+    source_sample_dir = Path(source_sample_dir)
+    scored_sample_dir = (
+        source_sample_dir if scored_sample_dir is None else Path(scored_sample_dir)
+    )
+    metadata_path = source_sample_dir / "metadata.json"
     try:
         sample_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise EvaluationDataError("mapping_or_geometry_error", f"invalid {metadata_path}: {error}") from error
-    source_npz = sample_dir / "candidates.npz"
-    source_json = sample_dir / "candidates.json"
+    source_npz = source_sample_dir / "candidates.npz"
+    source_json = source_sample_dir / "candidates.json"
     try:
         source_records, candidate_metadata, source_hashes = load_frozen_candidates(source_npz, source_json)
     except Exception as error:
         raise EvaluationDataError("mapping_or_geometry_error", str(error)) from error
-    sample_id = str(sample_metadata.get("sample_id", sample_dir.name))
+    sample_id = str(sample_metadata.get("sample_id", source_sample_dir.name))
     query = sample_metadata.get("query")
-    if sample_id != sample_dir.name:
+    if sample_id != source_sample_dir.name:
         raise EvaluationDataError(
             "mapping_or_geometry_error",
-            f"directory {sample_dir.name} disagrees with metadata sample_id {sample_id}",
+            f"directory {source_sample_dir.name} disagrees with metadata sample_id {sample_id}",
+        )
+    if scored_sample_dir.name != sample_id:
+        raise EvaluationDataError(
+            "mapping_or_geometry_error",
+            f"scored directory {scored_sample_dir.name} disagrees with sample_id {sample_id}",
         )
     for field, expected in (("sample_id", sample_id), ("query", query)):
         if candidate_metadata and candidate_metadata.get(field) != expected:
@@ -248,8 +406,8 @@ def load_verified_scored_candidates(sample_dir: Path | str) -> dict[str, Any]:
             )
 
     source_arrays = _load_npz_arrays(source_npz, POSE_ARRAY_KEYS, "mapping_or_geometry_error")
-    scored_npz_path = sample_dir / "gqcnn_scored_candidates.npz"
-    scored_json_path = sample_dir / "gqcnn_scored_candidates.json"
+    scored_npz_path = scored_sample_dir / "gqcnn_scored_candidates.npz"
+    scored_json_path = scored_sample_dir / "gqcnn_scored_candidates.json"
     scored_required = ("candidate_id", "gqcnn_q_value", "gqcnn_rank") + POSE_ARRAY_KEYS
     scored_arrays = _load_npz_arrays(scored_npz_path, scored_required, "invalid_gqcnn_scores")
     source_ids = [record["candidate_id"] for record in source_records]
@@ -287,8 +445,14 @@ def load_verified_scored_candidates(sample_dir: Path | str) -> dict[str, Any]:
             "mapping_or_geometry_error",
             "scored JSON candidate IDs differ from frozen source IDs",
         )
-    if scored_metadata.get("sample_id") != sample_id or scored_metadata.get("query") != query:
-        raise EvaluationDataError("mapping_or_geometry_error", "scored JSON sample/query mapping disagrees")
+    if scored_metadata.get("sample_id") != sample_id:
+        raise EvaluationDataError(
+            "mapping_or_geometry_error", "scored JSON sample mapping disagrees"
+        )
+    if "query" in scored_metadata and scored_metadata.get("query") != query:
+        raise EvaluationDataError(
+            "mapping_or_geometry_error", "scored JSON query mapping disagrees"
+        )
 
     q_by_id = dict(zip(source_ids, q_values.astype(float).tolist()))
     stored_rank_by_id = dict(zip(source_ids, stored_ranks.astype(int).tolist()))
@@ -332,7 +496,9 @@ def load_verified_scored_candidates(sample_dir: Path | str) -> dict[str, Any]:
     ]
     stored_rank_matches = not stored_rank_mismatches
     return {
-        "sample_dir": sample_dir,
+        "sample_dir": source_sample_dir,
+        "source_sample_dir": source_sample_dir,
+        "scored_sample_dir": scored_sample_dir,
         "sample_metadata": sample_metadata,
         "source_records": source_records,
         "ranked": ranked,
@@ -341,7 +507,7 @@ def load_verified_scored_candidates(sample_dir: Path | str) -> dict[str, Any]:
             "gqcnn_scored_candidates_npz_sha256": sha256_file(scored_npz_path),
             "gqcnn_scored_candidates_json_sha256": sha256_file(scored_json_path),
             "gqcnn_scored_candidates_csv_sha256": sha256_file(
-                sample_dir / "gqcnn_scored_candidates.csv"
+                scored_sample_dir / "gqcnn_scored_candidates.csv"
             ),
         },
         "finite_q_count": int(np.count_nonzero(np.isfinite(q_values))),
@@ -423,6 +589,8 @@ def _metrics_from_consistency(
     return {
         "sample_id": sample_id,
         "query": query,
+        "scoring_status": "scored",
+        "valid_empty": False,
         "candidate_count": len(ranked),
         "finite_q_count": finite_q_count,
         "top1_candidate_id": None if top1 is None else top1["candidate_id"],
@@ -446,19 +614,33 @@ def _metrics_from_consistency(
 
 
 def evaluate_sample(
-    sample_dir: Path | str,
+    source_sample_dir: Path | str,
     annotation_file: Path | str,
     config: Mapping[str, Any],
+    *,
+    scored_sample_dir: Path | str | None = None,
+    annotation_index: Mapping[int, Mapping[str, Any]] | None = None,
+    include_geometric_reference: bool | None = None,
 ) -> dict[str, Any]:
-    verified = load_verified_scored_candidates(sample_dir)
+    source_sample_dir = Path(source_sample_dir)
+    verified = load_verified_scored_candidates(source_sample_dir, scored_sample_dir)
     metadata = verified["sample_metadata"]
     sample_id = str(metadata["sample_id"])
     query = str(metadata["query"])
     question_index = int(metadata["question_index"])
-    try:
-        annotation = load_ocid_vlg_annotation_record(annotation_file, question_index)
-    except Exception as error:
-        raise EvaluationDataError("annotation_unavailable", str(error)) from error
+    if annotation_index is None:
+        try:
+            annotation = load_ocid_vlg_annotation_record(annotation_file, question_index)
+        except Exception as error:
+            raise EvaluationDataError("annotation_unavailable", str(error)) from error
+    else:
+        try:
+            annotation = dict(annotation_index[question_index])
+        except KeyError as error:
+            raise EvaluationDataError(
+                "annotation_unavailable",
+                f"question_index {question_index} has no annotation match",
+            ) from error
     grasps = annotation.get("grasps")
     if not isinstance(grasps, list) or not grasps:
         raise EvaluationDataError(
@@ -489,35 +671,44 @@ def evaluate_sample(
         config=config,
     )
 
-    geometric_path = Path(sample_dir) / "geometrically_ranked_candidates.json"
-    try:
-        geometric_payload = json.loads(geometric_path.read_text(encoding="utf-8"))
-        geometric = [dict(item) for item in geometric_payload["candidates"]]
-    except Exception as error:
-        raise EvaluationDataError(
-            "mapping_or_geometry_error",
-            f"cannot load geometric reference ranking: {error}",
-        ) from error
-    if {item.get("candidate_id") for item in geometric} != {
-        item["candidate_id"] for item in verified["source_records"]
-    }:
-        raise EvaluationDataError("mapping_or_geometry_error", "geometric reference ID set differs")
-    geometric_evaluation = evaluate_planar_annotation_consistency(
-        geometric,
-        grasps,
-        config,
-        rank_field="geometric_rank",
+    geometric_path = source_sample_dir / "geometrically_ranked_candidates.json"
+    geometric_metrics = None
+    use_geometric_reference = (
+        geometric_path.is_file()
+        if include_geometric_reference is None
+        else include_geometric_reference
     )
-    geometric_metrics = {
-        "sample_id": sample_id,
-        "candidate_count": len(geometric),
-        "top1_consistent": bool(geometric_evaluation["top1_rectangle_accuracy"]),
-        "top5_consistent": bool(geometric_evaluation["topk_recall"]),
-        "first_valid_rank": geometric_evaluation["first_matching_rank"],
-    }
-    verified["source_hashes"]["geometrically_ranked_candidates_json_sha256"] = sha256_file(
-        geometric_path
-    )
+    if use_geometric_reference:
+        try:
+            geometric_payload = json.loads(geometric_path.read_text(encoding="utf-8"))
+            geometric = [dict(item) for item in geometric_payload["candidates"]]
+        except Exception as error:
+            raise EvaluationDataError(
+                "mapping_or_geometry_error",
+                f"cannot load geometric reference ranking: {error}",
+            ) from error
+        if {item.get("candidate_id") for item in geometric} != {
+            item["candidate_id"] for item in verified["source_records"]
+        }:
+            raise EvaluationDataError(
+                "mapping_or_geometry_error", "geometric reference ID set differs"
+            )
+        geometric_evaluation = evaluate_planar_annotation_consistency(
+            geometric,
+            grasps,
+            config,
+            rank_field="geometric_rank",
+        )
+        geometric_metrics = {
+            "sample_id": sample_id,
+            "candidate_count": len(geometric),
+            "top1_consistent": bool(geometric_evaluation["top1_rectangle_accuracy"]),
+            "top5_consistent": bool(geometric_evaluation["topk_recall"]),
+            "first_valid_rank": geometric_evaluation["first_matching_rank"],
+        }
+        verified["source_hashes"][
+            "geometrically_ranked_candidates_json_sha256"
+        ] = sha256_file(geometric_path)
     return {
         **verified,
         "annotation": annotation,
@@ -529,8 +720,17 @@ def evaluate_sample(
     }
 
 
-def aggregate_metrics(rows: Sequence[Mapping[str, Any]], *, method: str) -> dict[str, Any]:
-    evaluable = [row for row in rows if row.get("data_valid", True)]
+def aggregate_metrics(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    method: str,
+    include_invalid_as_failures: bool = False,
+) -> dict[str, Any]:
+    evaluable = (
+        list(rows)
+        if include_invalid_as_failures
+        else [row for row in rows if row.get("data_valid", True)]
+    )
     denominator = len(evaluable)
     top1_success = [row["sample_id"] for row in evaluable if row["top1_consistent"]]
     top1_failed = [row["sample_id"] for row in evaluable if not row["top1_consistent"]]
@@ -595,10 +795,19 @@ def aggregate_metrics(rows: Sequence[Mapping[str, Any]], *, method: str) -> dict
                 if "top5_ranking_failure" in row.get("failure_categories", [])
             ],
             "candidate_generation_failures": sum(
-                row["first_valid_rank"] is None for row in evaluable
+                "candidate_generation_failure" in row.get("failure_categories", [])
+                or "no_candidates" in row.get("failure_categories", [])
+                for row in evaluable
             ),
-            "candidate_generation_failure_sample_ids": excluded,
-            "invalid_data_samples": len(rows) - denominator,
+            "candidate_generation_failure_sample_ids": [
+                row["sample_id"]
+                for row in evaluable
+                if "candidate_generation_failure" in row.get("failure_categories", [])
+                or "no_candidates" in row.get("failure_categories", [])
+            ],
+            "invalid_data_samples": sum(
+                not row.get("data_valid", True) for row in rows
+            ),
             "invalid_data_sample_ids": [row["sample_id"] for row in rows if not row.get("data_valid", True)],
             "taxonomy_counts": {
                 category: sum(category in row.get("failure_categories", []) for row in rows)
@@ -612,6 +821,103 @@ def aggregate_metrics(rows: Sequence[Mapping[str, Any]], *, method: str) -> dict
                     "mapping_or_geometry_error",
                 )
             },
+        },
+    }
+
+
+def aggregate_metric_conventions(
+    rows: Sequence[Mapping[str, Any]], *, method: str
+) -> dict[str, Any]:
+    """Report conditional and end-to-end denominators without hiding empties.
+
+    Invalid non-empty rows remain in the conditional denominator as failures;
+    all rows remain in the end-to-end denominator.  A successful full scoring
+    verification should therefore make the two denominators exactly 7,620 and
+    7,675, respectively.
+    """
+
+    conditional_rows = [row for row in rows if not row.get("valid_empty", False)]
+    empty_rows = [
+        row
+        for row in rows
+        if row.get("scoring_status") == "skipped_valid_empty"
+        and row.get("valid_empty") is True
+        and row.get("data_valid", True)
+    ]
+    conditional = aggregate_metrics(
+        conditional_rows,
+        method=f"{method} (conditional on non-empty candidates)",
+        include_invalid_as_failures=True,
+    )
+    end_to_end = aggregate_metrics(
+        rows,
+        method=f"{method} (end-to-end; valid empty samples count as failures)",
+        include_invalid_as_failures=True,
+    )
+    total = len(rows)
+    empty_count = len(empty_rows)
+    ranking_failure_ids = [
+        row["sample_id"]
+        for row in conditional_rows
+        if "top1_ranking_failure" in row.get("failure_categories", [])
+    ]
+    candidate_set_failure_ids = [
+        row["sample_id"]
+        for row in conditional_rows
+        if "candidate_generation_failure" in row.get("failure_categories", [])
+    ]
+    return {
+        "conditional_nonempty": conditional,
+        "end_to_end_all_samples": end_to_end,
+        "denominators": {
+            "conditional_nonempty": len(conditional_rows),
+            "end_to_end_all_samples": total,
+            "skipped_valid_empty": empty_count,
+            "invalid_nonempty": sum(
+                not row.get("data_valid", True) for row in conditional_rows
+            ),
+            "invalid_empty": sum(
+                row.get("valid_empty", False) and not row.get("data_valid", True)
+                for row in rows
+            ),
+        },
+        "candidate_generation_failure_rate": {
+            "numerator": empty_count,
+            "denominator": total,
+            "decimal": None if total == 0 else empty_count / total,
+            "percentage": None if total == 0 else 100.0 * empty_count / total,
+            "sample_ids": [row["sample_id"] for row in empty_rows],
+        },
+        "conditional_candidate_set_failures": {
+            "count": len(candidate_set_failure_ids),
+            "denominator": len(conditional_rows),
+            "decimal": None
+            if not conditional_rows
+            else len(candidate_set_failure_ids) / len(conditional_rows),
+            "percentage": None
+            if not conditional_rows
+            else 100.0 * len(candidate_set_failure_ids) / len(conditional_rows),
+            "sample_ids": candidate_set_failure_ids,
+        },
+        "conditional_top1_ranking_failures": {
+            "count": len(ranking_failure_ids),
+            "denominator": len(conditional_rows),
+            "decimal": None
+            if not conditional_rows
+            else len(ranking_failure_ids) / len(conditional_rows),
+            "percentage": None
+            if not conditional_rows
+            else 100.0 * len(ranking_failure_ids) / len(conditional_rows),
+            "sample_ids": ranking_failure_ids,
+        },
+        "end_to_end_top1_ranking_failure_rate": {
+            "numerator": len(ranking_failure_ids),
+            "denominator": total,
+            "decimal": None if total == 0 else len(ranking_failure_ids) / total,
+            "percentage": None
+            if total == 0
+            else 100.0 * len(ranking_failure_ids) / total,
+            "sample_ids": ranking_failure_ids,
         },
     }
 

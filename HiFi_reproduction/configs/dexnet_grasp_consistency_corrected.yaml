@@ -1,0 +1,36 @@
+schema_version: 2
+metric_name: corrected 2D consistency with OCID-VLG planar grasp annotations
+is_physical_grasp_success: false
+evaluator_version: corrected_geometric_v2
+
+predicted_rectangle_height_px: 20.0
+ground_truth_rectangle_height_px: 20.0
+ground_truth_width_clip_px: 100.0
+angle_threshold_deg: 30.0
+angle_comparison: <=
+iou_threshold: 0.25
+iou_comparison: ">"
+top_k: 5
+
+coordinate_convention:
+  image: pixels; u/x right, v/y down; origin top-left
+  polygon_vertices: "[x,y]"
+  rasterization: row=y, column=x
+  predicted_center: frozen candidate center_uv
+  predicted_width: official antipodal contact-point span in pixels
+  predicted_angle: atan2(contact_2_v-contact_1_v, contact_2_u-contact_1_u)
+  ground_truth_center: midpoint of annotation corners 1 and 3
+  ground_truth_width: corner 1 to corner 4, clipped to ground_truth_width_clip_px
+  angle_symmetry: modulo 180 degrees
+  multi_gt_match: the same GT rectangle must jointly pass IoU and angle
+
+denominator:
+  primary: all 7675 official unique test samples
+  empty_mask: failure
+  empty_candidates: failure
+  technical_failure: failure
+
+first_valid_rank_statistics:
+  rank_indexing: one_based
+  standard_deviation: population
+  exclude_samples_without_any_valid_candidate: true

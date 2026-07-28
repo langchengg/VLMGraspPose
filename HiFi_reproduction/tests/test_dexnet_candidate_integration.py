@@ -32,6 +32,7 @@ from src.grasping.dexnet_scoring import (  # noqa: E402
     score_fixed_candidates,
 )
 from src.grasping.ocid_vlg_grasp_adapter import OcidVlgBundleIndex  # noqa: E402
+from scripts.run_hifics_dexnet_candidates import derive_sample_seed  # noqa: E402
 
 
 class OfficialSamplerIntegrationTests(unittest.TestCase):
@@ -123,6 +124,80 @@ class OfficialSamplerIntegrationTests(unittest.TestCase):
             all(item["centre_inside_mask"] for item in first.deduplicated_candidates)
         )
         self.assertEqual(first.rejection_summary, second.rejection_summary)
+
+    def test_stable_sample_seed_is_repeatable_and_sample_specific(self) -> None:
+        first = derive_sample_seed(
+            "q0000000_b32eb3299dcd3ae9",
+            base_seed=42,
+            mode="stable-sha256",
+            namespace="formal-v1",
+        )
+        repeated = derive_sample_seed(
+            "q0000000_b32eb3299dcd3ae9",
+            base_seed=42,
+            mode="stable-sha256",
+            namespace="formal-v1",
+        )
+        other = derive_sample_seed(
+            "q0000001_a9a5f9b502546016",
+            base_seed=42,
+            mode="stable-sha256",
+            namespace="formal-v1",
+        )
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first, other)
+        self.assertGreaterEqual(first, 0)
+        self.assertLess(first, 2**32 - 1)
+        self.assertEqual(
+            derive_sample_seed(
+                "q0000000_b32eb3299dcd3ae9",
+                base_seed=42,
+                mode="fixed",
+                namespace="ignored",
+            ),
+            42,
+        )
+
+
+class FrozenFormalConfigurationTests(unittest.TestCase):
+    def test_candidate_config_does_not_refine_predicted_mask(self) -> None:
+        config = dict(
+            YamlConfig(
+                str(
+                    REPO_ROOT
+                    / "configs"
+                    / "dexnet_candidates_formal_no_refinement.yaml"
+                )
+            )
+        )
+        self.assertEqual(config["input"]["min_component_area_px"], 0)
+        self.assertIs(config["input"]["retain_largest_component"], False)
+        self.assertEqual(config["input"]["mask_erode_px"], 0)
+        self.assertEqual(config["input"]["mask_dilate_px"], 0)
+        self.assertEqual(config["filtering"]["contact_mask_dilation_px"], 0)
+
+    def test_evaluator_config_freezes_strict_corrected_semantics(self) -> None:
+        config = dict(
+            YamlConfig(
+                str(
+                    REPO_ROOT
+                    / "configs"
+                    / "dexnet_grasp_consistency_corrected.yaml"
+                )
+            )
+        )
+        self.assertEqual(config["evaluator_version"], "corrected_geometric_v2")
+        self.assertEqual(config["iou_threshold"], 0.25)
+        self.assertEqual(config["iou_comparison"], ">")
+        self.assertEqual(config["angle_threshold_deg"], 30.0)
+        self.assertEqual(config["angle_comparison"], "<=")
+        self.assertEqual(
+            config["coordinate_convention"]["polygon_vertices"], "[x,y]"
+        )
+        self.assertEqual(
+            config["coordinate_convention"]["rasterization"],
+            "row=y, column=x",
+        )
 
 
 class FilteringAndScoringBoundaryTests(unittest.TestCase):

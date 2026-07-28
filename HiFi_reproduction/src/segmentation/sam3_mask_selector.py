@@ -101,9 +101,10 @@ def score_candidate_mask(
     candidate_id: str,
     mask: np.ndarray,
     probability: np.ndarray,
-    sam_quality: float,
+    sam_quality: float | None,
     *,
     coarse_mask: np.ndarray,
+    coarse_probability: np.ndarray | None = None,
     prompt: VisualPrompt,
     depth_m: np.ndarray | None,
     config: Mapping[str, Any],
@@ -111,7 +112,7 @@ def score_candidate_mask(
     raw_mask = np.asarray(mask)
     if raw_mask.ndim != 2 or not np.all(np.isfinite(raw_mask)):
         raise ValueError("SAM candidate mask must be a finite 2D array")
-    if not math.isfinite(float(sam_quality)):
+    if sam_quality is not None and not math.isfinite(float(sam_quality)):
         raise ValueError("SAM candidate quality must be finite")
     mask = raw_mask.astype(bool)
     probability = np.asarray(probability, dtype=np.float32)
@@ -127,6 +128,16 @@ def score_candidate_mask(
     recall = _safe_ratio(intersection, coarse_area)
     precision = _safe_ratio(intersection, area)
     coarse_iou = _safe_ratio(intersection, union)
+    if coarse_probability is None:
+        probability_mass_recall = recall
+    else:
+        coarse_probability = np.asarray(coarse_probability, dtype=np.float64)
+        if coarse_probability.shape != coarse.shape or not np.all(np.isfinite(coarse_probability)):
+            raise ValueError("coarse probability must be finite and aligned")
+        probability_mass_recall = _safe_ratio(
+            float(np.sum(coarse_probability[mask])),
+            float(np.sum(coarse_probability)),
+        )
     area_ratio = _safe_ratio(area, coarse_area)
     component_count, largest_ratio = _largest_component_ratio(mask)
     positive_support = _point_support(mask, prompt.positive_points_xy)
@@ -140,11 +151,19 @@ def score_candidate_mask(
     area_penalty = area_ratio_penalty(area_ratio, config["area_ratio_penalty"])
     fragmentation_penalty = 1.0 - largest_ratio
     weights = config["weights"]
+    quality_weight = float(weights.get("sam_quality", 0.0))
+    probability_weight = float(weights.get("probability_mass_recall", 0.0))
+    quality_term = (
+        quality_weight * float(np.clip(sam_quality, 0.0, 1.0))
+        if sam_quality is not None
+        else 0.0
+    )
     score = (
-        float(weights["sam_quality"]) * float(np.clip(sam_quality, 0.0, 1.0))
+        quality_term
         + float(weights["coarse_recall"]) * recall
         + float(weights["coarse_precision"]) * precision
         + float(weights["coarse_iou"]) * coarse_iou
+        + probability_weight * probability_mass_recall
         + float(weights["positive_points"]) * positive_support
         + float(weights["largest_component"]) * largest_ratio
         + float(weights["depth_consistency"]) * depth_score
@@ -153,14 +172,23 @@ def score_candidate_mask(
         - float(weights["area_ratio_penalty"]) * area_penalty
         - float(weights["fragmentation_penalty"]) * fragmentation_penalty
     )
+    # Keep the configured score scale when the official output has no quality
+    # field. This is a deterministic renormalization, not an invented SAM score.
+    if sam_quality is None and quality_weight > 0.0:
+        active = sum(abs(float(value)) for key, value in weights.items() if key != "sam_quality")
+        configured = active + quality_weight
+        if active > 0.0:
+            score *= configured / active
     return {
         "candidate_id": str(candidate_id),
-        "sam_quality": float(sam_quality),
+        "sam_quality": None if sam_quality is None else float(sam_quality),
+        "sam_quality_available": sam_quality is not None,
         "area_px": area,
         "coarse_area_px": coarse_area,
         "coarse_recall": recall,
         "coarse_precision": precision,
         "coarse_iou": coarse_iou,
+        "probability_mass_recall": probability_mass_recall,
         "main_positive_point_included": main_positive,
         "positive_point_inclusion_ratio": positive_support,
         "negative_point_violation_ratio": negative_violation,
@@ -181,7 +209,7 @@ def score_candidate_mask(
 
 def _invalid_candidate_metrics(
     candidate_id: str,
-    sam_quality: float,
+    sam_quality: float | None,
     coarse_area: int,
     reason: str,
 ) -> dict[str, Any]:
@@ -189,12 +217,18 @@ def _invalid_candidate_metrics(
 
     return {
         "candidate_id": candidate_id,
-        "sam_quality": float(sam_quality) if math.isfinite(float(sam_quality)) else None,
+        "sam_quality": (
+            float(sam_quality)
+            if sam_quality is not None and math.isfinite(float(sam_quality))
+            else None
+        ),
+        "sam_quality_available": sam_quality is not None,
         "area_px": 0,
         "coarse_area_px": coarse_area,
         "coarse_recall": 0.0,
         "coarse_precision": 0.0,
         "coarse_iou": 0.0,
+        "probability_mass_recall": 0.0,
         "main_positive_point_included": False,
         "positive_point_inclusion_ratio": 0.0,
         "negative_point_violation_ratio": 0.0,
@@ -238,13 +272,14 @@ def fallback_reasons(metrics: Mapping[str, Any], config: Mapping[str, Any]) -> l
 def select_refined_mask(
     masks: Sequence[np.ndarray],
     probabilities: Sequence[np.ndarray],
-    sam_qualities: Sequence[float],
+    sam_qualities: Sequence[float | None],
     *,
     coarse_mask: np.ndarray,
     coarse_probability: np.ndarray,
     prompt: VisualPrompt,
     depth_m: np.ndarray | None,
     config: Mapping[str, Any],
+    accepted_source: str = "sam3",
 ) -> SelectionResult:
     coarse_mask = np.asarray(coarse_mask, dtype=bool)
     coarse_probability = np.asarray(coarse_probability, dtype=np.float32)
@@ -270,6 +305,7 @@ def select_refined_mask(
                     probability,
                     quality,
                     coarse_mask=coarse_mask,
+                    coarse_probability=coarse_probability,
                     prompt=prompt,
                     depth_m=depth_m,
                     config=config,
@@ -301,6 +337,9 @@ def select_refined_mask(
             float(selected["refinement_score"]), "selected_probability_nonfinite", metrics,
         )
     return SelectionResult(
-        "sam3", selected["candidate_id"], np.asarray(masks[index], dtype=bool).copy(), probability.copy(),
+        accepted_source,
+        selected["candidate_id"],
+        np.asarray(masks[index], dtype=bool).copy(),
+        probability.copy(),
         float(selected["refinement_score"]), None, metrics,
     )

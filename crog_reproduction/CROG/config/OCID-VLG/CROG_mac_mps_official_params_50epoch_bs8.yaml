@@ -1,0 +1,54 @@
+DATA:
+  dataset: OCID-VLG
+  root_path: ../OCID-VLG
+  train_split: train
+  val_split: val
+TRAIN:
+  clip_pretrain: exp/pretrain_clip/RN50.pt
+  version: multiple
+  input_size: 416
+  word_len: 17
+  word_dim: 1024
+  vis_dim: 512
+  fpn_in: [512, 1024, 1024]
+  fpn_out: [256, 512, 1024]
+  sync_bn: false
+  num_layers: 3
+  num_head: 8
+  dim_ffn: 2048
+  dropout: 0.1
+  intermediate: false
+  workers: 2
+  workers_val: 2
+  epochs: 50
+  milestones: [35]
+  start_epoch: 0
+  batch_size: 8
+  batch_size_val: 24
+  base_lr: 0.0001
+  lr_decay: 0.1
+  lr_multi: 0.1
+  weight_decay: 0.0
+  max_norm: 0.0
+  manual_seed: 0
+  print_freq: 100
+  exp_name: CROG_mac_mps_official_params_50epoch_bs8
+  output_folder: exp/OCID-VLG_multiple_mac
+  save_freq: 1
+  weight: null
+  resume: exp/OCID-VLG_multiple_mac/CROG_mac_mps_official_params_50epoch_bs8/last_model.pth
+  evaluate: true
+  use_contrastive: true
+  use_pretrained_clip: true
+  use_grasp_masks: true
+  device: auto
+  accumulation_steps: 1
+  checkpoint_interval: 1000
+  validation_interval: 5
+  max_train_samples: null
+  max_val_samples: null
+  freeze_bn1d_stats: false
+  memory_sample_interval: 1000
+TEST:
+  test_split: val-test
+  visualize: false

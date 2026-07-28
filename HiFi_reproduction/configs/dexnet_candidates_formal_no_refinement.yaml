@@ -1,0 +1,66 @@
+schema_version: 2
+representation: planar_parallel_jaw_4dof
+approach_constraint: fixed_camera_optical_axis
+camera_frame: ocid_camera_optical
+
+input:
+  mask_source: binary_prediction
+  mask_threshold: 0.15
+  min_component_area_px: 0
+  retain_largest_component: false
+  mask_erode_px: 0
+  mask_dilate_px: 0
+
+sampling:
+  type: antipodal_depth
+  gripper_width: 0.05
+  friction_coef: 0.5
+  depth_grad_thresh: 0.0025
+  depth_grad_gaussian_sigma: 1.0
+  downsample_rate: 4
+  max_rejection_samples: 20000
+  max_dist_from_center: 1000
+  min_dist_from_boundary: 10
+  min_grasp_dist: 10.0
+  angle_dist_weight: 5.0
+  depth_sampling_mode: uniform
+  depth_samples_per_grasp: 1
+  depth_sample_win_height: 1
+  depth_sample_win_width: 1
+  min_depth_offset: 0.015
+  max_depth_offset: 0.05
+  min_num_edge_pixels: 0
+
+generation:
+  num_grasp_samples: 256
+  top_k: 30
+  seed: 42
+
+filtering:
+  require_center_inside_mask: true
+  min_center_boundary_distance_px: 0.0
+  endpoint_support_radius_px: 4
+  contact_mask_dilation_px: 0
+  min_grasp_axis_mask_support: 0.20
+  min_valid_depth_support: 0.80
+  min_gripper_width_m: 0.005
+  max_gripper_width_m: 0.08
+  image_boundary_margin_px: 2
+  nms_center_distance_px: 8.0
+  nms_angle_distance_deg: 15.0
+
+scoring:
+  enabled: false
+  model_name: null
+  model_dir: null
+  crop_height: 96
+  crop_width: 96
+  inpaint_rescale_factor: 0.5
+  treat_q_as_calibrated_probability: false
+
+visualization:
+  line_width: 2
+  endpoint_radius_px: 4
+  annotate_limit: 30
+  depth_vmin_m: 0.4
+  depth_vmax_m: 2.5

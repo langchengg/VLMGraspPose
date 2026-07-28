@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import platform
@@ -131,6 +132,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-candidates", type=int)
     parser.add_argument("--top-k", type=int)
     parser.add_argument("--seed", type=int)
+    parser.add_argument(
+        "--sample-seed-mode",
+        choices=("fixed", "stable-sha256"),
+        default="fixed",
+        help="Use one fixed seed or derive a deterministic seed for each stable sample ID.",
+    )
+    parser.add_argument(
+        "--seed-namespace",
+        default="hifics-dexnet-v1",
+        help="Domain separator used by stable-sha256 sample seed derivation.",
+    )
     parser.add_argument("--mask-threshold", type=float)
     parser.add_argument("--mask-erode-px", type=int)
     parser.add_argument("--mask-dilate-px", type=int)
@@ -175,6 +187,26 @@ def _plain(value: Any) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def derive_sample_seed(
+    sample_id: str,
+    *,
+    base_seed: int,
+    mode: str,
+    namespace: str,
+) -> int:
+    """Return a sampler-compatible deterministic seed for one stable sample ID."""
+    if mode == "fixed":
+        return int(base_seed)
+    if mode != "stable-sha256":
+        raise ValueError(f"unsupported sample seed mode: {mode}")
+    payload = (
+        f"{namespace}\0{int(base_seed)}\0{sample_id}".encode("utf-8")
+    )
+    # NumPy's legacy RandomState accepts unsigned 32-bit seeds. Avoid 2**32-1
+    # so every derived value is accepted consistently by old and new runtimes.
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % (2**32 - 1)
 
 
 def _save_mask(path: Path, mask: np.ndarray) -> None:
@@ -277,6 +309,7 @@ def _write_result(
     args: argparse.Namespace,
     model_name: str | None,
     model_dir: Path | None,
+    sample_seed: int,
     scoring_failure_reason: str = "",
     write_visualizations: bool = True,
 ) -> dict[str, Any]:
@@ -336,14 +369,33 @@ def _write_result(
             else ("failed" if scoring_failure_reason else "completed")
         ),
         "scoring_failure_reason": scoring_failure_reason or None,
-        "seed": args.seed,
+        "seed": int(sample_seed),
+        "seed_mode": args.sample_seed_mode,
+        "seed_namespace": args.seed_namespace,
+        "empty_category": (
+            None
+            if result.deduplicated_candidates
+            else (
+                "valid_empty_mask"
+                if not np.any(sample.target_mask_original)
+                else "valid_empty_candidates"
+            )
+        ),
         "failure_reason": (
             None
             if result.deduplicated_candidates
             else (
-                "official_sampler_returned_no_candidates"
-                if not result.raw_candidates
-                else "no_candidates_survived_target_filtering_and_nms"
+                "predicted_mask_empty"
+                if not np.any(sample.target_mask_original)
+                else (
+                    "no_valid_depth_in_predicted_mask"
+                    if not np.any(sample.target_mask_processed)
+                    else (
+                        "official_sampler_returned_no_candidates"
+                        if not result.raw_candidates
+                        else "no_candidates_survived_target_filtering_and_nms"
+                    )
+                )
             )
         ),
         "config": _plain(config),
@@ -526,6 +578,13 @@ def _write_summary(output: Path, rows: list[dict[str, Any]]) -> None:
     atomic_write_csv(output / "summary.partial.csv", rows, SUMMARY_FIELDS)
 
 
+def _write_completed_summary(output: Path, rows: list[dict[str, Any]]) -> None:
+    """Publish a stable final summary only after the full selection is clean."""
+
+    atomic_write_csv(output / "summary.csv", rows, SUMMARY_FIELDS)
+    atomic_write_text(output / "failures.jsonl", "")
+
+
 def _log(output: Path, message: str, *, error: bool = False) -> None:
     line = f"{utc_timestamp()} {message}"
     print(line, file=sys.stderr if error else sys.stdout, flush=True)
@@ -665,6 +724,13 @@ def main() -> int:
         "num_grasp_samples": args.num_candidates,
         "top_k": args.top_k,
         "seed": args.seed,
+        "sample_seed_mode": args.sample_seed_mode,
+        "seed_namespace": args.seed_namespace,
+        "sample_seed_derivation": (
+            "fixed base seed"
+            if args.sample_seed_mode == "fixed"
+            else "uint64_be(sha256(namespace\\0base_seed\\0stable_sample_id)[:8]) mod (2**32-1)"
+        ),
     }
     config["filtering"] = filtering_config
 
@@ -708,6 +774,8 @@ def main() -> int:
         "configuration_hash": configuration_hash,
         "config_file_sha256": config_file_hash,
         "seed": args.seed,
+        "sample_seed_mode": args.sample_seed_mode,
+        "seed_namespace": args.seed_namespace,
         "num_candidates": args.num_candidates,
         "top_k": args.top_k,
         "mode": args.mode,
@@ -785,6 +853,12 @@ def main() -> int:
         query = str(index.by_id[sample_id]["query"])
         question_index = int(index.by_id[sample_id]["question_index"])
         scene_id = str(index.by_id[sample_id]["scene_id"])
+        sample_seed = derive_sample_seed(
+            sample_id,
+            base_seed=args.seed,
+            mode=args.sample_seed_mode,
+            namespace=args.seed_namespace,
+        )
         recover_interrupted_backup(output, sample_id)
         sample_output = output / sample_id
         existing = None
@@ -794,7 +868,7 @@ def main() -> int:
                 expected_sample_id=sample_id,
                 expected_configuration_hash=configuration_hash,
                 expected_config_file_sha256=config_file_hash,
-                expected_seed=args.seed,
+                expected_seed=sample_seed,
                 expected_sampler_runtime=runtime,
                 verify_hashes=args.verify_existing,
                 allow_legacy=args.resume,
@@ -811,7 +885,7 @@ def main() -> int:
                     question_index=question_index,
                     configuration_hash=configuration_hash,
                     config_file_sha256=config_file_hash,
-                    seed=args.seed,
+                    seed=sample_seed,
                     sampler_runtime=runtime,
                     counts={
                         "requested": existing.summary_row["requested_candidate_count"],
@@ -837,7 +911,7 @@ def main() -> int:
                     expected_sample_id=sample_id,
                     expected_configuration_hash=configuration_hash,
                     expected_config_file_sha256=config_file_hash,
-                    expected_seed=args.seed,
+                    expected_seed=sample_seed,
                     expected_sampler_runtime=runtime,
                     verify_hashes=True,
                 )
@@ -899,17 +973,38 @@ def main() -> int:
                     retain_largest_component=bool(input_config["retain_largest_component"]),
                     mask_erode_px=int(input_config["mask_erode_px"]),
                     mask_dilate_px=int(input_config["mask_dilate_px"]),
+                    allow_empty_mask=True,
                 )
                 last_successful_stage = "input_loaded"
-                result = generate_candidates(
-                    sample,
-                    sampling_config,
-                    filtering_config,
-                    num_samples=args.num_candidates,
-                    top_k=args.top_k,
-                    seed=args.seed,
-                    visualize_sampler=False,
-                )
+                if not np.any(sample.target_mask_processed):
+                    result = CandidateGenerationResult(
+                        sample=sample,
+                        official_grasps=[],
+                        raw_candidates=[],
+                        mask_validated_candidates=[],
+                        deduplicated_candidates=[],
+                        topk_candidates=[],
+                        rejected_candidates=[],
+                        rejection_summary={
+                            (
+                                "predicted_mask_empty"
+                                if not np.any(sample.target_mask_original)
+                                else "no_valid_depth_in_predicted_mask"
+                            ): 1
+                        },
+                        requested_candidate_count=0,
+                        generation_time_ms=0.0,
+                    )
+                else:
+                    result = generate_candidates(
+                        sample,
+                        sampling_config,
+                        filtering_config,
+                        num_samples=args.num_candidates,
+                        top_k=args.top_k,
+                        seed=sample_seed,
+                        visualize_sampler=False,
+                    )
                 last_successful_stage = "candidate_generation"
                 scoring_failure_reason = ""
                 if args.mode == "ranking":
@@ -943,6 +1038,7 @@ def main() -> int:
                     args=args,
                     model_name=model_name,
                     model_dir=model_dir,
+                    sample_seed=sample_seed,
                     scoring_failure_reason=scoring_failure_reason,
                     write_visualizations=write_visualizations,
                 )
@@ -958,7 +1054,7 @@ def main() -> int:
                     question_index=sample.question_index,
                     configuration_hash=configuration_hash,
                     config_file_sha256=config_file_hash,
-                    seed=args.seed,
+                    seed=sample_seed,
                     sampler_runtime=runtime,
                     counts={
                         "requested": result.requested_candidate_count,
@@ -979,7 +1075,7 @@ def main() -> int:
                     expected_sample_id=sample_id,
                     expected_configuration_hash=configuration_hash,
                     expected_config_file_sha256=config_file_hash,
-                    expected_seed=args.seed,
+                    expected_seed=sample_seed,
                     expected_sampler_runtime=runtime,
                     verify_hashes=True,
                 )
@@ -1051,7 +1147,7 @@ def main() -> int:
                         question_index=question_index,
                         configuration_hash=configuration_hash,
                         config_file_sha256=config_file_hash,
-                        seed=args.seed,
+                        seed=sample_seed,
                         sampler_runtime=runtime,
                         counts={},
                         status=FAILED,
@@ -1116,6 +1212,16 @@ def main() -> int:
         started=started,
         configuration_hash=configuration_hash,
     )
+    if (
+        not stop_requested
+        and progress["remaining"] == 0
+        and progress["failed"] == 0
+        and len(rows_by_id) == len(sample_ids)
+    ):
+        _write_completed_summary(
+            output,
+            [rows_by_id[sample_id] for sample_id in sample_ids],
+        )
     append_jsonl(
         output / "attempt_history.jsonl",
         {

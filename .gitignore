@@ -2,129 +2,226 @@
 # Repository upload safety
 # ---------------------------------------------------------------------------
 
-# External baseline checkouts are documented as clone-time dependencies.
-# Do not vendor full third-party repositories into this project.
-ranking_baseline/VL-Grasp/
-reproduction/CROG/
-legacy/external_graspnet/
+# External repositories that remain clone-time dependencies because their
+# repository-wide redistribution terms are missing, restrictive, or mixed.
+/HiFi_reproduction/hifics/
+/HiFi_reproduction/third_party/gqcnn-official/
+/legacy/external_graspnet/graspnet-baseline/
+/legacy/external_graspnet/graspnetAPI/
+/ranking_baseline/VL-Grasp/
 
-# Local datasets and dataset-like roots.
-data/
-dataset/
-datasets/
-target_aware_vlm_grasping/data/*
-!target_aware_vlm_grasping/data/
-!target_aware_vlm_grasping/data/README.md
-!target_aware_vlm_grasping/data/.gitkeep
-reproduction/OCID-VLG/
-OCID-VLG/
-OCID-Grasp/
-RoboRefIt/
-GraspNet/
-GraspNet-1Billion/
+# Local-only files containing machine-specific paths or generated audit results.
+/HiFi_reproduction/configs/hifics_ocidvlg_hierfilm_controlled.yaml
+/HiFi_reproduction/configs/hifics_ocidvlg_paper_approx.yaml
+/HiFi_reproduction/docs/DEXNET_GEOMETRIC_GQCNN_RESULTS.md
+/HiFi_reproduction/docs/DEXNET_GQCNN_RUNBOOK.md
+/HiFi_reproduction/docs/SAM3_TRANSFORMERS_CPU_AUDIT.md
+/HiFi_reproduction/docs/dexnet_integration_audit.md
+/HiFi_reproduction/docs/full_experiment_recon.md
+/HiFi_reproduction/docs/reranking_analysis_recon.md
+/HiFi_reproduction/docs/DEXNET_FULL_HIFICS_GENERATION_RESULTS.md
+/HiFi_reproduction/docs/DEXNET_INTEGRATION_RESULTS.md
+/HiFi_reproduction/docs/GQCNN_FULL_HIFICS_SCORING_RESULTS.md
+/HiFi_reproduction/docs/GQCNN_ORIGINAL_RANKING_EVALUATION.md
+/HiFi_reproduction/docs/SAM3_REFINEMENT_RESULTS.md
+/HiFi_reproduction/docs/SAM3_TRANSFORMERS_CPU_RESULTS.md
+/HiFi_reproduction/docs/figures/coarse_to_fine_sam3_cpu_architecture.png
+/HiFi_reproduction/docs/figures/coarse_to_fine_sam3_cpu_architecture.svg
+/HiFi_reproduction/scripts/finalize_hifics_hierfilm_when_complete.sh
+/HiFi_reproduction/scripts/generate_sam3_cpu_architecture.py
+/HiFi_reproduction/scripts/launch_hifics_hierfilm_macos.sh
+/HiFi_reproduction/scripts/status_hifics_hierfilm.sh
+/LAVT_reproduction/configs/paths.local.yaml
+/LAVT_reproduction/docs/LAVT_FAILURE_ANALYSIS.md
+/LAVT_reproduction/docs/LAVT_OCID_VLG_RESULTS.md
+/LAVT_reproduction/docs/LAVT_VS_HIFICS_FAIR_COMPARISON.md
+/LAVT_reproduction/docs/OCID_VLG_DATASET_AUDIT.md
+/LAVT_reproduction/docs/OVERFIT_TEST.md
+/LAVT_reproduction/refer/pyEvalDemo.ipynb
+/LAVT_reproduction/refer/pyReferDemo.ipynb
+/LAVT_reproduction/refer/evaluation/
+/LAVT_reproduction/refer/test/
+/crog_reproduction/CROG/environment.yml
+/crog_reproduction/CROG/docs/CROG_RERANKING_V2_AUDIT.md
+/crog_reproduction/CROG/docs/CROG_RERANKING_V2_RESULTS.md
+/crog_reproduction/CROG/failure_analysis/00_project_audit.md
+/crog_reproduction/CROG/failure_analysis/CROG_failure_case_analysis_report.md
+/crog_reproduction/CROG/failure_analysis/meeting_slides_outline.md
+/crog_reproduction/CROG/media/
 
-# Local model/checkpoint/weight roots.
-models/
-weights/
-checkpoints/
-target_aware_vlm_grasping/models/*
-!target_aware_vlm_grasping/models/
-!target_aware_vlm_grasping/models/README.md
-!target_aware_vlm_grasping/models/.gitkeep
-!target_aware_vlm_grasping/models/reranker/
-target_aware_vlm_grasping/models/reranker/*
-!target_aware_vlm_grasping/models/reranker/mlp/
-target_aware_vlm_grasping/models/reranker/mlp/*
-!target_aware_vlm_grasping/models/reranker/mlp/.gitkeep
+# Upstream CROG entrypoints contain an embedded external-service credential.
+# Safe single-device training remains available through train_crog_mac.py.
+/crog_reproduction/CROG/train_crog.py
+/crog_reproduction/CROG/train_ssg.py
 
-# Model weights and serialized data.
+# Virtual environments and installed packages.
+.venv/
+.venv-*/
+venv/
+venv-*/
+env/
+**/.venv/
+**/.venv-*/
+**/venv/
+**/venv-*/
+**/site-packages/
+
+# Python, notebook, test, and tool caches.
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+.cache/
+**/.cache/
+.hf_cache/
+**/.hf_cache/
+.matplotlib_cache/
+**/.matplotlib_cache/
+
+# Local datasets and raw/processed data. Source loaders under data/ are
+# explicitly preserved where a project uses data as a Python package.
+/data/
+/dataset/
+/datasets/
+**/datasets/
+**/data/raw/
+**/data/processed/
+/OCID-VLG/
+/OCID-Grasp/
+/RoboRefIt/
+/GraspNet/
+/GraspNet-1Billion/
+/crog_reproduction/OCID-VLG/
+/crog_reproduction/CROG/datasets/
+/HiFi_reproduction/OCID-VLG/
+/LAVT_reproduction/data/*
+!/LAVT_reproduction/data/dataset_refer_bert.py
+!/LAVT_reproduction/data/dataset_ocid_vlg_bert.py
+/LAVT_reproduction/refer/data/*
+!/LAVT_reproduction/refer/data/README.md
+/target_aware_vlm_grasping/data/*
+!/target_aware_vlm_grasping/data/
+!/target_aware_vlm_grasping/data/README.md
+!/target_aware_vlm_grasping/data/.gitkeep
+
+# Model checkpoints, pretrained assets, and serialized experiment data.
+**/checkpoints/
+**/checkpoint/
+**/ckpts/
+**/pretrained_weights/
+**/weights/
+/HiFi_reproduction/models/
+/LAVT_reproduction/models/
+/target_aware_vlm_grasping/models/*
+!/target_aware_vlm_grasping/models/
+!/target_aware_vlm_grasping/models/README.md
+!/target_aware_vlm_grasping/models/.gitkeep
+!/target_aware_vlm_grasping/models/reranker/
+/target_aware_vlm_grasping/models/reranker/*
+!/target_aware_vlm_grasping/models/reranker/mlp/
+/target_aware_vlm_grasping/models/reranker/mlp/*
+!/target_aware_vlm_grasping/models/reranker/mlp/.gitkeep
 *.pth
 *.pt
 *.ckpt
 *.safetensors
 *.onnx
+*.h5
+*.hdf5
+*.weights
+*.tflite
 *.bin
 *.pkl
 *.joblib
 *.npy
 *.npz
-*.h5
-*.hdf5
 
-# Archives and downloaded papers.
+# Training, inference, and analysis outputs.
+**/runs/
+**/wandb/
+**/tensorboard/
+**/lightning_logs/
+**/training_logs/
+**/train_logs/
+**/outputs/
+**/predictions/
+**/visualizations/
+**/generated/
+**/artifacts/
+**/exports/
+**/logs/
+**/vis_output/
+**/derived/
+**/_download_tmp/
+/HiFi_reproduction/reports/
+/crog_reproduction/CROG/exp/
+/crog_reproduction/CROG/failure_analysis/figures/
+/crog_reproduction/CROG/failure_analysis/results/
+/crog_reproduction/CROG/failure_analysis/reranking_outputs/
+/graphify-out/
+
+# Build products, temporary files, and large archives.
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.so
+*.dylib
+*.o
+build/
+dist/
+*.egg-info/
 *.zip
 *.tar
 *.tar.gz
 *.tgz
-*.rar
 *.7z
+*.rar
 *.pdf
+*.pptx
 
-# Generated outputs and experiment artifacts.
-graphify-out/
-outputs/
-target_aware_vlm_grasping/outputs/*
-!target_aware_vlm_grasping/outputs/
-!target_aware_vlm_grasping/outputs/.gitkeep
-runs/
-logs/
-wandb/
-exp/
-derived/
-results/
-vis_output/
-_download_tmp/
+# Runtime databases and process state.
+*.sqlite
+*.sqlite3
+*.db
+*.pid
+*.sock
 
-# Python build/runtime artifacts.
-__pycache__/
-*.py[cod]
-*.pyo
-*.egg-info/
-dist/
-build/
-*.so
-*.dylib
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Caches used by local VLM and plotting runs.
-.cache/
-.hf_cache/
-.matplotlib_cache/
-target_aware_vlm_grasping/cache/
-target_aware_vlm_grasping/.cache/
-target_aware_vlm_grasping/.hf_cache/
-target_aware_vlm_grasping/.matplotlib_cache/
-target_aware_vlm_grasping/.pytest_cache/
-
-# Virtual environments and local configuration.
+# Secrets and local account configuration.
 .env
 .env.*
-venv/
-.venv/
-env/
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+secrets.*
+token.json
 
 # macOS and editor files.
 .DS_Store
 .AppleDouble
 .LSOverride
-.vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# Jupyter checkpoints.
-.ipynb_checkpoints/
+.vscode/
 
 # Old layout kept only as local migration/reference material.
-test_seen/
-train/
-test_similar/
-test_novel/
-processed/
-stage1_outputs/
-stage2_outputs/
-features/
-ranking_data/
+/test_seen/
+/train/
+/test_similar/
+/test_novel/
+/processed/
+/stage1_outputs/
+/stage2_outputs/
+/features/
+/ranking_data/

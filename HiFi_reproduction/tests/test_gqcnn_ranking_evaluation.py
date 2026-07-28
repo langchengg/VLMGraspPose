@@ -19,9 +19,12 @@ from src.grasping.gqcnn_ranking_evaluation import (
     PER_SAMPLE_FIELDS,
     EvaluationDataError,
     aggregate_metrics,
+    aggregate_metric_conventions,
     classify_failures,
     evaluate_sample,
     load_evaluation_config,
+    load_ocid_vlg_annotation_index,
+    load_skipped_valid_empty_metrics,
     load_verified_scored_candidates,
     rank_stored_q_values,
     save_invalid_diagnostic,
@@ -34,6 +37,8 @@ CONFIG_PATH = ROOT / "configs" / "dexnet_grasp_consistency.yaml"
 ANNOTATIONS = ROOT.parent / "crog_reproduction" / "OCID-VLG" / "refer" / "unique" / "test_expressions.json"
 TEN_ROOT = ROOT / "outputs" / "dexnet_candidates_ten_samples"
 ONE_SAMPLE = TEN_ROOT / "q0000000_b32eb3299dcd3ae9"
+FULL_ROOT = ROOT / "outputs" / "dexnet_candidates_full_hifics"
+EMPTY_SOURCE = FULL_ROOT / "q0002096_ba63e6cf5bdc38a5"
 
 
 def _config() -> dict:
@@ -137,6 +142,12 @@ def test_angle_symmetry_is_modulo_pi():
     assert item["rectangle_match"] is True
 
 
+def test_frozen_consistency_predicate_thresholds_are_unchanged():
+    config = _config()
+    assert float(config["angle_threshold_deg"]) == 30.0
+    assert float(config["iou_threshold"]) == 0.25
+
+
 def test_multiple_ground_truth_annotations_match_any_one():
     _, result = _evaluate(
         [_candidate("target", 1.0)],
@@ -188,6 +199,22 @@ def _copy_scored_fixture(tmp_path: Path) -> Path:
     return sample
 
 
+def _copy_separate_scored_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    source = tmp_path / "source" / ONE_SAMPLE.name
+    scored = tmp_path / "scored" / ONE_SAMPLE.name
+    source.mkdir(parents=True)
+    scored.mkdir(parents=True)
+    for name in ("metadata.json", "candidates.json", "candidates.npz"):
+        shutil.copy2(ONE_SAMPLE / name, source / name)
+    for name in (
+        "gqcnn_scored_candidates.json",
+        "gqcnn_scored_candidates.npz",
+        "gqcnn_scored_candidates.csv",
+    ):
+        shutil.copy2(ONE_SAMPLE / name, scored / name)
+    return source, scored
+
+
 def _rewrite_npz(path: Path, mutate):
     with np.load(path, allow_pickle=False) as archive:
         arrays = {name: np.asarray(archive[name]).copy() for name in archive.files}
@@ -215,6 +242,87 @@ def test_candidate_pose_mismatch_is_rejected(tmp_path: Path):
     with pytest.raises(EvaluationDataError) as caught:
         load_verified_scored_candidates(sample)
     assert caught.value.category == "mapping_or_geometry_error"
+
+
+def test_separate_source_and_scored_roots_are_supported_and_immutable(tmp_path: Path):
+    source, scored = _copy_separate_scored_fixture(tmp_path)
+    before = {
+        path: path.read_bytes()
+        for path in (*source.iterdir(), *scored.iterdir())
+        if path.is_file()
+    }
+    verified = load_verified_scored_candidates(source, scored)
+    assert verified["sample_metadata"]["sample_id"] == ONE_SAMPLE.name
+    assert verified["source_sample_dir"] == source
+    assert verified["scored_sample_dir"] == scored
+
+    annotation_index = load_ocid_vlg_annotation_index(ANNOTATIONS)
+    outcome = evaluate_sample(
+        source,
+        ANNOTATIONS,
+        _config(),
+        scored_sample_dir=scored,
+        annotation_index=annotation_index,
+        include_geometric_reference=False,
+    )
+    assert outcome["geometric_reference_metrics"] is None
+    assert outcome["metrics"]["candidate_count"] == 26
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_annotation_file_is_preloaded_into_question_index_mapping():
+    index = load_ocid_vlg_annotation_index(ANNOTATIONS)
+    assert int(index[21]["question_index"]) == 21
+    assert index[21]["question"] == "Grasp the Vichy shampoo"
+
+
+def test_valid_empty_is_end_to_end_failure_but_not_conditional_denominator(tmp_path: Path):
+    source = tmp_path / "source" / EMPTY_SOURCE.name
+    scored = tmp_path / "scored" / EMPTY_SOURCE.name
+    source.mkdir(parents=True)
+    scored.mkdir(parents=True)
+    for name in ("metadata.json", "_SUCCESS.json", "candidates.json"):
+        shutil.copy2(EMPTY_SOURCE / name, source / name)
+    save_strict_json(
+        scored / "scoring_metadata.json",
+        {
+            "sample_id": EMPTY_SOURCE.name,
+            "source_candidate_count": 0,
+            "scoring_status": "skipped_valid_empty",
+            "gqcnn_scored_count": 0,
+            "top1_candidate_id": None,
+        },
+    )
+    empty = load_skipped_valid_empty_metrics(source, scored, _config())
+    nonempty = {
+        "sample_id": "nonempty",
+        "scoring_status": "scored",
+        "valid_empty": False,
+        "candidate_count": 2,
+        "finite_q_count": 2,
+        "top1_consistent": True,
+        "top5_consistent": True,
+        "first_valid_rank": 1,
+        "failure_categories": ["none"],
+        "failure_type": "none",
+        "data_valid": True,
+    }
+    conventions = aggregate_metric_conventions([nonempty, empty], method=BASELINE_NAME)
+    conditional = conventions["conditional_nonempty"]
+    end_to_end = conventions["end_to_end_all_samples"]
+    assert conventions["denominators"] == {
+        "conditional_nonempty": 1,
+        "end_to_end_all_samples": 2,
+        "skipped_valid_empty": 1,
+        "invalid_nonempty": 0,
+        "invalid_empty": 0,
+    }
+    assert conditional["top1_consistency"]["numerator"] == 1
+    assert conditional["top1_consistency"]["denominator"] == 1
+    assert end_to_end["top1_consistency"]["numerator"] == 1
+    assert end_to_end["top1_consistency"]["denominator"] == 2
+    assert conventions["candidate_generation_failure_rate"]["decimal"] == 0.5
+    assert conventions["end_to_end_top1_ranking_failure_rate"]["decimal"] == 0.0
 
 
 def test_strict_json_and_csv_serialization(tmp_path: Path):

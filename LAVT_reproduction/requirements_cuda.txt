@@ -1,0 +1,21 @@
+# Use a PyTorch CUDA wheel matching the host driver, then install these packages.
+torch>=2.1
+torchvision>=0.16
+numpy>=1.24
+pillow>=10
+opencv-python>=4.8
+scipy>=1.10
+scikit-image>=0.21
+shapely>=2
+matplotlib>=3.8
+requests>=2.31
+filelock>=3.12
+ftfy>=6
+regex>=2023
+tokenizers>=0.15
+tqdm>=4.66
+pyyaml>=6
+pandas>=2
+pyarrow>=14
+psutil>=5.9
+pytest>=8

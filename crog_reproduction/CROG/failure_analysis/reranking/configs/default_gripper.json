@@ -1,0 +1,13 @@
+{
+  "approach_direction": null,
+  "approach_distance_m": null,
+  "coordinate_frame": null,
+  "finger_height_m": null,
+  "finger_length_m": null,
+  "finger_thickness_m": null,
+  "maximum_opening_m": null,
+  "metric_3d_enabled": false,
+  "palm_dimensions_m": null,
+  "safe_clearance_m": null,
+  "voxel_size_m": null
+}

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import shutil
@@ -112,20 +113,38 @@ def _paired(old_rows: list[dict], new_rows: list[dict], mask_rows: dict[str, dic
 
 
 def main() -> int:
-    if OUTPUT.exists():
-        raise FileExistsError(f"refusing to overwrite grasp comparison: {OUTPUT}")
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
-    sam3 = json.loads(SAM3.read_text(encoding="utf-8"))
-    mask = json.loads(MASK.read_text(encoding="utf-8"))
-    baseline_candidates = REPO_ROOT / "outputs" / "dexnet_candidates_ten_samples"
-    sam3_candidates = REPO_ROOT / "outputs" / "dexnet_candidates_sam3_ten_samples"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline-summary", type=Path, default=BASELINE)
+    parser.add_argument("--sam3-summary", type=Path, default=SAM3)
+    parser.add_argument("--mask-summary", type=Path, default=MASK)
+    parser.add_argument("--mask-per-sample", type=Path, default=MASK_PER_SAMPLE)
+    parser.add_argument(
+        "--baseline-candidates",
+        type=Path,
+        default=REPO_ROOT / "outputs" / "dexnet_candidates_ten_samples",
+    )
+    parser.add_argument(
+        "--sam3-candidates",
+        type=Path,
+        default=REPO_ROOT / "outputs" / "dexnet_candidates_sam3_ten_samples",
+    )
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    output = args.output.expanduser().resolve()
+    if output.exists():
+        raise FileExistsError(f"refusing to overwrite grasp comparison: {output}")
+    baseline = json.loads(args.baseline_summary.read_text(encoding="utf-8"))
+    sam3 = json.loads(args.sam3_summary.read_text(encoding="utf-8"))
+    mask = json.loads(args.mask_summary.read_text(encoding="utf-8"))
+    baseline_candidates = args.baseline_candidates.expanduser().resolve()
+    sam3_candidates = args.sam3_candidates.expanduser().resolve()
     rows = [
         _pipeline_row("HiFi + Dex-Net + GQ-CNN", baseline["gqcnn_q_value_ranking"], mask["coarse_mean_iou"], baseline_candidates, "gqcnn"),
         _pipeline_row("HiFi + Dex-Net + geometric", baseline["geometric_re_ranking_reference"], mask["coarse_mean_iou"], baseline_candidates, "geometric"),
         _pipeline_row("HiFi + SAM 3 + Dex-Net + GQ-CNN", sam3["gqcnn_q_value_ranking"], mask["refined_mean_iou"], sam3_candidates, "gqcnn"),
         _pipeline_row("HiFi + SAM 3 + Dex-Net + geometric", sam3["geometric_re_ranking_reference"], mask["refined_mean_iou"], sam3_candidates, "geometric"),
     ]
-    with MASK_PER_SAMPLE.open(encoding="utf-8", newline="") as stream:
+    with args.mask_per_sample.open(encoding="utf-8", newline="") as stream:
         mask_rows = {row["sample_id"]: row for row in csv.DictReader(stream)}
     paired = _paired(baseline["per_sample_metrics"], sam3["per_sample_metrics"], mask_rows, "gqcnn")
     # The evaluator carries only GQ-CNN per-sample rows; geometric transitions are reconstructed
@@ -142,13 +161,13 @@ def main() -> int:
             ]
     paired.extend(
         _paired(
-            geometric_rows(REPO_ROOT / "outputs" / "dexnet_candidates_ten_samples" / "geometric_ranking_summary.csv"),
-            geometric_rows(REPO_ROOT / "outputs" / "dexnet_candidates_sam3_ten_samples" / "geometric_ranking_summary.csv"),
+            geometric_rows(baseline_candidates / "geometric_ranking_summary.csv"),
+            geometric_rows(sam3_candidates / "geometric_ranking_summary.csv"),
             mask_rows,
             "geometric",
         )
     )
-    temporary = OUTPUT.with_name(OUTPUT.name + ".incomplete")
+    temporary = output.with_name(output.name + ".incomplete")
     temporary.mkdir(parents=True)
     try:
         with (temporary / "summary.csv").open("w", encoding="utf-8", newline="") as stream:
@@ -195,11 +214,11 @@ def main() -> int:
                 "mask_top1_pearson": correlation,
             },
         )
-        temporary.rename(OUTPUT)
+        temporary.rename(output)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    print(json.dumps({"status": "COMPARED", "pipelines": 4, "output": str(OUTPUT)}))
+    print(json.dumps({"status": "COMPARED", "pipelines": 4, "output": str(output)}))
     return 0
 
 

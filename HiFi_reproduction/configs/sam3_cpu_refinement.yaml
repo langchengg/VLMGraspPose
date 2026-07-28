@@ -1,0 +1,64 @@
+schema_version: 1
+
+model:
+  model_id: facebook/sam3
+  revision: 3c879f39826c281e95690f02c7821c4de09afae7
+  local_files_only: true
+  device: cpu
+  dtype: float32
+  backend: tracker
+  batch_size: 1
+  processor_size: 1008
+  use_safetensors: true
+
+runtime:
+  num_threads: 8
+  interop_threads: 1
+  omp_num_threads: 8
+  veclib_maximum_threads: 8
+  openblas_num_threads: 8
+  mkl_num_threads: 8
+  maximum_safe_memory_fraction: 0.85
+
+prompt:
+  mode: box_point
+  strategy: box_positive_points
+  coarse_mask_threshold: 0.15000000000000002
+  minimum_component_area_px: 20
+  box_expansion_fraction: 0.075
+  positive_point_count: 4
+  point_minimum_separation_px: 20
+  negative_point_count: 3
+  negative_ring_width_px: 12
+
+selector:
+  weights:
+    sam_quality: 0.20
+    coarse_recall: 0.17
+    coarse_precision: 0.08
+    coarse_iou: 0.13
+    probability_mass_recall: 0.12
+    positive_points: 0.10
+    largest_component: 0.08
+    depth_consistency: 0.00
+    prompt_box_overlap: 0.07
+    negative_violation: 0.10
+    area_ratio_penalty: 0.10
+    fragmentation_penalty: 0.05
+  area_ratio_penalty:
+    preferred_min: 0.65
+    preferred_max: 1.60
+  depth_consistency:
+    enabled: false
+    minimum_tolerance_m: 0.02
+    mad_multiplier: 3.0
+  fallback:
+    minimum_area_ratio: 0.25
+    maximum_area_ratio: 4.0
+    minimum_coarse_recall: 0.50
+    maximum_outside_box_fraction: 0.10
+    minimum_refinement_score: 0.45
+
+evaluation:
+  change_margin_iou: 0.01
+  boundary_tolerance_px: 2
