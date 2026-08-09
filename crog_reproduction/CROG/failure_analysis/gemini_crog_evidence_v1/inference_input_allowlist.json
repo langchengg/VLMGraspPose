@@ -1,0 +1,14 @@
+{
+  "raw_inputs": ["rgb", "referring_expression"],
+  "crog_predictions": [
+    "m_logit", "m_probability", "m_binary_mask", "q_raw", "q_probability",
+    "sin_2theta_raw", "cos_2theta_raw", "decoded_angle", "angle_vector_magnitude",
+    "w_raw", "w_probability", "decoded_width", "frozen_top5_geometry",
+    "frozen_q_value", "frozen_original_rank"
+  ],
+  "derived_without_ground_truth": [
+    "q_local_statistics", "predicted_mask_support", "angle_consistency",
+    "width_consistency", "candidate_relations", "candidate_overlap",
+    "candidate_uncertainty"
+  ]
+}

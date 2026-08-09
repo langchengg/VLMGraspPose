@@ -1,0 +1,17 @@
+schema_version: 1
+experiment_id: sam3_proposal_bank_p90_v1
+seed: 42
+proposal_config: configs/sam3_proposal_bank_p90_v1/proposal_generation.yaml
+query_parser_config: configs/sam3_proposal_bank_p90_v1/query_parser.yaml
+feature_config: configs/sam3_proposal_bank_p90_v1/feature_schema.yaml
+selector_config: configs/sam3_proposal_bank_p90_v1/selector_training.yaml
+second_stage_config: configs/sam3_proposal_bank_p90_v1/second_refinement.yaml
+gate_config: configs/sam3_proposal_bank_p90_v1/conservative_gate.yaml
+evaluation_config: configs/sam3_proposal_bank_p90_v1/evaluation.yaml
+compact_input_root: runs/modular_reranking_repeatedfilm_v1_20260729_203147/compact_inputs
+output_root: outputs/sam3_proposal_bank_p90_v1
+artifact_root: artifacts/sam3_proposal_bank_p90_v1
+development_splits: [train, val]
+posthoc_benchmark_split: test
+fresh_untouched_holdout_available: false
+

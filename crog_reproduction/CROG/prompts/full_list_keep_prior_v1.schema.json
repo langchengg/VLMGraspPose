@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"enum": ["KEEP_BASELINE", "PREFER_CANDIDATE", "INSUFFICIENT_EVIDENCE"], "type": "string"},
+    "selected_candidate_id": {"enum": ["candidate_0", "candidate_1", "candidate_2", "candidate_3", "candidate_4"], "type": "string"},
+    "evidence_reliable": {"type": "boolean"},
+    "reason_codes": {"items": {"type": "string"}, "maxItems": 8, "minItems": 1, "type": "array"},
+    "brief_rationale": {"maxLength": 320, "minLength": 1, "type": "string"}
+  },
+  "required": ["decision", "selected_candidate_id", "evidence_reliable", "reason_codes", "brief_rationale"],
+  "type": "object"
+}

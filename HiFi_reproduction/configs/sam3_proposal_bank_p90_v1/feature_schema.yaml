@@ -1,0 +1,15 @@
+schema_version: 1
+families:
+  - sam_model
+  - hifi_agreement
+  - morphology
+  - rgb_boundary_appearance
+  - clip_semantics
+  - attributes
+  - depth_3d
+  - absolute_location
+  - pairwise_relation
+  - candidate_set_relations
+  - reliability_missingness
+gt_features_allowed: false
+

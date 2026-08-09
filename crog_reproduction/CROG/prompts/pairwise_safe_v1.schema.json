@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"enum": ["KEEP_BASELINE", "PREFER_CHALLENGER", "INSUFFICIENT_EVIDENCE"], "type": "string"},
+    "evidence_reliable": {"type": "boolean"},
+    "baseline_target_alignment": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "challenger_target_alignment": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "baseline_contact_geometry": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "challenger_contact_geometry": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "baseline_collision_risk": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "challenger_collision_risk": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "baseline_width_compatibility": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "challenger_width_compatibility": {"maximum": 1.0, "minimum": 0.0, "type": "number"},
+    "reason_codes": {
+      "items": {"enum": ["BASELINE_OFF_TARGET", "CHALLENGER_OFF_TARGET", "WEAK_MASK_SUPPORT", "BETTER_MASK_SUPPORT", "CONTACT_DEPTH_INCONSISTENT", "WIDTH_MISMATCH", "COLLISION_RISK", "INSUFFICIENT_DEPTH", "AMBIGUOUS_VISUAL_EVIDENCE", "NO_CLEAR_ADVANTAGE"], "type": "string"},
+      "maxItems": 10,
+      "minItems": 1,
+      "type": "array"
+    },
+    "brief_rationale": {"maxLength": 320, "minLength": 1, "type": "string"}
+  },
+  "required": ["decision", "evidence_reliable", "baseline_target_alignment", "challenger_target_alignment", "baseline_contact_geometry", "challenger_contact_geometry", "baseline_collision_risk", "challenger_collision_risk", "baseline_width_compatibility", "challenger_width_compatibility", "reason_codes", "brief_rationale"],
+  "title": "PairwiseCriticResponse",
+  "type": "object"
+}

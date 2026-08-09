@@ -1,0 +1,9 @@
+schema_version: 1
+parser_version: ocidvlg_lexical_v1
+source: query_text_only
+answer_instance_allowed: false
+target_instance_id_allowed: false
+full_query_baseline_enabled: true
+short_target_prompts_enabled: true
+reference_prompts_enabled: true
+

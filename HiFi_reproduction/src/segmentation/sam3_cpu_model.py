@@ -392,6 +392,11 @@ class TransformersSam3Cpu:
             "from_pretrained_signature": str(signature),
             "transformers_version": transformers.__version__,
         }
+        # The official Tracker forward API accepts pre-computed image
+        # embeddings. Keep only the most recent image so manifests grouped by
+        # RGB avoid repeating the vision encoder without unbounded RAM growth.
+        self._cached_image_key: str | None = None
+        self._cached_image_embeddings: tuple[Any, ...] | None = None
 
     def infer(
         self,
@@ -400,6 +405,7 @@ class TransformersSam3Cpu:
         *,
         prompt_mode: str,
         short_text: str | None = None,
+        image_cache_key: str | None = None,
     ) -> Sam3CpuInferenceResult:
         image = image.convert("RGB")
         process = psutil.Process()
@@ -417,10 +423,29 @@ class TransformersSam3Cpu:
                 raise Sam3CpuRuntimeError(f"processor tensor {key} escaped CPU")
         preprocess_seconds = float(time.perf_counter() - preprocess_started)
         inference_started = time.perf_counter()
+        cache_hit = bool(
+            self.backend == "tracker"
+            and image_cache_key is not None
+            and image_cache_key == self._cached_image_key
+            and self._cached_image_embeddings is not None
+        )
         with _PeakRssMonitor() as rss:
             with self.torch.inference_mode():
                 if self.backend == "tracker":
-                    outputs = self.model(**inputs, multimask_output=True)
+                    if cache_hit:
+                        inputs.pop("pixel_values")
+                        outputs = self.model(
+                            **inputs,
+                            image_embeddings=self._cached_image_embeddings,
+                            multimask_output=True,
+                        )
+                    else:
+                        outputs = self.model(**inputs, multimask_output=True)
+                        if image_cache_key is not None:
+                            self._cached_image_key = image_cache_key
+                            self._cached_image_embeddings = tuple(
+                                value.detach() for value in outputs.image_embeddings
+                            )
                 else:
                     outputs = self.model(**inputs)
         inference_seconds = float(time.perf_counter() - inference_started)
@@ -476,6 +501,8 @@ class TransformersSam3Cpu:
                 + inference_seconds
                 + postprocess_seconds,
                 "model_load_seconds": self.load_time_seconds,
+                "image_embedding_cache_enabled": float(image_cache_key is not None),
+                "image_embedding_cache_hit": float(cache_hit),
             },
             memory={
                 "rss_before_inference_bytes": rss.start_rss,
@@ -493,7 +520,11 @@ class TransformersSam3Cpu:
             runtime_metadata=dict(self.runtime_metadata),
         )
         del outputs, inputs
-        gc.collect()
+        # A full collection dominates the tiny prompt-decoder path. The large
+        # vision-encoder temporaries exist only on a cache miss, where retaining
+        # the explicit collection keeps peak RSS bounded between images.
+        if not cache_hit:
+            gc.collect()
         return result
 
 

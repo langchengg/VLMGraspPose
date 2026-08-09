@@ -1,0 +1,20 @@
+schema_version: 1
+model_resolution: [352, 352]
+native_resolution: [480, 640]
+prediction_to_model_resize: nearest
+foreground_rule: "probability >= 0.5"
+p_at_rule: "iou > threshold"
+thresholds: [0.50, 0.60, 0.70, 0.80, 0.90]
+boundary_tolerance_px: 2
+bootstrap_replicates: 10000
+bootstrap_seed: 42
+cluster_units: [scene, frame]
+paper_reference:
+  protocol_equivalent: false
+  miou: 0.8826
+  p50: 0.9268
+  p60: 0.9213
+  p70: 0.9153
+  p80: 0.8969
+  p90: 0.8321
+

@@ -1,0 +1,51 @@
+experiment:
+  name: gemini_crog_evidence_v1
+  scope: frozen_crog_top5_reranking_only
+  seed: 47
+models:
+  - gemini-robotics-er-2-preview
+  - gemini-3.6-flash
+api:
+  endpoint: https://generativelanguage.googleapis.com/v1beta/interactions
+  sdk: google-genai==2.16.0
+  store: false
+  background: false
+  stream: false
+  stateless: true
+  tools: []
+  thinking_level: medium
+  thought_summaries: false
+  temperature_policy: model_default
+  # Total ceiling: 512/1536 truncated; two Flash cases also truncated at 3072; 4096 completed them.
+  max_output_tokens: 4096
+  image_resolution: high
+  concurrency_default: 2
+  retry_max: 5
+  retryable_status: [429, 500, 502, 503, 504]
+  non_retryable_status: [400, 401, 403, 404]
+  request_upper_bound_usd: 0.10
+renderer:
+  version: crog-gemini-evidence-board-v1
+  width_px: 2200
+  height_px: 2200
+  mask_threshold: 0.35
+  decoded_width_scale_px: 100.0
+  candidate_display_ids: [A, B, C, D, E]
+protocol:
+  primary_input: rgb_text_predicted_m_q_sin_cos_w_top5_evidence
+  safe_harmful_rate_limit: 0.01
+  smoke_per_model: 10
+  pilot_samples: 100
+  stability_samples: 20
+  stability_repeats: 3
+  bootstrap_draws: 10000
+  formal_test_requires_budget: true
+  formal_test_requires_lock: true
+  batch_interactions_supported: false
+data:
+  checkpoint: exp/OCID-VLG_multiple_mac/CROG_mac_mps_official_params_50epoch_bs8/best_jindex_model.pth
+  crog_config: config/OCID-VLG/CROG_mac_mps_official_params_50epoch_bs8.yaml
+  split_manifest: failure_analysis/reranking_outputs/v2_20260727T174412+0100/split_manifest.json
+  frozen_train_candidates: failure_analysis/reranking_outputs/v2_20260727T174412+0100/base_train/features.jsonl
+  frozen_validation_candidates: failure_analysis/reranking_outputs/v2_20260727T174412+0100/base_val/features.jsonl
+  frozen_test_candidates: failure_analysis/reranking_outputs/full_test_17749_v1/features.jsonl

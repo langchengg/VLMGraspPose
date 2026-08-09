@@ -16,7 +16,7 @@ import math
 import zipfile
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -127,6 +127,8 @@ def _json_array(
     dtype: Any,
     shape: Tuple[int, ...],
 ) -> np.ndarray:
+    if not records:
+        return np.empty((0,) + shape, dtype=dtype)
     try:
         array = np.asarray([record[field] for record in records], dtype=dtype)
     except (KeyError, TypeError, ValueError) as error:
@@ -190,7 +192,7 @@ def load_frozen_candidates(
         np.asarray(
             [[record["center_u_px"], record["center_v_px"]] for record in records],
             dtype=arrays["center_uv"].dtype,
-        ),
+        ).reshape((len(records), 2)),
     )
     _assert_same(
         "center_camera_xyz_m",
@@ -208,7 +210,7 @@ def load_frozen_candidates(
         np.asarray(
             [[record["endpoint_1_uv"], record["endpoint_2_uv"]] for record in records],
             dtype=arrays["endpoints_uv"].dtype,
-        ),
+        ).reshape((len(records), 2, 2)),
     )
     _assert_same(
         T_CAMERA_GRASP_FIXED_APPROACH_KEY,
@@ -924,7 +926,9 @@ def evaluate_planar_annotation_consistency(
                 "minimum_center_distance_px": min(centers, default=None),
                 "minimum_angle_difference_deg_modulo_pi": min(angles, default=None),
                 "maximum_rectangle_iou_with_angle_gate": max_iou,
-                "rectangle_match": bool(max_iou >= iou_threshold),
+                # CROG defines a match as IoU strictly higher than 0.25.
+                # Keep the angle boundary inclusive (<= 30 degrees).
+                "rectangle_match": bool(max_iou > iou_threshold),
             }
         )
     first_match = next((item[rank_field] for item in per_candidate if item["rectangle_match"]), None)

@@ -1,0 +1,16 @@
+schema_version: 1
+embedding_cache_max_gib: 4
+use_oof_stage1_selection_for_development: true
+tracker_variants:
+  - positive_box
+  - positive_box_points
+  - mask_points
+  - conservative_negative_points
+  - relation_reference_negative_points
+  - depth_discontinuity_negative_points
+  - low_hifi_probability_negative_points
+pcs_variants:
+  - target_category_negative_competitor_and_relation_reference_boxes
+  - target_attribute_negative_competitor_and_relation_reference_boxes
+mask_thresholds: [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
+gt_best_prompt_forbidden: true

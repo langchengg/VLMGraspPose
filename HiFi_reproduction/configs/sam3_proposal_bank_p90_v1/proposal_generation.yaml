@@ -1,0 +1,57 @@
+schema_version: 1
+seed: 42
+device: cpu
+dtype: float32
+num_threads: 8
+pcs_micro_batch_size: 4
+bundle_write_workers: 2
+reuse_tracker_model_for_automatic: true
+embedding_cache_max_gib: 4
+model:
+  id: facebook/sam3
+  revision: 3c879f39826c281e95690f02c7821c4de09afae7
+  local_path: models/huggingface/facebook-sam3/3c879f39826c281e95690f02c7821c4de09afae7
+  local_files_only: true
+  pcs_processor_sha256: df935d0892f1060ea575b5e011b0538ebadc2244671d66ca82fc16b007d32e69
+  tracker_processor_sha256: 8fced72af65ce70adb7e241468288a58332b1928087f27dce477dc2962838312
+hifi_probability_thresholds:
+  # Validation oracle screen on all 3,778 rows. H0=0.50 remains mandatory.
+  - 0.30
+  - 0.35
+  - 0.40
+  - 0.45
+  - 0.50
+  - 0.55
+  - 0.60
+  - 0.65
+  - 0.70
+pcs:
+  instance_thresholds: [0.10, 0.30, 0.50]
+  mask_thresholds: [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
+  maximum_instances_per_prompt: 20
+automatic:
+  points_per_side: 8
+  points_per_batch: 16
+  score_threshold: 0.50
+  stability_threshold: 0.50
+  nms_threshold: 0.70
+  minimum_mask_area_px: 10
+  maximum_proposals_per_image: 64
+tracker:
+  box_expansion_ratios: [0.00, 0.03, 0.05, 0.08]
+  positive_point_counts: [1, 3, 5]
+  mask_thresholds: [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
+  core_minimum_probability: 0.60
+  core_probability_quantile: 0.70
+  point_separation_px: 12.0
+components:
+  minimum_area_px: 16
+  minimum_probability_mass_fraction: 0.02
+  maximum_components: 8
+morphology:
+  maximum_parent_candidates: 12
+  minimum_substantial_component_fraction: 0.02
+  depth_tolerance_m: 0.03
+deduplication:
+  iou_threshold: 0.995
+  maximum_area_difference_fraction: 0.005

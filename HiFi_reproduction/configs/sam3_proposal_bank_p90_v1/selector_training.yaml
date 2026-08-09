@@ -1,0 +1,16 @@
+schema_version: 1
+seed: 42
+group_unit: frame
+folds: 5
+strict_y90: "iou > 0.90"
+inverse_candidate_count_weighting: true
+training_candidate_retention:
+  maximum_candidates_per_sample: 64
+  policy: retain_hifi_source_balanced_p90_hard_negatives_and_gt_free_contenders
+  oof_scores_all_eligible_candidates: true
+models:
+  - logistic_regression
+  - hist_gradient_boosting_classifier
+  - hist_gradient_boosting_regressor
+  - classifier_regressor_ensemble
+noninferiority_margin_absolute: 0.001

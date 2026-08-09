@@ -75,6 +75,11 @@ The current local checkout contains these relevant areas:
 ├── HiFi_reproduction/              # HiFi/SAM3 + Dex-Net/GQ-CNN/VGN integration
 ├── LAVT_reproduction/              # Isolated GPLv3 LAVT reproduction source
 ├── crog_reproduction/CROG/         # MIT CROG source and reranking experiments
+├── src/unified_reranking/           # Shared leakage-safe reranking pipeline
+├── tools/unified_reranking/         # Unified pipeline command-line entrypoints
+├── tests/unified_reranking/         # Unified reranking contract and pipeline tests
+├── reranking/                       # Modular experiment-matrix implementation
+├── experiments/                     # Controlled cross-baseline evaluations
 ├── legacy/                         # Archived implementations and GraspNet adapters
 ├── ranking_baseline/               # Local VL-Grasp clone-time dependency
 ├── scripts/                        # Fixed-version external repository bootstrap
@@ -105,6 +110,12 @@ Optional VLM grounding dependencies:
 ```bash
 python -m pip install -r requirements-vlm.txt
 ```
+
+The macOS dependency set for the GGCNN/GR-ConvNet 4-DoF adapters is recorded in
+`HiFi_reproduction/requirements-grasp4dof-macos.txt`. Other optional baseline
+environments remain separated under `HiFi_reproduction/requirements-*.txt` and
+`crog_reproduction/CROG/requirements_mac.txt` to avoid combining incompatible
+research stacks into one environment.
 
 The active oracle/geometric pipeline is designed to run on macOS CPU/MPS without CUDA custom ops. Full 6-DoF detector baselines such as GraspNet, FGC-GraspNet, and VL-Grasp may require Linux, CUDA, and compiled extensions.
 
@@ -199,6 +210,22 @@ Create a rule-initialized MLP reranker checkpoint:
 python scripts/train_mlp_reranker.py --output outputs/checkpoints/mlp_rule_initialized.npz
 ```
 
+Additional reproducibility entrypoints are grouped by experiment family:
+
+| Experiment family | Primary entrypoint | Configuration / dependency source |
+| --- | --- | --- |
+| Unified cross-backend reranking | `tools/unified_reranking/run_all.py` | `src/unified_reranking/`, `tests/unified_reranking/` |
+| Controlled CROG/HiFi/G1/C1 comparison without reranking | `experiments/fair_crog_hifics_g1_c1_no_rerank/prepare_run.py` | Package-local scripts and tests |
+| 4-DoF analytic, GGCNN, and GR-ConvNet validation | `HiFi_reproduction/tools/grasp4dof/run_method.py` | `HiFi_reproduction/configs/grasp4dof_validation/`, `requirements-grasp4dof-macos.txt` |
+| SAM3 proposal-bank evaluation | `HiFi_reproduction/scripts/run_sam3_p90_experiment.py` | `HiFi_reproduction/configs/sam3_proposal_bank_p90_v1/` |
+| Selective SAM3 visual grounding | `HiFi_reproduction/tools/selective_sam3_vg/run_formal_inference.py` | `HiFi_reproduction/configs/selective_sam3_vg_validation.yaml` |
+| HiFi modular reranking | `HiFi_reproduction/tools/modular_reranking/train_rerankers.py` | `HiFi_reproduction/configs/modular_reranking_v1.yaml` |
+| CROG VLM-safe reranking | `crog_reproduction/CROG/scripts/run_vlm_safe_rerank.py` | `crog_reproduction/CROG/prompts/` and `.env.example` |
+
+Machine-locked experiment manifests that contain absolute local paths are kept
+outside Git. Recreate them from the portable configs and scripts above after
+placing datasets and checkpoints at local paths.
+
 ## Baselines
 
 ### CROG
@@ -242,6 +269,16 @@ The same bootstrap script recreates VL-Grasp and other clone-time dependencies a
 ### VGN
 
 `HiFi_reproduction/third_party/vgn/` contains the BSD-3-Clause VGN `corl2020` source snapshot at commit `d7af0622433f52ae88ebe81533f12b46b33e951a`. Local VGN adapters, runners, requirements, and tests are in `HiFi_reproduction/`.
+
+### GGCNN and GR-ConvNet
+
+`HiFi_reproduction/third_party_src/ggcnn/` contains the BSD-3-Clause GG-CNN
+source snapshot at commit `0c50aa7600e8a30d44c5c85cebd6e3394a81f30e`.
+`HiFi_reproduction/third_party_src/grconvnet/` contains the BSD-3-Clause
+robotic-grasping/GR-ConvNet source snapshot at commit
+`bdd49367f8619be94123fb3187c2f8ad5100ef46`. Their upstream license files are
+retained. Downloaded checkpoints and upstream `trained-models/` files are not
+committed.
 
 ### Confidence-Only Selection
 

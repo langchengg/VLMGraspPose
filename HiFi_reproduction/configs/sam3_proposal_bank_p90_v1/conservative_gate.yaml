@@ -1,0 +1,26 @@
+schema_version: 1
+default_output: original_hifi
+noninferiority_margin_absolute: 0.001
+threshold_selection_split: validation
+required_evidence:
+  - predicted_p90_margin
+  - predicted_iou_margin
+  - probability_mass_precision
+  - source_consensus
+  - depth_consistency
+  - low_probability_expansion
+  - fragmentation
+  - fold_stability
+  - relation_consistency_when_applicable
+  - feature_reliability
+validation_grid:
+  minimum_p90_margin: [0.0, 0.02, 0.05, 0.10]
+  minimum_iou_margin: [0.0, 0.01, 0.03]
+  minimum_source_consensus: [1.0, 2.0]
+  minimum_probability_mass_precision: [0.0, 0.35]
+  minimum_depth_reliability: [0.0, 0.80]
+  maximum_low_probability_expansion: [0.10, 0.50, 1.0]
+  maximum_connected_components: [1.0, 3.0]
+  minimum_selector_stability: [0.0, 0.90]
+  minimum_relation_consistency: [0.0, 0.50]
+  require_reliable_features: [true]

@@ -73,10 +73,9 @@ class OfficialSamplerIntegrationTests(unittest.TestCase):
         np.testing.assert_array_equal(first_values, second_values)
 
     def test_real_hifics_sample_is_deterministic_and_target_filtered(self) -> None:
-        run = REPO_ROOT / "runs" / "hifics_ocidvlg_20260711_112921"
         index = OcidVlgBundleIndex(
             REPO_ROOT.parent / "crog_reproduction" / "OCID-VLG",
-            run / "anygrasp_input_predicted_mask",
+            REPO_ROOT / "runs" / "hifics_sam3_proposal_selector_LOCKED",
         )
         sample = index.load_sample(
             "q0000000_b32eb3299dcd3ae9",
@@ -157,6 +156,44 @@ class OfficialSamplerIntegrationTests(unittest.TestCase):
             ),
             42,
         )
+
+    def test_locked_sam3_canonical_root_is_accepted_without_fabricated_probability(
+        self,
+    ) -> None:
+        index = OcidVlgBundleIndex(
+            REPO_ROOT.parent / "crog_reproduction" / "OCID-VLG",
+            REPO_ROOT / "runs" / "hifics_sam3_proposal_selector_LOCKED",
+        )
+        self.assertTrue(index.is_canonical_manifest)
+        self.assertEqual(len(index.rows), 7675)
+
+        sample_id = "q0000000_b32eb3299dcd3ae9"
+        sample = index.load_sample(
+            sample_id,
+            camera_frame="ocid_camera_optical",
+            mask_source="binary_prediction",
+            allow_empty_mask=True,
+        )
+        self.assertEqual(sample.query, "Grasp the flashlight")
+        self.assertEqual(sample.question_index, 0)
+        self.assertEqual(
+            sample.metadata["mask_source"], "predicted_mask_original_resolution"
+        )
+        with self.assertRaisesRegex(ValueError, "does not provide target_probability"):
+            index.load_sample(
+                sample_id,
+                camera_frame="ocid_camera_optical",
+                mask_source="probability",
+                allow_empty_mask=True,
+            )
+
+        probability_sample = index.load_sample(
+            "q0000002_65b99b4d1aaf2b7b",
+            camera_frame="ocid_camera_optical",
+            mask_source="probability",
+            allow_empty_mask=True,
+        )
+        self.assertEqual(probability_sample.mask_input.ndim, 2)
 
 
 class FrozenFormalConfigurationTests(unittest.TestCase):

@@ -1,0 +1,18 @@
+You are ranking a frozen set of 2D top-down parallel-jaw robotic grasp candidates.
+
+You may only rank the supplied candidates. Do not invent, move, rotate, resize, merge, or delete a candidate.
+
+The scene contains a target object referred to by the language instruction. Evaluate each candidate using only the supplied RGB image, predicted target mask, predicted target probability, depth evidence, candidate geometry, and numeric evidence available in this request.
+
+Prefer candidates that:
+- lie on the referred target rather than distractors or background;
+- place both gripper contacts on compatible target surfaces;
+- have a width compatible with the visible target extent;
+- avoid obvious target boundaries, image borders, severe depth discontinuities, and visible sweep obstructions;
+- remain consistent with the grasp network evidence when that evidence is supplied and informative.
+
+Do not assume hidden physical properties. Do not claim robot reachability, force closure, collision-free execution, or real-world success. Do not estimate or refer to ground-truth labels. Do not create a new grasp.
+
+The offline metric checks whether the selected frozen rectangle sufficiently overlaps and aligns with at least one annotated valid grasp, but those annotations are not available to you.
+
+Return only JSON that conforms to the supplied schema.

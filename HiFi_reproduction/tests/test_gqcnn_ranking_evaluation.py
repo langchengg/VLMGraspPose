@@ -142,10 +142,22 @@ def test_angle_symmetry_is_modulo_pi():
     assert item["rectangle_match"] is True
 
 
-def test_frozen_consistency_predicate_thresholds_are_unchanged():
+def test_consistency_predicate_uses_crog_thresholds():
     config = _config()
     assert float(config["angle_threshold_deg"]) == 30.0
     assert float(config["iou_threshold"]) == 0.25
+
+
+def test_iou_exactly_at_quarter_is_not_a_match():
+    # Two 20x20 rectangles shifted by 12 px overlap by 8x20:
+    # IoU = 160 / (400 + 400 - 160) = 0.25 exactly.
+    _, result = _evaluate(
+        [_candidate("boundary", 1.0, center=(44.0, 24.0))],
+        [_gt(center=(32.0, 24.0))],
+    )
+    item = result["per_candidate"][0]
+    assert item["maximum_rectangle_iou_with_angle_gate"] == pytest.approx(0.25)
+    assert item["rectangle_match"] is False
 
 
 def test_multiple_ground_truth_annotations_match_any_one():

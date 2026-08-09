@@ -26,6 +26,28 @@ REQUIRED_BUNDLE_FILES = (
     "checksums.sha256",
 )
 
+CANONICAL_BUNDLE_FILES = (
+    "color.png",
+    "depth.png",
+    "target_mask.png",
+    "language.txt",
+    "intrinsics.json",
+    "metadata.json",
+    "provenance.json",
+    "checksums.sha256",
+)
+
+CANONICAL_MANIFEST_FIELDS = frozenset(
+    {
+        "final_probability_available",
+        "path",
+        "sample_id",
+        "sample_index",
+        "selected_source",
+        "target_mask_sha256",
+    }
+)
+
 
 @dataclass(frozen=True)
 class OcidVlgGraspSample:
@@ -65,7 +87,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_bundle_checksums(bundle_dir: Path) -> None:
+def verify_bundle_checksums(
+    bundle_dir: Path, *, expected_members: Iterable[str] | None = None
+) -> None:
     lines = (bundle_dir / "checksums.sha256").read_text(encoding="utf-8").splitlines()
     seen: set[str] = set()
     for line_number, line in enumerate(lines, 1):
@@ -83,11 +107,13 @@ def verify_bundle_checksums(bundle_dir: Path) -> None:
         if actual != expected:
             raise ValueError(f"Bundle checksum mismatch: {path.name}")
         seen.add(name)
-    expected_members = set(REQUIRED_BUNDLE_FILES) - {"checksums.sha256"}
-    if seen != expected_members:
+    required_members = set(expected_members or REQUIRED_BUNDLE_FILES) - {
+        "checksums.sha256"
+    }
+    if seen != required_members:
         raise ValueError(
-            f"Checksum manifest members differ: missing={sorted(expected_members-seen)} "
-            f"extra={sorted(seen-expected_members)}"
+            f"Checksum manifest members differ: missing={sorted(required_members-seen)} "
+            f"extra={sorted(seen-required_members)}"
         )
 
 
@@ -113,17 +139,82 @@ class OcidVlgBundleIndex:
             for line in manifest_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        canonical_rows = [CANONICAL_MANIFEST_FIELDS.issubset(row) for row in rows]
+        if any(canonical_rows) and not all(canonical_rows):
+            raise ValueError("Predicted-mask manifest mixes legacy and canonical rows")
+        self.is_canonical_manifest = bool(rows) and all(canonical_rows)
+        self._source_metadata_by_id: dict[str, Mapping[str, Any]] = {}
+        if self.is_canonical_manifest:
+            rows = [self._prepare_canonical_row(dict(row)) for row in rows]
         self.rows = rows
         self.by_id = {str(row["sample_id"]): row for row in rows}
         if len(rows) != len(self.by_id):
             raise ValueError("Duplicate sample_id values in predicted-mask manifest")
-        if any(
+        if not self.is_canonical_manifest and any(
             row.get("ready") is not True
             or row.get("ready_for_anygrasp") is not True
             or row.get("blockers") not in (None, [])
             for row in rows
         ):
             raise ValueError("Predicted-mask manifest contains non-ready bundles")
+
+    def _prepare_canonical_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        sample_id = str(row["sample_id"])
+        expected_bundle = (self.mask_root / sample_id).resolve()
+        manifest_bundle = Path(str(row["path"])).expanduser().resolve()
+        if manifest_bundle != expected_bundle:
+            raise ValueError(
+                f"Canonical manifest path mismatch for {sample_id}: {manifest_bundle}"
+            )
+        if not expected_bundle.is_dir() or expected_bundle.is_symlink():
+            raise FileNotFoundError(f"Bundle missing or unsafe: {expected_bundle}")
+        probability_available = row["final_probability_available"]
+        if not isinstance(probability_available, bool):
+            raise ValueError(
+                f"final_probability_available must be boolean for {sample_id}"
+            )
+        metadata_path = expected_bundle / "metadata.json"
+        if not metadata_path.is_file() or metadata_path.is_symlink():
+            raise FileNotFoundError(f"Canonical metadata missing or unsafe: {metadata_path}")
+        canonical_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if str(canonical_metadata.get("sample_id")) != sample_id:
+            raise ValueError(f"Canonical metadata sample_id mismatch for {sample_id}")
+        if (
+            canonical_metadata.get("final_probability_available")
+            is not probability_available
+        ):
+            raise ValueError(
+                f"Canonical probability availability mismatch for {sample_id}"
+            )
+        original_mask = Path(
+            str(canonical_metadata.get("original_hifi_source", ""))
+        ).expanduser().resolve()
+        source_metadata_path = original_mask.parent / "metadata.json"
+        if not original_mask.is_file() or original_mask.is_symlink():
+            raise FileNotFoundError(
+                f"Original HiFi mask provenance missing or unsafe: {original_mask}"
+            )
+        if not source_metadata_path.is_file() or source_metadata_path.is_symlink():
+            raise FileNotFoundError(
+                f"Original HiFi metadata missing or unsafe: {source_metadata_path}"
+            )
+        source_metadata = json.loads(source_metadata_path.read_text(encoding="utf-8"))
+        if str(source_metadata.get("sample_id")) != sample_id:
+            raise ValueError(f"Original HiFi metadata sample_id mismatch for {sample_id}")
+        if (
+            source_metadata.get("ready") is not True
+            or source_metadata.get("ready_for_anygrasp") is not True
+            or source_metadata.get("blockers") not in (None, [])
+        ):
+            raise ValueError(f"Original HiFi bundle is not ready for {sample_id}")
+        for field in ("query", "question_index", "scene_id"):
+            if field not in source_metadata:
+                raise ValueError(
+                    f"Original HiFi metadata lacks {field!r} for {sample_id}"
+                )
+            row[field] = source_metadata[field]
+        self._source_metadata_by_id[sample_id] = source_metadata
+        return row
 
     def sample_ids(self, sample_id: str | None = None, limit: int | None = None) -> list[str]:
         if sample_id is not None:
@@ -165,13 +256,39 @@ class OcidVlgBundleIndex:
         bundle = self.mask_root / sample_id
         if not bundle.is_dir() or bundle.is_symlink():
             raise FileNotFoundError(f"Bundle missing or unsafe: {bundle}")
-        missing = [name for name in REQUIRED_BUNDLE_FILES if not (bundle / name).is_file()]
+        if (
+            self.is_canonical_manifest
+            and mask_source == "probability"
+            and row["final_probability_available"] is not True
+        ):
+            raise ValueError(
+                f"Canonical bundle does not provide target_probability.npy: {sample_id}"
+            )
+        required_files = list(
+            CANONICAL_BUNDLE_FILES
+            if self.is_canonical_manifest
+            else REQUIRED_BUNDLE_FILES
+        )
+        if self.is_canonical_manifest and row["final_probability_available"] is True:
+            required_files.append("target_probability.npy")
+        missing = [name for name in required_files if not (bundle / name).is_file()]
         if missing:
             raise FileNotFoundError(f"Bundle files missing for {sample_id}: {missing}")
         if verify_checksums:
-            verify_bundle_checksums(bundle)
+            verify_bundle_checksums(bundle, expected_members=required_files)
 
-        metadata = json.loads((bundle / "metadata.json").read_text(encoding="utf-8"))
+        bundle_metadata = json.loads(
+            (bundle / "metadata.json").read_text(encoding="utf-8")
+        )
+        metadata = (
+            {**self._source_metadata_by_id[sample_id], **bundle_metadata}
+            if self.is_canonical_manifest
+            else bundle_metadata
+        )
+        if self.is_canonical_manifest:
+            actual_mask_sha256 = _sha256(bundle / "target_mask.png")
+            if actual_mask_sha256 != str(row["target_mask_sha256"]):
+                raise ValueError(f"Canonical target-mask hash mismatch: {sample_id}")
         intrinsics_json = json.loads(
             (bundle / "intrinsics.json").read_text(encoding="utf-8")
         )

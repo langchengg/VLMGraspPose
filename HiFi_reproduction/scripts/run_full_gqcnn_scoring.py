@@ -111,6 +111,65 @@ def emit(status, **values):
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
 
 
+def completion_checks(progress, statistics, selected):
+    """Return strict terminal accounting checks for the selected workload."""
+
+    expected_samples = len(selected)
+    expected_nonempty = sum(
+        int(entry["candidate_count"]) > 0 for entry in selected
+    )
+    expected_empty = sum(
+        int(entry["candidate_count"]) == 0 for entry in selected
+    )
+    expected_candidates = sum(
+        int(entry["candidate_count"]) for entry in selected
+    )
+    return {
+        "progress_total_samples": int(progress["total_samples"])
+        == expected_samples,
+        "progress_terminal_samples": int(progress["terminal_samples"])
+        == expected_samples,
+        "progress_nonempty_samples": int(
+            progress["completed_nonempty_samples"]
+        )
+        == expected_nonempty,
+        "progress_empty_samples": int(progress["skipped_empty_samples"])
+        == expected_empty,
+        "progress_failed_samples": int(progress["failed_samples"]) == 0,
+        "progress_scored_candidates": int(progress["scored_candidates"])
+        == expected_candidates,
+        "progress_remaining_candidates": int(progress["remaining_candidates"])
+        == 0,
+        "statistics_total_samples": int(statistics["total_samples"])
+        == expected_samples,
+        "statistics_terminal_samples": int(statistics["terminal_samples"])
+        == expected_samples,
+        "statistics_nonempty_samples": int(
+            statistics["scored_nonempty_samples"]
+        )
+        == expected_nonempty,
+        "statistics_empty_samples": int(
+            statistics["skipped_valid_empty_samples"]
+        )
+        == expected_empty,
+        "statistics_failed_samples": int(statistics["failed_samples"]) == 0,
+        "statistics_corrupt_samples": int(
+            statistics["corrupt_committed_samples"]
+        )
+        == 0,
+        "statistics_expected_candidates": int(
+            statistics["expected_candidates"]
+        )
+        == expected_candidates,
+        "statistics_scored_candidates": int(statistics["scored_candidates"])
+        == expected_candidates,
+        "statistics_finite_q_values": int(statistics["finite_q_values"])
+        == expected_candidates,
+        "statistics_invalid_q_values": int(statistics["invalid_q_values"])
+        == 0,
+    }
+
+
 def main():
     args = parse_args()
     if args.batch_size <= 0 or args.log_every <= 0:
@@ -357,7 +416,7 @@ def main():
             if processed % args.batch_size == 0 or processed == len(to_process):
                 write_root_state(
                     output_root,
-                    entries,
+                    selected,
                     candidate_root,
                     model_info,
                     args.seed,
@@ -370,7 +429,7 @@ def main():
             quality_fn.gqcnn.close_session()
     progress = write_root_state(
         output_root,
-        entries,
+        selected,
         candidate_root,
         model_info,
         args.seed,
@@ -381,7 +440,7 @@ def main():
     thresholds = tuple(args.low_q_threshold or (1e-6, 1e-4, 1e-2))
     statistics = write_run_statistics(
         output_root,
-        entries,
+        selected,
         candidate_root,
         model_info,
         args.seed,
@@ -389,17 +448,19 @@ def main():
         nearly_identical_atol=args.nearly_identical_atol,
         low_q_thresholds=thresholds,
     )
-    terminal_failures = int(progress["failed_samples"])
+    checks = completion_checks(progress, statistics, selected)
+    complete = all(checks.values())
     final_status = (
         "INCOMPLETE_CONTROLLED_STOP"
         if controlled_stop
-        else ("DONE" if terminal_failures == 0 else "PARTIAL")
+        else ("DONE" if complete else "PARTIAL")
     )
     emit(
         final_status,
         processed_samples=processed,
         skipped_existing=skipped,
         failures=failures,
+        completion_checks=checks,
         progress=progress,
         statistics={
             "terminal_samples": statistics["terminal_samples"],
@@ -409,7 +470,7 @@ def main():
     )
     if controlled_stop:
         return 3
-    return 0 if terminal_failures == 0 else 2
+    return 0 if complete else 2
 
 
 if __name__ == "__main__":

@@ -11,6 +11,26 @@
 /ranking_baseline/VL-Grasp/
 
 # Local-only files containing machine-specific paths or generated audit results.
+/.codex/
+/.codex_*/
+/.feature_slide_*/
+/.film_*/
+/.pdf_*/
+/.pptx_*/
+/ACTIVE_SKILL_INVENTORY.csv
+/SETUP_AUDIT.md
+/ppt_edit_audit.json
+/speaker_notes.md
+/Lang_Plan_4DoF_Backend_Results_slide_preview/
+/MSc_Dissertation_Template_the_University_of_Manchester_EEE__2025_onwards/
+/reports/
+/HiFi_reproduction/configs/grasp4dof_validation/c0_cornell_depth_crop300.json
+/HiFi_reproduction/configs/grasp4dof_validation/c0_cornell_depth_crop300_cpu.json
+/HiFi_reproduction/configs/grasp4dof_validation/g0_jacquard_rgbd_crop224.json
+/HiFi_reproduction/configs/grasp4dof_validation/g0_jacquard_rgbd_crop224_cpu.json
+/HiFi_reproduction/configs/modular_reranking_repeatedfilm_v1.yaml
+/HiFi_reproduction/configs/sam3_proposal_bank_p90_v1/LOCKED.yaml
+/HiFi_reproduction/configs/selective_sam3_vg_LOCKED.yaml
 /HiFi_reproduction/configs/hifics_ocidvlg_hierfilm_controlled.yaml
 /HiFi_reproduction/configs/hifics_ocidvlg_paper_approx.yaml
 /HiFi_reproduction/docs/DEXNET_GEOMETRIC_GQCNN_RESULTS.md
@@ -25,12 +45,22 @@
 /HiFi_reproduction/docs/GQCNN_ORIGINAL_RANKING_EVALUATION.md
 /HiFi_reproduction/docs/SAM3_REFINEMENT_RESULTS.md
 /HiFi_reproduction/docs/SAM3_TRANSFORMERS_CPU_RESULTS.md
+/HiFi_reproduction/docs/MODULAR_RERANKING_V1_RESULTS.md
+/HiFi_reproduction/docs/SAM3_PROPOSAL_BANK_P90_EXECUTION_LOG.md
+/HiFi_reproduction/docs/SAM3_PROPOSAL_BANK_P90_RESULTS.md
+/HiFi_reproduction/docs/SELECTIVE_SAM3_VISUAL_GROUNDING_RESULTS.md
 /HiFi_reproduction/docs/figures/coarse_to_fine_sam3_cpu_architecture.png
 /HiFi_reproduction/docs/figures/coarse_to_fine_sam3_cpu_architecture.svg
 /HiFi_reproduction/scripts/finalize_hifics_hierfilm_when_complete.sh
 /HiFi_reproduction/scripts/generate_sam3_cpu_architecture.py
 /HiFi_reproduction/scripts/launch_hifics_hierfilm_macos.sh
 /HiFi_reproduction/scripts/status_hifics_hierfilm.sh
+/HiFi_reproduction/src/grasping/api_only_gemini_rerank/stages.py
+/HiFi_reproduction/tests/test_api_only_gemini_rerank.py
+/HiFi_reproduction/tests/test_grasp4dof_third_party_audit.py
+/HiFi_reproduction/tools/grasp4dof/audit_third_party.py
+/HiFi_reproduction/tools/selective_sam3_vg/audit_baseline.py
+/HiFi_reproduction/tools/selective_sam3_vg/diagnose_baseline.py
 /LAVT_reproduction/configs/paths.local.yaml
 /LAVT_reproduction/docs/LAVT_FAILURE_ANALYSIS.md
 /LAVT_reproduction/docs/LAVT_OCID_VLG_RESULTS.md
@@ -44,6 +74,9 @@
 /crog_reproduction/CROG/environment.yml
 /crog_reproduction/CROG/docs/CROG_RERANKING_V2_AUDIT.md
 /crog_reproduction/CROG/docs/CROG_RERANKING_V2_RESULTS.md
+/crog_reproduction/CROG/docs/CROG_GEMINI_EVIDENCE_V1_RESULTS.md
+/crog_reproduction/CROG/docs/CROG_RERANKING_V3_AUDIT.md
+/crog_reproduction/CROG/docs/CROG_RERANKING_V3_RESULTS.md
 /crog_reproduction/CROG/failure_analysis/00_project_audit.md
 /crog_reproduction/CROG/failure_analysis/CROG_failure_case_analysis_report.md
 /crog_reproduction/CROG/failure_analysis/meeting_slides_outline.md
@@ -117,6 +150,7 @@ env/
 **/pretrained_weights/
 **/weights/
 /HiFi_reproduction/models/
+/HiFi_reproduction/third_party_src/grconvnet/trained-models/
 /LAVT_reproduction/models/
 /target_aware_vlm_grasping/models/*
 !/target_aware_vlm_grasping/models/

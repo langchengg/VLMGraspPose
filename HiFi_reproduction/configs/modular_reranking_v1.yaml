@@ -1,0 +1,125 @@
+schema_version: 1
+experiment: modular_reranking_v1
+candidate_pool_frozen: true
+candidate_identity_fields:
+  - sample_id
+  - candidate_id
+  - center_uv
+  - angle_rad
+  - width_m
+  - center_depth_m
+  - T_camera_grasp_fixed_approach
+
+splits:
+  development: train
+  model_selection: val
+  formal_test: test
+  grouping_key: scene_id
+  required_disjoint_keys:
+    - sample_id
+    - scene_id
+    - rgb_sha256
+    - depth_sha256
+    - rgbd_pair_sha256
+
+evaluation:
+  name: 2D consistency with OCID-VLG planar grasp annotations
+  physical_grasp_success_claim: false
+  rectangle_iou_comparison: ">"
+  rectangle_iou_threshold: 0.25
+  periodic_angle_comparison: "<="
+  periodic_angle_threshold_deg: 30.0
+  same_ground_truth_must_satisfy_both: true
+  bootstrap_unit: scene_id
+  bootstrap_draws: 10000
+  bootstrap_seed: 42
+  multiple_testing_correction: holm
+  paired_test: mcnemar_exact
+
+protocols:
+  full_nms:
+    methods:
+      - q_only
+      - q_softmask_rule
+      - geometry_gated_q
+      - regularized_linear_ranker
+      - pairwise_ranker
+      - multi_positive_listwise_ranker
+      - residual_mlp
+      - residual_mlp_safe_switch
+      - set_aware_residual
+  gqcnn_top5:
+    methods:
+      - q_top5
+      - tabular_residual_top5
+      - setrank_top5
+      - local_vlm_visual
+      - local_vlm_visual_metadata
+      - local_vlm_safe_switch
+
+learned_rankers:
+  seed: 42
+  scene_grouped_oof_folds: 3
+  hidden_dim: 32
+  embedding_dim: 16
+  dropout: 0.15
+  weight_decay: 0.0001
+  learning_rate: 0.001
+  maximum_epochs: 40
+  early_stopping_patience: 6
+  residual_bound: 0.25
+  q_alpha: 1.0
+  sample_batch_size: 128
+  hard_negative_limit: 32
+
+q_softmask_rule:
+  selection_split: val
+  alpha_grid_step: 0.05
+  beta_definition: 1-alpha
+  tie_break:
+    - maximum_net_gain
+    - maximum_j_at_1
+    - maximum_outcome_changing_precision
+    - maximum_alpha_q_conservative
+
+safe_switch:
+  harmful_rate_limit_all_samples: 0.01
+  threshold_selection_order:
+    - maximum_net_gain
+    - maximum_outcome_changing_precision
+    - minimum_coverage
+    - maximum_threshold
+  include_never_switch_sentinel: true
+  require_geometry_safe: true
+
+primary_selection:
+  split: val
+  status: pending_validation
+  maximum_inference_seconds_per_sample: 0.1
+  inference_device: auto
+  requirements:
+    - positive_net_gain_vs_q_only
+    - scene_bootstrap_positive_trend
+    - harmful_rate_at_most_0.01
+    - no_data_leakage
+    - inference_allowlist_pass
+    - candidate_identity_invariant
+    - acceptable_runtime
+
+local_vlm:
+  role: training-free local comparator
+  backend: ollama
+  model: qwen3-vl:4b-instruct-q4_K_M
+  model_selection_split: val
+  bind_address: 127.0.0.1
+  cloud_disabled: true
+  temperature: 0
+  seed: 20260728
+  stream: false
+  thinking: false
+  concurrency: 1
+  top_k_pool: 5
+  fallback: q_top5
+  variants:
+    - visual
+    - visual_metadata

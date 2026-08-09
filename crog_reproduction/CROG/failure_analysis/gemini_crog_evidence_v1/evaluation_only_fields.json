@@ -1,0 +1,6 @@
+[
+  "program", "answer", "target", "target_idx", "box", "grasps", "objID",
+  "gt_mask", "gt_qua", "gt_sin", "gt_cos", "gt_wid", "candidate_iou",
+  "candidate_angle_error", "candidate_correctness", "first_valid_rank",
+  "J@1", "J@Any", "Recovered", "Harmful", "Oracle", "success/failure outcome"
+]

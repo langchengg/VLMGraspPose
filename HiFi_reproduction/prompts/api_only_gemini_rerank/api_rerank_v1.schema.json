@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "api_rerank_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision",
+    "selected_candidate_id",
+    "ordered_candidate_ids",
+    "evidence_reliability",
+    "switch_confidence",
+    "reason_codes",
+    "candidate_assessments",
+    "brief_rationale"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["api_rerank_v1"]},
+    "decision": {
+      "type": "string",
+      "enum": ["KEEP_ORIGINAL_TOP1", "SELECT_CANDIDATE", "INSUFFICIENT_EVIDENCE"]
+    },
+    "selected_candidate_id": {"type": "string", "pattern": "^[A-E]$"},
+    "ordered_candidate_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[A-E]$"}
+    },
+    "evidence_reliability": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+    "switch_confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+    "reason_codes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "TARGET_ALIGNMENT", "MASK_SUPPORT", "CONTACT_SUPPORT", "WIDTH_COMPATIBILITY",
+          "DEPTH_CONSISTENCY", "EDGE_RISK", "SWEEP_RISK", "ORIGINAL_SCORE_SUPPORT",
+          "AMBIGUOUS_EVIDENCE", "NO_CLEAR_ADVANTAGE"
+        ]
+      }
+    },
+    "candidate_assessments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id", "target_alignment", "contact_geometry", "width_compatibility",
+          "depth_consistency", "edge_or_sweep_safety", "overall_preference"
+        ],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^[A-E]$"},
+          "target_alignment": {"type": "integer", "minimum": 0, "maximum": 4},
+          "contact_geometry": {"type": "integer", "minimum": 0, "maximum": 4},
+          "width_compatibility": {"type": "integer", "minimum": 0, "maximum": 4},
+          "depth_consistency": {"type": "integer", "minimum": 0, "maximum": 4},
+          "edge_or_sweep_safety": {"type": "integer", "minimum": 0, "maximum": 4},
+          "overall_preference": {"type": "integer", "minimum": 0, "maximum": 4}
+        }
+      }
+    },
+    "brief_rationale": {"type": "string"}
+  }
+}

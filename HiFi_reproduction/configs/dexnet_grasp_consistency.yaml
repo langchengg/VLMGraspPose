@@ -19,7 +19,7 @@ coordinate_convention:
   ground_truth_center: midpoint of annotation corners 1 and 3
   ground_truth_width: corner 1 to corner 4, clipped to ground_truth_width_clip_px
   angle_symmetry: modulo pi
-  match: angle difference at or below threshold AND rectangle IoU at or above threshold
+  match: angle difference at or below threshold AND rectangle IoU strictly above threshold
 
 first_valid_rank_statistics:
   rank_indexing: one_based

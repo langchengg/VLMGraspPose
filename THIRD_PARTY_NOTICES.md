@@ -11,6 +11,8 @@ its upstream license and copyright notices.
 | CROG | https://github.com/HilbertXu/CROG | `1eeee85de1fe6bffdc66c9ed9a622028ea04578e` | MIT | Source-only snapshot with Mac/MPS, evaluation, and reranking changes. Data, weights, outputs, and credential-bearing upstream entrypoints are excluded. |
 | LAVT-RIS | https://github.com/yz93/LAVT-RIS | `1da0af9f21b637c0cae9ea1363d2dd9b40e19628` | GPL-3.0; embedded `refer/` notices retained | Isolated GPLv3 subtree with OCID-VLG adaptation and local portability changes. |
 | VGN | https://github.com/ethz-asl/vgn | `d7af0622433f52ae88ebe81533f12b46b33e951a` | BSD-3-Clause | Unmodified upstream source snapshot from the `corl2020` branch. |
+| GG-CNN | https://github.com/dougsm/ggcnn | `0c50aa7600e8a30d44c5c85cebd6e3394a81f30e` | BSD-3-Clause | Unmodified source snapshot; downloaded weights are excluded. |
+| GR-ConvNet | https://github.com/skumra/robotic-grasping | `bdd49367f8619be94123fb3187c2f8ad5100ef46` | BSD-3-Clause | Unmodified source snapshot; upstream `trained-models/` weights are excluded. |
 
 The upstream license files remain inside each included source tree. Local
 changes are visible in this repository history and are not claimed as upstream
@@ -27,6 +29,8 @@ Audited modification boundaries at import time:
   locally.
 - VGN had no local source modifications when its Git metadata was separated
   from the snapshot.
+- GG-CNN and GR-ConvNet had no local source modifications when their Git
+  metadata was separated from the snapshots.
 
 ## Clone-Time Dependencies
 

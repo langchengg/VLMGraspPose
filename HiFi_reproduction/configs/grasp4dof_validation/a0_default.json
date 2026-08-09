@@ -1,0 +1,16 @@
+{
+  "antipodal_alignment_min": 0.55,
+  "closing_radius_px": 2,
+  "component_policy": "all",
+  "contour_spacing_px": 4.0,
+  "max_axis_depth_jump_m": 0.05,
+  "min_axis_mask_support": 0.55,
+  "nms": {
+    "angle_distance_deg": 15.0,
+    "center_distance_px": 8.0,
+    "max_output": 100,
+    "rectangle_iou_threshold": 0.25,
+    "width_distance_px": 10.0
+  },
+  "opening_radius_px": 1
+}
