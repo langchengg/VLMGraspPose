@@ -937,19 +937,64 @@ def _feature_leakage_check(run_dir: Path) -> tuple[bool, list[str]]:
                     columns = list(map(str, columns_value))
                     for column in forbidden_model_columns(columns):
                         violations.append(f"{path}:{column}")
-                    schema = payload.get("model_feature_schema_sha256")
+                    schema = payload.get(
+                        "model_feature_schema_sha256",
+                        payload.get("feature_schema_sha256"),
+                    )
                     if schema != canonical_sha256(columns):
                         violations.append(f"{path}:feature schema hash mismatch")
             if payload.get("labels_physically_separate") is False:
                 violations.append(f"{path}:labels_physically_separate=false")
-            verify_artifact_records_recursive(
+            dependency_records = 0
+
+            def verify_dependency_records(node: Any, location: str) -> None:
+                nonlocal dependency_records
+                if isinstance(node, Mapping):
+                    if "path" in node or "sha256" in node:
+                        dependency_records += 1
+                        raw_path = Path(str(node.get("path", ""))).resolve()
+                        digest = node.get("sha256")
+                        if raw_path.suffix.lower() == ".py":
+                            if (
+                                not raw_path.is_file()
+                                or raw_path.is_symlink()
+                                or not isinstance(digest, str)
+                                or len(digest) != 64
+                                or any(
+                                    character not in "0123456789abcdef"
+                                    for character in digest.lower()
+                                )
+                            ):
+                                raise RuntimeError(
+                                    f"{location} has a malformed source-code record"
+                                )
+                            return
+                        verify_artifact_records_recursive(
+                            node,
+                            name=location,
+                            require_at_least_one=True,
+                        )
+                        return
+                    for key, value in node.items():
+                        verify_dependency_records(value, f"{location}.{key}")
+                elif isinstance(node, Sequence) and not isinstance(
+                    node, (str, bytes, bytearray)
+                ):
+                    for index, value in enumerate(node):
+                        verify_dependency_records(value, f"{location}[{index}]")
+
+            verify_dependency_records(
                 {
                     "sources": payload.get("sources"),
                     "artifacts": payload.get("artifacts"),
+                    "artifact": payload.get("artifact"),
                 },
-                name=f"consumed feature dependency {path}",
-                require_at_least_one=True,
+                f"consumed feature dependency {path}",
             )
+            if dependency_records == 0:
+                raise RuntimeError(
+                    f"consumed feature manifest has no dependencies: {path}"
+                )
 
             def collect_json_records(node: Any, location: str) -> None:
                 if isinstance(node, Mapping):
@@ -973,6 +1018,7 @@ def _feature_leakage_check(run_dir: Path) -> tuple[bool, list[str]]:
                 {
                     "sources": payload.get("sources"),
                     "artifacts": payload.get("artifacts"),
+                    "artifact": payload.get("artifact"),
                 },
                 str(path),
             )
@@ -1042,15 +1088,11 @@ def _native_score_source_check(bundle: FormalBundle) -> tuple[bool, list[str]]:
             order = ["sample_id", "native_rank", "candidate_id"]
             left = left.sort_values(order, kind="mergesort").reset_index(drop=True)
             right = right.sort_values(order, kind="mergesort").reset_index(drop=True)
-            if (
-                left[["sample_id", "candidate_id", "native_rank"]].isna().any().any()
-                or right[["sample_id", "candidate_id", "native_rank"]]
-                .isna()
-                .any()
-                .any()
-                or not left[["sample_id", "candidate_id", "native_rank"]].equals(
-                    right[["sample_id", "candidate_id", "native_rank"]]
-                )
+            identity_equal = left[["sample_id", "candidate_id"]].equals(
+                right[["sample_id", "candidate_id"]]
+            )
+            if not identity_equal or not _exact_numeric_values_equal(
+                left["native_rank"], right["native_rank"]
             ):
                 errors.append(f"{route}: audited native candidate order differs")
                 continue
@@ -1065,6 +1107,22 @@ def _native_score_source_check(bundle: FormalBundle) -> tuple[bool, list[str]]:
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         errors.append(str(error))
     return not errors, errors
+
+
+def _exact_numeric_values_equal(left: pd.Series, right: pd.Series) -> bool:
+    """Compare numeric values exactly without treating storage dtype as semantics."""
+
+    left_numeric = pd.to_numeric(left, errors="coerce")
+    right_numeric = pd.to_numeric(right, errors="coerce")
+    return bool(
+        len(left_numeric) == len(right_numeric)
+        and left_numeric.notna().all()
+        and right_numeric.notna().all()
+        and np.array_equal(
+            left_numeric.to_numpy(dtype=np.float64),
+            right_numeric.to_numpy(dtype=np.float64),
+        )
+    )
 
 
 def shared_hifi_mask_check(run_dir: Path) -> tuple[bool, list[str]]:
@@ -1380,6 +1438,12 @@ def _access_log_check(run_dir: Path) -> tuple[bool, list[str]]:
                 and str(record.get(key, "")).lower() != str(expected).lower()
             ):
                 return False
+        if spec["event"] == "prelock_label_free_test_calibration":
+            return (
+                record.get("candidate_labels_loaded") is False
+                and record.get("allowed")
+                == ["candidate_geometry", "native_score"]
+            )
         return (
             Path(str(record.get("output_manifest", ""))).resolve()
             == Path(str(spec["path"]))
@@ -1394,11 +1458,12 @@ def _access_log_check(run_dir: Path) -> tuple[bool, list[str]]:
             errors.append(
                 f"missing-bound-preclaim-stage:{spec.get('stage') or spec['event']}"
             )
+    expected_preclaim_events = {str(spec["event"]) for spec in expected_specs}
     for record in bound_preclaim:
         event = str(record.get("event", ""))
         if event in allowed_unbound_preclaim:
             continue
-        if not any(event_matches(record, spec) for spec in expected_specs):
+        if event not in expected_preclaim_events:
             errors.append(f"unexpected-or-unbound-preclaim-event:{event}")
         if (
             record.get("candidate_labels_opened_as_table") is True
@@ -1416,12 +1481,18 @@ def _access_log_check(run_dir: Path) -> tuple[bool, list[str]]:
         "formal_test_execution_finalized",
         "postclaim_independent_candidate_labels_read",
         "postclaim_independent_bridge_ground_truth_read",
-        "postclaim_postformal_candidate_labels_read",
     }
     for event in sorted(required_once):
         indexes = [index for index, value in enumerate(events) if value == event]
         if len(indexes) != 1:
             errors.append(f"event-count:{event}:{len(indexes)}")
+    postformal_indexes = [
+        index
+        for index, value in enumerate(events)
+        if value == "postclaim_postformal_candidate_labels_read"
+    ]
+    if not postformal_indexes:
+        errors.append("event-count:postclaim_postformal_candidate_labels_read:0")
     order = [
         "formal_test_exclusive_claim_created",
         "candidate_test_label_access_authorized",
@@ -1430,12 +1501,13 @@ def _access_log_check(run_dir: Path) -> tuple[bool, list[str]]:
         "formal_test_execution_finalized",
         "postclaim_independent_candidate_labels_read",
         "postclaim_independent_bridge_ground_truth_read",
-        "postclaim_postformal_candidate_labels_read",
     ]
     if all(events.count(event) == 1 for event in order):
         positions = [events.index(event) for event in order]
         if positions != sorted(positions):
             errors.append("formal/postclaim access event order is invalid")
+        if postformal_indexes and min(postformal_indexes) < positions[-1]:
+            errors.append("postformal label reads precede independent recompute")
 
     try:
         lock = verify_formal_test_lock(run_dir)
@@ -1456,8 +1528,7 @@ def _access_log_check(run_dir: Path) -> tuple[bool, list[str]]:
             "postclaim_postformal_candidate_labels_read",
         ):
             matches = [record for record in records if record.get("event") == event]
-            if len(matches) == 1:
-                record = matches[0]
+            for record in matches:
                 raw_path = record.get("path", record.get("source_path"))
                 raw_sha = record.get("sha256", record.get("source_sha256"))
                 raw_rows = record.get("row_count", record.get("rows"))
@@ -1676,8 +1747,8 @@ def core_integrity_checks(
             "candidate_geometry_sha256_ranking"
         ].astype(str).equals(geometry["candidate_geometry_sha256_pool"].astype(str)):
             candidate_errors.append(f"{route}:geometry binding differs")
-        if not pd.to_numeric(geometry["frozen_native_rank"], errors="coerce").equals(
-            pd.to_numeric(geometry["native_rank"], errors="coerce")
+        if not _exact_numeric_values_equal(
+            geometry["frozen_native_rank"], geometry["native_rank"]
         ):
             candidate_errors.append(f"{route}:frozen native ranks differ")
         native_j5 = bundle.metrics[native_name].get("j_at_5")
@@ -1868,7 +1939,29 @@ def markdown_table(frame: pd.DataFrame, columns: Sequence[str]) -> str:
         display[column] = display[column].map(
             lambda value: "NA" if pd.isna(value) else f"{float(value):.6f}"
         )
-    return display.to_markdown(index=False)
+
+    def cell(value: Any) -> str:
+        if pd.isna(value):
+            return "NA"
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace("|", "\\|")
+            .replace("\r\n", "<br>")
+            .replace("\r", "<br>")
+            .replace("\n", "<br>")
+        )
+
+    headers = [cell(column) for column in display.columns]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    lines.extend(
+        "| " + " | ".join(cell(value) for value in row) + " |"
+        for row in display.itertuples(index=False, name=None)
+    )
+    return "\n".join(lines)
 
 
 def latex_escape(value: Any) -> str:

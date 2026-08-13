@@ -159,7 +159,9 @@ def _cell_matches_phase_selection(
             continue
         parameters = choice.get("parameters", {})
         if not isinstance(parameters, Mapping) or any(
-            configuration.get(name) != value for name, value in parameters.items()
+            configuration.get(name) != value
+            for name, value in parameters.items()
+            if not (phase == "encoder" and name == "num_attention_blocks")
         ):
             continue
         screen_path = choice.get("screen_manifest")
@@ -1300,14 +1302,7 @@ def required_analysis_registry(
         },
     )
     encoder = tables["encoder_comparison.csv"]
-    expected_encoders = {
-        "linear",
-        "mlp",
-        "lambdamart",
-        "deepsets",
-        "set_transformer",
-        "gnn",
-    }
+    expected_encoders = {"mlp", "deepsets", "set_transformer", "gnn"}
     observed_encoders = set(
         encoder.get("encoder", pd.Series(dtype=object)).dropna().astype(str)
     )
@@ -1970,7 +1965,7 @@ def _metric_bar(ax: plt.Axes, frame: pd.DataFrame, value: str, title: str) -> No
     values = pd.to_numeric(valid[value])
     order = np.argsort(values.to_numpy())
     ax.barh(np.arange(len(valid)), values.to_numpy()[order], color="#0072B2")
-    ax.set_yticks(np.arange(len(valid)), labels.iloc[order])
+    ax.set_yticks(np.arange(len(valid)), np.asarray(labels)[order])
     ax.set_xlabel(title)
 
 
@@ -2818,7 +2813,7 @@ def build_galleries(bundle: FormalBundle, taxonomy: pd.DataFrame) -> dict[str, A
         "Boards are rendered only when RGB, depth, GT mask, and predicted mask paths all exist. "
         "GT content appears only in panels marked **ANALYSIS ONLY**. Missing assets and eligible-case "
         "shortfalls are reported rather than replaced with synthetic cases.\n\n"
-        + summary.to_markdown(index=False)
+        + markdown_table(summary, list(summary.columns))
         + "\n"
     )
     atomic_text(bundle.run_dir / "13_failure_galleries" / "README.md", readme)

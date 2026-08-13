@@ -73,6 +73,27 @@ def test_label_join_restores_or_verifies_frozen_native_rank() -> None:
         )
 
 
+def test_label_join_accepts_equal_native_rank_across_integer_dtypes() -> None:
+    features = pd.DataFrame(
+        {
+            "sample_id": ["s"],
+            "candidate_id": ["c"],
+            "native_rank": pd.Series([1], dtype="int32"),
+        }
+    )
+    labels = pd.DataFrame(
+        {
+            "sample_id": ["s"],
+            "candidate_id": ["c"],
+            "native_rank": pd.Series([1], dtype="int64"),
+            "candidate_success": [1],
+            "jacquard_margin": [0.2],
+        }
+    )
+    joined = join_development_features_and_labels(features, labels)
+    assert joined["native_rank"].tolist() == [1]
+
+
 def test_preprocessor_rejects_label_as_feature():
     frame = pd.DataFrame({"candidate_success": [0, 1]})
     with pytest.raises(ValueError, match="forbidden"):

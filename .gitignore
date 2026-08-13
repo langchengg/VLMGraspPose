@@ -21,6 +21,7 @@
 /SETUP_AUDIT.md
 /ppt_edit_audit.json
 /speaker_notes.md
+/RERANKING_METHODS_EXPLANATION*
 /Lang_Plan_4DoF_Backend_Results_slide_preview/
 /MSc_Dissertation_Template_the_University_of_Manchester_EEE__2025_onwards/
 /reports/
@@ -61,6 +62,7 @@
 /HiFi_reproduction/tools/grasp4dof/audit_third_party.py
 /HiFi_reproduction/tools/selective_sam3_vg/audit_baseline.py
 /HiFi_reproduction/tools/selective_sam3_vg/diagnose_baseline.py
+/tools/unified_reranking/run_case_visuals_v2.py
 /LAVT_reproduction/configs/paths.local.yaml
 /LAVT_reproduction/docs/LAVT_FAILURE_ANALYSIS.md
 /LAVT_reproduction/docs/LAVT_OCID_VLG_RESULTS.md

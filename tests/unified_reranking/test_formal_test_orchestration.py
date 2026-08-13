@@ -240,14 +240,20 @@ def _build_synthetic_run(
                 payload = semantic_router
             _atomic_json_for_test(path, payload)
 
-    count = 8
-    samples = pd.DataFrame(
-        {
-            "sample_id": [f"sample-{index}" for index in range(count)],
-            "scene_id": [f"scene-{index}" for index in range(count)],
-            "frame_id": [f"frame-{index // 2}" for index in range(count)],
-        }
-    )
+    if positive_union:
+        samples = pd.read_parquet(
+            evidence_run / "01_manifests/paired_test.parquet"
+        )[["sample_id", "scene_id", "frame_id"]].copy()
+    else:
+        count = 8
+        samples = pd.DataFrame(
+            {
+                "sample_id": [f"sample-{index}" for index in range(count)],
+                "scene_id": [f"scene-{index}" for index in range(count)],
+                "frame_id": [f"frame-{index // 2}" for index in range(count)],
+            }
+        )
+    count = len(samples)
     sample_path = lock_dir / "synthetic_paired_test.parquet"
     samples.to_parquet(sample_path, index=False)
     fold_path = lock_dir / "synthetic_fold_assignments.parquet"
@@ -304,11 +310,19 @@ def evaluate_candidate(candidate, ground_truth):
     systems: list[dict[str, object]] = []
     decisions_dir = lock_dir / "formal_label_free_decisions"
     decisions_dir.mkdir()
-    route_success = {
-        "crog": np.asarray([0, 1, 0, 1, 0, 1, 0, 1], dtype=bool),
-        "g1": np.asarray([1, 1, 0, 0, 1, 1, 0, 0], dtype=bool),
-        "c1": np.asarray([0, 0, 1, 1, 0, 0, 1, 1], dtype=bool),
-    }
+    route_success = (
+        {
+            "crog": np.asarray([0, 1, 0], dtype=bool),
+            "g1": np.asarray([1, 0, 1], dtype=bool),
+            "c1": np.asarray([0, 1, 1], dtype=bool),
+        }
+        if positive_union
+        else {
+            "crog": np.asarray([0, 1, 0, 1, 0, 1, 0, 1], dtype=bool),
+            "g1": np.asarray([1, 1, 0, 0, 1, 1, 0, 0], dtype=bool),
+            "c1": np.asarray([0, 0, 1, 1, 0, 0, 1, 1], dtype=bool),
+        }
+    )
     pool_records: dict[str, dict[str, str]] = {}
     for route in ROUTES:
         for sample_index, sample_id in enumerate(samples["sample_id"]):
@@ -329,44 +343,38 @@ def evaluate_candidate(candidate, ground_truth):
                     },
                 ]
             )
-        native_ranking = pd.DataFrame(
-            [
-                {
-                    "sample_id": sample_id,
-                    "candidate_id": candidate,
-                    "rank": rank,
-                    "candidate_geometry_sha256": f"geometry-{route}-{candidate}",
-                    "frozen_native_rank": rank,
-                }
-                for sample_id in samples["sample_id"]
-                for candidate, rank in (("a", 1), ("b", 2))
-            ]
-        )
-        ungated_ranking = pd.DataFrame(
-            [
-                {
-                    "sample_id": sample_id,
-                    "candidate_id": candidate,
-                    "rank": rank,
-                    "candidate_geometry_sha256": f"geometry-{route}-{candidate}",
-                    "frozen_native_rank": frozen_rank,
-                }
-                for sample_id in samples["sample_id"]
-                for candidate, rank, frozen_rank in (("b", 1, 2), ("a", 2, 1))
-            ]
-        )
-        candidate_pool = pd.DataFrame(
-            [
-                {
-                    "sample_id": sample_id,
-                    "candidate_id": candidate,
-                    "native_rank": rank,
-                    "candidate_geometry_sha256": f"geometry-{route}-{candidate}",
-                }
-                for sample_id in samples["sample_id"]
-                for candidate, rank in (("a", 1), ("b", 2))
-            ]
-        )
+        if positive_union:
+            candidate_pool = pd.read_parquet(
+                evidence_run / f"02_candidates/{route}_test_top5.parquet"
+            )[
+                [
+                    "sample_id",
+                    "candidate_id",
+                    "native_rank",
+                    "candidate_geometry_sha256",
+                ]
+            ].copy()
+        else:
+            candidate_pool = pd.DataFrame(
+                [
+                    {
+                        "sample_id": sample_id,
+                        "candidate_id": candidate,
+                        "native_rank": rank,
+                        "candidate_geometry_sha256": f"geometry-{route}-{candidate}",
+                    }
+                    for sample_id in samples["sample_id"]
+                    for candidate, rank in (("a", 1), ("b", 2))
+                ]
+            )
+        native_ranking = candidate_pool.rename(
+            columns={"native_rank": "rank"}
+        ).copy()
+        native_ranking["frozen_native_rank"] = native_ranking["rank"]
+        ungated_ranking = candidate_pool.copy()
+        ungated_ranking["frozen_native_rank"] = ungated_ranking["native_rank"]
+        ungated_ranking["rank"] = 3 - ungated_ranking["native_rank"]
+        ungated_ranking = ungated_ranking.drop(columns=["native_rank"])
         pool_path = lock_dir / f"{route}_all_candidates.parquet"
         candidate_pool.to_parquet(pool_path, index=False)
         pool_records[route] = {"path": str(pool_path), "sha256": sha256_file(pool_path)}
@@ -426,7 +434,9 @@ def evaluate_candidate(candidate, ground_truth):
     router = pd.DataFrame(
         {
             "sample_id": samples["sample_id"],
-            "selected_route": ["g1", "c1", "crog", "g1", "c1", "crog", "g1", "c1"],
+            "selected_route": [
+                ("g1", "c1", "crog")[index % 3] for index in range(count)
+            ],
             "selected_candidate_id": "b",
         }
     )
@@ -754,7 +764,6 @@ def _add_positive_union_system(
 
     lock_dir = run_dir / "08_lock"
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    samples = pd.read_parquet(plan["sample_manifest"])
     if plan["union_contract"]["decision"] == "UNION_HEADROOM_AVAILABLE":
         positive_run, positive_plan = run_dir, plan
     else:
@@ -766,26 +775,61 @@ def _add_positive_union_system(
     positive_contract = positive_plan["union_contract"]
     selection_record = positive_contract["selection_manifest"]
     application_record = positive_contract["label_free_test_application"]
-    route_order = ("g1", "c1", "crog")
-    candidate_order = ("b", "a")
-    rows: list[dict[str, object]] = []
-    for sample_id in samples["sample_id"].astype(str):
-        rank = 0
-        for route in route_order:
-            for candidate_id in candidate_order:
-                rank += 1
-                rows.append(
-                    {
-                        "sample_id": sample_id,
-                        "candidate_id": f"{route.upper()}:{candidate_id}",
-                        "rank": rank,
-                        "source_route": route.upper(),
-                        "source_candidate_id": candidate_id,
-                        "candidate_geometry_sha256": f"geometry-{route}-{candidate_id}",
-                        "frozen_native_rank": 1 if candidate_id == "a" else 2,
-                    }
-                )
-    ranking = pd.DataFrame(rows)
+    application = json.loads(
+        Path(application_record["path"]).read_text(encoding="utf-8")
+    )
+    ranking = pd.read_parquet(application["artifacts"]["predictions"]["path"])
+    ranking["source_route"] = ranking["source_route"].astype(str).str.lower()
+    ranking = ranking.sort_values(
+        ["sample_id", "ensemble_score", "native_rank", "candidate_id"],
+        ascending=[True, False, True, True],
+        kind="mergesort",
+    ).copy()
+    ranking["rank"] = ranking.groupby("sample_id", sort=False).cumcount() + 1
+    frozen_parts: list[pd.DataFrame] = []
+    for route in ROUTES:
+        frozen = pd.read_parquet(
+            positive_run / f"02_candidates/{route}_test_top5.parquet"
+        )[
+            [
+                "sample_id",
+                "candidate_id",
+                "native_rank",
+                "candidate_geometry_sha256",
+            ]
+        ].copy()
+        frozen["source_route"] = route
+        frozen["source_candidate_id"] = frozen["candidate_id"].astype(str)
+        frozen["candidate_id"] = (
+            route.upper() + ":" + frozen["source_candidate_id"]
+        )
+        frozen = frozen.rename(
+            columns={
+                "native_rank": "frozen_native_rank",
+                "candidate_geometry_sha256": "frozen_geometry_sha256",
+            }
+        )
+        frozen_parts.append(frozen)
+    frozen_union = pd.concat(frozen_parts, ignore_index=True)
+    ranking = ranking.merge(
+        frozen_union,
+        on=["sample_id", "candidate_id", "source_route", "source_candidate_id"],
+        validate="one_to_one",
+    )
+    assert ranking["candidate_geometry_sha256"].equals(
+        ranking["frozen_geometry_sha256"]
+    )
+    ranking = ranking[
+        [
+            "sample_id",
+            "candidate_id",
+            "rank",
+            "source_route",
+            "source_candidate_id",
+            "candidate_geometry_sha256",
+            "frozen_native_rank",
+        ]
+    ]
     ranking_path = lock_dir / "union_top15_ranking.parquet"
     ranking.to_parquet(ranking_path, index=False)
     decisions = ranking.loc[ranking["rank"].eq(1)].rename(
@@ -878,10 +922,44 @@ def test_union_top15_route_qualified_labels_and_alias_artifacts(tmp_path: Path) 
     }
     decisions = pd.read_parquet(run_dir / "09_formal_test/per_sample_decisions.parquet")
     selected = decisions.loc[decisions["system_name"].eq("top15_union_primary")]
-    assert selected["selected_candidate_id"].eq("G1:b").all()
-    assert selected["source_route"].eq("g1").all()
-    assert selected["source_candidate_id"].eq("b").all()
-    assert selected["candidate_geometry_sha256"].eq("geometry-g1-b").all()
+    assert selected["selected_candidate_id"].eq("CROG:a").all()
+    assert selected["source_route"].eq("crog").all()
+    assert selected["source_candidate_id"].eq("a").all()
+    selected_geometry = selected["sample_id"].map(
+        union.loc[union["candidate_id"].eq("CROG:a")].set_index("sample_id")[
+            "candidate_geometry_sha256"
+        ]
+    )
+    assert selected["candidate_geometry_sha256"].equals(selected_geometry)
+
+
+def test_union_lock_rejects_non_top1_application_ranking_swap(
+    tmp_path: Path,
+) -> None:
+    run_dir, plan_path, _labels = _build_synthetic_run(
+        tmp_path, positive_union=True
+    )
+    _add_positive_union_system(run_dir, plan_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    union_system = next(
+        system for system in plan["systems"] if system["kind"] == "union"
+    )
+    ranking_path = Path(union_system["ranking_path"])
+    ranking = pd.read_parquet(ranking_path)
+    sample_id = str(ranking.loc[ranking["rank"].eq(2), "sample_id"].iloc[0])
+    second = ranking.index[
+        ranking["sample_id"].astype(str).eq(sample_id) & ranking["rank"].eq(2)
+    ][0]
+    third = ranking.index[
+        ranking["sample_id"].astype(str).eq(sample_id) & ranking["rank"].eq(3)
+    ][0]
+    ranking.loc[[second, third], "rank"] = [3, 2]
+    ranking.to_parquet(ranking_path, index=False)
+    with pytest.raises(
+        ValueError,
+        match=r"union ranking differs from hash-verified Test application predictions",
+    ):
+        create_unified_formal_lock(run_dir=run_dir, evaluation_plan_path=plan_path)
 
 
 def test_no_union_headroom_rejects_a_formal_union_system(tmp_path: Path) -> None:

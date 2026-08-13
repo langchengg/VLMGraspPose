@@ -655,6 +655,88 @@ def _read_bound_union_ranking(
         observed = sorted(group["rank"].tolist())
         if observed != list(range(1, int(counts[str(sample_id)]) + 1)):
             raise ValueError(f"{system['name']} union ranks are not contiguous")
+    application_record = system.get("application_manifest")
+    if (
+        not isinstance(application_record, Mapping)
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(application_record.get("sha256", ""))
+        )
+        is None
+    ):
+        raise ValueError(
+            f"{system['name']} union ranking lacks a hash-bound Test application"
+        )
+    application_path = _regular_file(
+        application_record.get("path", ""),
+        f"{system['name']} union Test application",
+    )
+    if sha256_file(application_path) != application_record["sha256"]:
+        raise ValueError(f"{system['name']} union Test application hash mismatch")
+    application = _read_json(application_path)
+    prediction_record = application.get("artifacts", {}).get("predictions")
+    if (
+        not isinstance(prediction_record, Mapping)
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(prediction_record.get("sha256", ""))
+        )
+        is None
+    ):
+        raise ValueError(
+            f"{system['name']} union Test application lacks hash-bound predictions"
+        )
+    prediction_path = _regular_file(
+        prediction_record.get("path", ""),
+        f"{system['name']} union Test predictions",
+    )
+    if sha256_file(prediction_path) != prediction_record["sha256"]:
+        raise ValueError(f"{system['name']} union Test prediction hash mismatch")
+    predictions = pd.read_parquet(prediction_path)
+    prediction_columns = {
+        "sample_id",
+        "candidate_id",
+        "native_rank",
+        "ensemble_score",
+    }
+    prediction_missing = sorted(prediction_columns.difference(predictions.columns))
+    if prediction_missing:
+        raise ValueError(
+            f"{system['name']} union Test predictions miss ranking columns: "
+            f"{prediction_missing}"
+        )
+    predictions = predictions[list(prediction_columns)].copy()
+    predictions["sample_id"] = predictions["sample_id"].astype(str)
+    predictions["candidate_id"] = predictions["candidate_id"].astype(str)
+    scores = pd.to_numeric(predictions["ensemble_score"], errors="coerce")
+    native_ranks = pd.to_numeric(predictions["native_rank"], errors="coerce")
+    if (
+        not np.isfinite(scores.to_numpy(float)).all()
+        or native_ranks.isna().any()
+        or not np.equal(native_ranks, np.floor(native_ranks)).all()
+        or predictions.duplicated(["sample_id", "candidate_id"]).any()
+    ):
+        raise ValueError(f"{system['name']} union Test prediction ranking is invalid")
+    predictions["ensemble_score"] = scores
+    predictions["native_rank"] = native_ranks.astype(int)
+    expected_ranking = predictions.sort_values(
+        ["sample_id", "ensemble_score", "native_rank", "candidate_id"],
+        ascending=[True, False, True, True],
+        kind="mergesort",
+    ).copy()
+    expected_ranking["rank"] = (
+        expected_ranking.groupby("sample_id", sort=False).cumcount() + 1
+    )
+    order_columns = ["sample_id", "candidate_id", "rank"]
+    observed_order = ranking[order_columns].sort_values(
+        ["sample_id", "rank"], kind="mergesort"
+    ).reset_index(drop=True)
+    expected_order = expected_ranking[order_columns].sort_values(
+        ["sample_id", "rank"], kind="mergesort"
+    ).reset_index(drop=True)
+    if not observed_order.equals(expected_order):
+        raise ValueError(
+            f"{system['name']} union ranking differs from hash-verified Test "
+            "application predictions"
+        )
     return ranking
 
 

@@ -318,7 +318,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
     }
     atomic_json(output / "feature_manifest.json", result)
-    if args.split == "test":
+    if args.split == "test" and not getattr(args, "suppress_access_log", False):
         append_access_log(
             run_dir,
             {

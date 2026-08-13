@@ -492,7 +492,11 @@ def test_union_formal_plan_has_equal_fixed_budget_and_cells_are_resumable(tmp_pa
     assert planned["execution_authorized"] is False
 
 
-def test_locked_union_test_application_uses_three_models_without_labels(tmp_path: Path) -> None:
+def test_locked_union_test_application_uses_three_models_without_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tools.unified_reranking.apply_locked_union_ranker as application_module
+
     run = _write_union_feature_sources(tmp_path)
     test_manifest = prepare_union_split(run, "test")
     columns = tuple(test_manifest["model_feature_columns"])
@@ -520,6 +524,15 @@ def test_locked_union_test_application_uses_three_models_without_labels(tmp_path
         }
         cell_path.write_text(json.dumps(cell), encoding="utf-8")
         cell_records.append({"path": str(cell_path), "sha256": sha256_file(cell_path)})
+    loaded_models: list[Path] = []
+
+    def safe_scores(path: Path, features: np.ndarray) -> np.ndarray:
+        loaded_models.append(path)
+        return _FakeUnionModel().predict(features)
+
+    monkeypatch.setattr(
+        application_module, "_native_lightgbm_scores", safe_scores
+    )
     validation_ensemble = {
         "status": "COMPLETE",
         "identity": {"encoder": "lambdamart", "split": "validation"},
@@ -555,3 +568,4 @@ def test_locked_union_test_application_uses_three_models_without_labels(tmp_path
     assert decisions["selected_candidate_id"].str.contains(":").all()
     assert result["candidate_test_labels_read"] is False
     assert not any("correct" in column for column in decisions.columns)
+    assert loaded_models == [tmp_path / f"union-{seed}.pkl" for seed in (42, 123, 2026)]

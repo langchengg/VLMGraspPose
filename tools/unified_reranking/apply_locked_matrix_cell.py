@@ -1,5 +1,7 @@
 """Apply one Validation-trained matrix cell to label-free frozen Test features."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -138,26 +140,32 @@ class _NativeLightGBMRanker:
 
 
 def _load_native_lightgbm_ranker(model_path: Path) -> _NativeLightGBMRanker:
-    """Restore the Booster string embedded in a verified legacy pickle safely.
+    """Restore a native text Booster or parse a verified legacy pickle safely.
 
     LightGBM's documented portable representation is its native model string.
     Parsing pickle opcodes does not execute constructors, while ``pickle.load``
     invokes ``Booster.__setstate__`` and can crash the process in some native
-    library builds.  The training artifact contains exactly one such string.
+    library builds.  New callers provide native ``.txt`` models; the legacy
+    branch accepts an artifact containing exactly one native model string.
     """
 
-    candidates = [
-        argument
-        for _opcode, argument, _position in pickletools.genops(model_path.read_bytes())
-        if isinstance(argument, str) and argument.startswith("tree\nversion=")
-    ]
-    if len(candidates) != 1:
-        raise RuntimeError(
-            "locked LambdaMART pickle must contain exactly one native model string"
-        )
     if _lightgbm is None:
         raise ModuleNotFoundError("LightGBM is required for LambdaMART Test inference")
-    booster = _lightgbm.Booster(model_str=candidates[0])
+    if model_path.suffix == ".txt":
+        booster = _lightgbm.Booster(model_file=str(model_path))
+    else:
+        candidates = [
+            argument
+            for _opcode, argument, _position in pickletools.genops(
+                model_path.read_bytes()
+            )
+            if isinstance(argument, str) and argument.startswith("tree\nversion=")
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                "locked LambdaMART pickle must contain exactly one native model string"
+            )
+        booster = _lightgbm.Booster(model_str=candidates[0])
     if int(booster.num_feature()) <= 0 or int(booster.num_trees()) <= 0:
         raise RuntimeError("locked LambdaMART native model is empty")
     return _NativeLightGBMRanker(booster)

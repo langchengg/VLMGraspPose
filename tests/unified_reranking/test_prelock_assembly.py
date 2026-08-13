@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+import subprocess
+import sys
 from argparse import Namespace
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +20,6 @@ from unified_reranking.ledger import initialize_ledger, ledger_stage, render_led
 from unified_reranking.metrics import (
     compare_selections,
     evaluate_order_only,
-    select_order_only,
 )
 from unified_reranking.postformal_reporting import hash_inventory
 from unified_reranking.candidates import regenerate_candidate_contract_hashes
@@ -36,7 +38,11 @@ from unified_reranking.telemetry import TELEMETRY_FIELDS
 from unified_reranking.telemetry import resolved_track_extraction_latency
 from unified_reranking.gate import SAFE_GATE_FEATURE_COLUMNS
 from unified_reranking.cross_route_inputs import router_feature_columns
-from tools.unified_reranking import select_primary_rankers, select_validation_screen
+from tools.unified_reranking import (
+    select_primary_rankers,
+    select_validation_screen,
+    train_union_rankers,
+)
 from tools.unified_reranking import train_matrix
 from tools.unified_reranking.run_validation_feature_ablations import (
     run as run_validation_feature_ablations,
@@ -53,6 +59,12 @@ from tools.unified_reranking.apply_locked_test_gates import (
 )
 from tools.unified_reranking.apply_locked_route_router import (
     run as run_router_test_application,
+)
+from tools.unified_reranking.apply_locked_union_ranker import (
+    run as run_union_test_application,
+)
+from tools.unified_reranking.prepare_union_features import (
+    run_split as run_union_feature_split,
 )
 
 
@@ -71,6 +83,47 @@ def _json(path: Path, value: object) -> None:
 
 def _record(path: Path) -> dict[str, str]:
     return {"path": str(path.resolve()), "sha256": sha256_file(path)}
+
+
+def _write_synthetic_lightgbm_model(path: Path, feature_count: int) -> None:
+    script = """
+import pickle
+import sys
+from pathlib import Path
+
+import numpy as np
+
+from tools.unified_reranking.apply_locked_matrix_cell import _load_native_lightgbm_ranker
+from unified_reranking.models import LightGBMLambdaRank
+
+feature_count = int(sys.argv[2])
+model = LightGBMLambdaRank(
+    seed=42, n_estimators=1, min_child_samples=1, num_leaves=2
+).fit(
+    np.asarray(
+        [
+            np.zeros(feature_count),
+            np.ones(feature_count),
+            np.full(feature_count, 0.25),
+            np.full(feature_count, 0.75),
+        ],
+        dtype=float,
+    ),
+    [0, 1, 0, 1],
+    ["q0", "q0", "q1", "q1"],
+)
+with Path(sys.argv[1]).open("wb") as stream:
+    pickle.dump(model, stream, protocol=pickle.HIGHEST_PROTOCOL)
+_load_native_lightgbm_ranker(Path(sys.argv[1]))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path), str(feature_count)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
 
 
 def _telemetry(phase: str = "synthetic") -> dict[str, object]:
@@ -196,6 +249,7 @@ def _ensure_matrix_feature_manifests(run: Path) -> None:
                     columns=["sample_id", "candidate_id", "native_rank"],
                 )
                 candidates["native_score_raw"] = 1.0 / candidates["native_rank"]
+                candidates["base_logit"] = -candidates["native_rank"].astype(float)
                 candidates["p_center"] = 0.8
                 candidates["overall_feature_reliability"] = 1.0
                 candidates["calibrated_native_probability"] = 0.5
@@ -621,6 +675,9 @@ def _build_feature_extraction_benchmark(run: Path) -> None:
         component_candidates["native_score_raw"] = (
             1.0 / component_candidates["native_rank"]
         )
+        component_candidates["base_logit"] = -component_candidates[
+            "native_rank"
+        ].astype(float)
         component_candidates["p_center"] = 0.8
         component_candidates["overall_feature_reliability"] = 1.0
         component_candidates["calibrated_native_probability"] = 0.5
@@ -921,7 +978,11 @@ def _build_run(
 
     selections: dict[str, object] = {}
     for route in ROUTES:
-        candidate_samples = ["s0", "s1", "s2"] if route == "crog" else ["s0", "s1"]
+        candidate_samples = (
+            ["s0", "s1", "s2"]
+            if route == "crog" or positive_union
+            else ["s0", "s1"]
+        )
         rows = []
         for sample_id in candidate_samples:
             for rank, candidate in ((1, "a"), (2, "b")):
@@ -1035,11 +1096,6 @@ def _build_run(
                         & development_labels["candidate_id"].eq("b"),
                         "candidate_success",
                     ] = True
-                    development_labels.loc[
-                        development_labels["sample_id"].eq("s1")
-                        & development_labels["candidate_id"].eq("a"),
-                        "candidate_success",
-                    ] = True
                 elif route == "g1":
                     development_labels.loc[
                         development_labels["sample_id"].eq("s1")
@@ -1073,6 +1129,9 @@ def _build_run(
                     & development_labels["candidate_id"].eq("a"),
                     "candidate_success",
                 ] = True
+            development_labels["jacquard_margin"] = development_labels[
+                "candidate_success"
+            ].astype(float)
             development_labels.to_parquet(
                 run
                 / f"03_features/candidate_labels_{route}_{development_split}_top5.parquet",
@@ -1095,6 +1154,9 @@ def _build_run(
             ["sample_id", "candidate_id", "native_rank"]
         ].copy()
         candidate_features["native_score_raw"] = 1.0 / candidate_features["native_rank"]
+        candidate_features["base_logit"] = -candidate_features["native_rank"].astype(
+            float
+        )
         candidate_features["p_center"] = 0.8
         candidate_features["overall_feature_reliability"] = 1.0
         candidate_features["calibrated_native_probability"] = 0.5
@@ -1265,7 +1327,7 @@ def _build_run(
         prediction_path = ranker_dir / "per_candidate_scores.parquet"
         decision_path = ranker_dir / "per_sample_decisions.parquet"
         predictions.to_parquet(prediction_path, index=False)
-        candidate_exists = [True, True, route == "crog"]
+        candidate_exists = [True, True, route == "crog" or positive_union]
         selected_ids = ["b" if exists else "" for exists in candidate_exists]
         native_ids = ["a" if exists else "" for exists in candidate_exists]
         geometry_by_key = candidates.set_index(["sample_id", "candidate_id"])[
@@ -1283,11 +1345,15 @@ def _build_run(
             {
                 "sample_id": samples["sample_id"],
                 "selected_candidate_id": selected_ids,
-                "candidate_count": [2, 2, 2 if route == "crog" else 0],
+                "candidate_count": [2 if exists else 0 for exists in candidate_exists],
                 "native_candidate_id": native_ids,
                 "selected_geometry_sha256": selected_geometry,
-                "ensemble_score_margin": [0.8, 0.8, 0.8 if route == "crog" else 0.0],
-                "seed_challenger_votes": [3, 3, 3 if route == "crog" else 0],
+                "ensemble_score_margin": [
+                    0.8 if exists else 0.0 for exists in candidate_exists
+                ],
+                "seed_challenger_votes": [
+                    3 if exists else 0 for exists in candidate_exists
+                ],
                 "challenger_exists": candidate_exists,
             }
         ).to_parquet(decision_path, index=False)
@@ -1311,7 +1377,9 @@ def _build_run(
         pd.DataFrame(
             {
                 "sample_id": samples["sample_id"],
-                "selected_candidate_id": ["a", "a", "a" if route == "crog" else ""],
+                "selected_candidate_id": [
+                    "a" if exists else "" for exists in candidate_exists
+                ],
             }
         ).to_parquet(gate_decisions, index=False)
         _json(
@@ -2078,7 +2146,10 @@ def test_prelock_requires_encoder_and_ablation_evidence(tmp_path: Path) -> None:
 def test_prelock_requires_feature_extraction_benchmark(tmp_path: Path) -> None:
     run, labels, evaluator, code = _build_run(tmp_path)
     (run / "07_validation/telemetry/feature_extraction_benchmark.json").unlink()
-    with pytest.raises(ValueError, match="feature extraction benchmark"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"train_feature_extraction_benchmark is missing",
+    ):
         assemble_prelock_bundle(
             run,
             candidate_test_labels_path=labels,
@@ -2141,7 +2212,10 @@ def test_prelock_rejects_reauthored_feature_benchmark_contract(tmp_path: Path) -
     benchmark.pop("content_sha256")
     benchmark["content_sha256"] = canonical_sha256(benchmark)
     _json(benchmark_path, benchmark)
-    with pytest.raises(ValueError, match="frozen configuration"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"train_feature_extraction_benchmark SHA-256 mismatch",
+    ):
         assemble_prelock_bundle(
             run,
             candidate_test_labels_path=labels,
@@ -2216,112 +2290,30 @@ def test_prelock_rejects_rehashed_lower_j_scalar_winner(tmp_path: Path) -> None:
     selection = json.loads(selection_path.read_text(encoding="utf-8"))
     table_path = Path(selection["table"]["path"])
     table = pd.read_csv(table_path)
-    source_validation_path = Path(
-        selection["selections"]["crog"]["validation_manifest"]
-    )
-    source_validation = json.loads(source_validation_path.read_text(encoding="utf-8"))
-    lower_root = run / "07_validation/ensembles/crog-lower"
-    lower_root.mkdir(parents=True, exist_ok=True)
-    predictions = pd.read_parquet(
-        source_validation["artifacts"]["predictions"]["path"]
-    )
-    predictions["ensemble_score"] = -predictions["native_rank"].astype(float)
-    labels_frame = pd.read_parquet(source_validation["sources"]["labels"]["path"])
-    evaluation = predictions.merge(
-        labels_frame,
-        on=["sample_id", "candidate_id"],
-        validate="one_to_one",
-    )
-    denominator = pd.read_parquet(
-        run / "01_manifests/paired_validation.parquet", columns=["sample_id"]
-    )["sample_id"].astype(str).tolist()
-    lower_metrics, lower_decisions = evaluate_order_only(
-        denominator, evaluation, score_column="ensemble_score"
-    )
-    native = evaluation.copy()
-    native["native_control_score"] = -native["native_rank"].astype(float)
-    native_metrics, native_decisions = evaluate_order_only(
-        denominator, native, score_column="native_control_score"
-    )
-    lower_comparison = compare_selections(
-        native_decisions,
-        lower_decisions,
-        oracle_at_5=float(native_metrics["oracle_at_5"]),
-    )
-    prediction_path = lower_root / "per_candidate_scores.parquet"
-    decision_path = lower_root / "per_sample_decisions.parquet"
-    predictions.to_parquet(prediction_path, index=False)
-    lower_decisions.to_parquet(decision_path, index=False)
-    lower_identity = {
-        **source_validation["identity"],
-        "method_code": "R6_lambdamart",
-        "encoder": "lambdamart",
-        "loss": "lambdarank",
-    }
-    lower_validation_path = lower_root / "manifest.json"
-    _json(
-        lower_validation_path,
-        {
-            **source_validation,
-            "ensemble_id": "crog-lower",
-            "identity": lower_identity,
-            "metrics": lower_metrics,
-            "artifacts": {
-                "predictions": _record(prediction_path),
-                "decisions": _record(decision_path),
-            },
-        },
-    )
-    lower_oof_path = run / "06_oof/ensembles/crog-lower/manifest.json"
-    lower_oof_artifact = lower_oof_path.parent / "oof.bin"
-    lower_oof_artifact.parent.mkdir(parents=True, exist_ok=True)
-    lower_oof_artifact.write_bytes(b"lower")
-    _json(
-        lower_oof_path,
-        {
-            "status": "COMPLETE",
-            "ensemble_id": "crog-lower",
-            "identity": lower_identity,
-            "sources": {"validation": _record(lower_validation_path)},
-            "artifacts": {"synthetic": _record(lower_oof_artifact)},
-        },
-    )
-    lower_row = {
-        "route": "crog",
-        "track": "T2_matched_common",
-        "method_code": "R6_lambdamart",
-        "encoder": "lambdamart",
-        "loss": "lambdarank",
-        "ensemble_id": "crog-lower",
-        "j_at_1": lower_metrics["j_at_1"],
-        "mrr_at_5": lower_metrics["mrr_at_5"],
-        **lower_comparison,
-        "validation_manifest": str(lower_validation_path.resolve()),
-        "validation_manifest_sha256": sha256_file(lower_validation_path),
-        "oof_manifest": str(lower_oof_path.resolve()),
-        "oof_manifest_sha256": sha256_file(lower_oof_path),
-    }
-    pd.concat([table, pd.DataFrame([lower_row])], ignore_index=True).to_csv(
-        table_path, index=False
-    )
-    selection["table"] = _record(table_path)
+    lower_row = table.loc[
+        table["route"].eq("crog")
+        & table["track"].eq("T2_matched_common")
+        & table["method_code"].eq("R6_lambdamart")
+    ].iloc[0]
     selection["selections"]["crog"] = {
-        "primary_track": "T2_matched_common",
-        "method_code": "R6_lambdamart",
-        "encoder": "lambdamart",
-        "loss": "lambdarank",
-        "ensemble_id": "crog-lower",
-        "validation_manifest": str(lower_validation_path.resolve()),
-        "validation_manifest_sha256": sha256_file(lower_validation_path),
-        "oof_manifest": str(lower_oof_path.resolve()),
-        "oof_manifest_sha256": sha256_file(lower_oof_path),
+        "primary_track": str(lower_row["track"]),
+        "method_code": str(lower_row["method_code"]),
+        "encoder": str(lower_row["encoder"]),
+        "loss": str(lower_row["loss"]),
+        "ensemble_id": str(lower_row["ensemble_id"]),
+        "validation_manifest": str(lower_row["validation_manifest"]),
+        "validation_manifest_sha256": str(
+            lower_row["validation_manifest_sha256"]
+        ),
+        "oof_manifest": str(lower_row["oof_manifest"]),
+        "oof_manifest_sha256": str(lower_row["oof_manifest_sha256"]),
         "selection_metrics": {
-            "j_at_1": lower_metrics["j_at_1"],
-            "mrr_at_5": lower_metrics["mrr_at_5"],
-            **{
-                field: lower_comparison[field]
-                for field in ("delta_j_at_1", "recovered", "harmful", "switch_rate")
-            },
+            "j_at_1": float(lower_row["j_at_1"]),
+            "mrr_at_5": float(lower_row["mrr_at_5"]),
+            "delta_j_at_1": float(lower_row["delta_j_at_1"]),
+            "recovered": int(lower_row["recovered"]),
+            "harmful": int(lower_row["harmful"]),
+            "switch_rate": float(lower_row["switch_rate"]),
         },
     }
     _json(selection_path, selection)
@@ -2443,286 +2435,111 @@ def test_prelock_rejects_reauthored_router_decision(tmp_path: Path) -> None:
 
 
 def _enable_positive_union(run: Path) -> None:
-    feature_manifest = (
-        run / "03_features/tracks/T2_matched_common/union_test/feature_manifest.json"
-    )
-    feature_path = feature_manifest.parent / "candidate_features.parquet"
-    feature_path.parent.mkdir(parents=True, exist_ok=True)
-    route_order = {"crog": 0, "g1": 1, "c1": 2}
-    rows: list[dict[str, object]] = []
-    for route in ROUTES:
-        pool = pd.read_parquet(run / f"02_candidates/{route}_test_top5.parquet")
-        for row in pool.itertuples(index=False):
-            rows.append(
-                {
-                    "sample_id": str(row.sample_id),
-                    "candidate_id": f"{route.upper()}:{row.candidate_id}",
-                    "native_rank": (int(row.native_rank) - 1) * 3
-                    + route_order[route]
-                    + 1,
-                    "source_route": route.upper(),
-                    "source_candidate_id": str(row.candidate_id),
-                    "candidate_geometry_sha256": str(row.candidate_geometry_sha256),
-                    "base_logit": -float(row.native_rank),
-                    "native_score_raw": float(row.native_score),
-                    "overall_feature_reliability": 1.0,
-                    "union_route_crog": float(route == "crog"),
-                }
-            )
-    predictions = pd.DataFrame(rows)
-    predictions.to_parquet(feature_path, index=False)
-    _json(
-        feature_manifest,
-        {
-            "status": "COMPLETE",
-            "model_feature_columns": [*FEATURES, "union_route_crog"],
-            "candidate_test_labels_read": False,
-            "artifacts": {"features": _record(feature_path)},
-        },
-    )
+    headroom = run_union_headroom(run)
+    assert headroom["decision"] == "UNION_HEADROOM_AVAILABLE"
+    for split in ("train", "validation"):
+        run_union_feature_split(run, split)
+    train_union_rankers.run_orchestrator(run, execute=False)
 
-    denominator_path = run / "01_manifests/paired_validation.parquet"
-    denominator = pd.read_parquet(denominator_path, columns=["sample_id"])[
-        "sample_id"
-    ].astype(str).tolist()
-    trial_ensembles: dict[str, dict[str, dict[str, str]]] = {}
-    ensemble_payloads: dict[str, dict[str, object]] = {}
-    trial_rows: list[dict[str, object]] = []
-    for encoder in ("lambdamart", "deepsets"):
-        validation_parts: list[pd.DataFrame] = []
-        for route in ROUTES:
-            pool = pd.read_parquet(
-                run / f"02_candidates/{route}_validation_top5.parquet"
+    train, feature_columns, train_features, train_labels = (
+        train_union_rankers._load_development(run, "train")
+    )
+    folds_path = run / "04_splits/fold_assignments.parquet"
+    folds = pd.read_parquet(folds_path, columns=["sample_id", "fold"])
+    preprocessor = FoldPreprocessor.fit(train, feature_columns)
+    synthetic_lambdamart_path = run / "07_validation/synthetic_union_lambdamart.pkl"
+    _write_synthetic_lightgbm_model(
+        synthetic_lambdamart_path, len(feature_columns)
+    )
+    synthetic_lambdamart_bytes = synthetic_lambdamart_path.read_bytes()
+    implementation = _record(Path(train_union_rankers.__file__))
+    cells: list[dict[str, object]] = []
+    for planned in train_union_rankers.formal_plan(
+        train_union_rankers.FORMAL_UNION_BUDGET
+    ):
+        mode = str(planned["mode"])
+        held_fold = planned["held_fold"]
+        if mode == "oof":
+            prediction_frame = train.merge(
+                folds, on="sample_id", validate="many_to_one"
+            ).loc[lambda frame: frame["fold"].eq(held_fold)]
+            prediction_features = train_features
+            prediction_labels = train_labels
+        else:
+            prediction_frame, validation_columns, prediction_features, prediction_labels = (
+                train_union_rankers._load_development(run, "validation")
             )
-            labels = pd.read_parquet(
-                run
-                / f"03_features/candidate_labels_{route}_validation_top5.parquet"
-            )
-            part = pool.merge(
-                labels,
-                on=["sample_id", "candidate_id"],
-                validate="one_to_one",
-            )
-            part["source_route"] = route.upper()
-            part["source_candidate_id"] = part["candidate_id"].astype(str)
-            part["candidate_id"] = route.upper() + ":" + part["candidate_id"].astype(str)
-            validation_parts.append(part)
-        union_predictions = pd.concat(validation_parts, ignore_index=True)
-        union_predictions["base_logit"] = -union_predictions["native_rank"].astype(float)
-        union_predictions["ensemble_score"] = (
-            union_predictions["candidate_success"].astype(float) * 10.0
-            - union_predictions["native_rank"].astype(float)
-            if encoder == "lambdamart"
-            else union_predictions["base_logit"]
+            assert validation_columns == feature_columns
+        score = (
+            prediction_frame["candidate_success"].astype(float) * 10.0
+            - prediction_frame["native_rank"].astype(float)
+            if planned["encoder"] == "lambdamart"
+            else prediction_frame["base_logit"].astype(float)
         )
-        metrics, union_decisions = evaluate_order_only(
-            denominator,
-            union_predictions,
-            score_column="ensemble_score",
-            max_k=15,
+        cell_predictions = prediction_frame[["sample_id", "candidate_id"]].copy()
+        cell_predictions["score"] = score.to_numpy(float)
+        configuration = {
+            "pool": "primary_union_top15_no_dedup",
+            "track": train_union_rankers.TRACK,
+            "encoder": planned["encoder"],
+            "loss": (
+                "lambdarank"
+                if planned["encoder"] == "lambdamart"
+                else train_union_rankers.FORMAL_UNION_BUDGET.deepsets_loss
+            ),
+            "seed": planned["seed"],
+            "mode": mode,
+            "held_fold": held_fold,
+            "early_stop_fold": planned["early_stop_fold"],
+            "deterministic_cpu": True,
+            "route_candidate_identity_preserved": True,
+            "budget": asdict(train_union_rankers.FORMAL_UNION_BUDGET),
+            "sources": {
+                "train_features": _record(train_features),
+                "train_labels": _record(train_labels),
+                "prediction_features": _record(prediction_features),
+                "prediction_labels": _record(prediction_labels),
+                "folds": _record(folds_path),
+                "implementation_tool": implementation,
+            },
+        }
+        cell_id = canonical_sha256(configuration)[:16]
+        cell_root = (
+            run
+            / ("06_oof" if mode == "oof" else "07_validation")
+            / "union_cells"
+            / cell_id
         )
-        baseline_metrics, baseline_decisions = evaluate_order_only(
-            denominator,
-            union_predictions,
-            score_column="base_logit",
-            max_k=15,
-        )
-        comparison = compare_selections(
-            baseline_decisions,
-            union_decisions,
-            oracle_at_5=float(baseline_metrics["oracle_at_5"]),
-        )
-        metrics["oracle_at_15"] = metrics.pop("oracle_at_5")
-        metrics["mrr_at_15"] = metrics.pop("mrr_at_5")
-        comparison["headroom_recovery_at_15"] = comparison.pop(
-            "headroom_recovery_at_5"
-        )
-        cell_records: list[dict[str, str]] = []
-        for seed in SEEDS:
-            cell_path = (
-                run
-                / "07_validation/union_cells"
-                / f"{encoder}-{seed}"
-                / "manifest.json"
-            )
-            _complete_cell(
-                cell_path,
-                configuration={
-                    "encoder": encoder,
-                    "seed": seed,
-                    "mode": "validation",
-                },
-                feature_columns=[*FEATURES, "union_route_crog"],
-            )
-            cell = json.loads(cell_path.read_text(encoding="utf-8"))
-            preprocessor = FoldPreprocessor.fit(
-                predictions,
-                [*FEATURES, "union_route_crog"],
-            )
+        cell_root.mkdir(parents=True, exist_ok=True)
+        prediction_path = cell_root / "predictions.parquet"
+        cell_predictions.to_parquet(prediction_path, index=False)
+        model_path = cell_root / "model.pkl"
+        if planned["encoder"] == "lambdamart":
+            model_path.write_bytes(synthetic_lambdamart_bytes)
+        else:
             model = DummyRegressor(strategy="constant", constant=0.0).fit(
-                np.zeros((2, len(preprocessor.columns))),
-                np.zeros(2),
+                np.zeros((2, len(preprocessor.columns))), np.zeros(2)
             )
-            model_path = cell_path.parent / "model.bin"
             with model_path.open("wb") as stream:
                 pickle.dump(model, stream)
-            cell["preprocessor"] = preprocessor.artifact()
-            cell["artifacts"]["model"] = _record(model_path)
-            _json(cell_path, cell)
-            cell_records.append(_record(cell_path))
-        records: dict[str, dict[str, str]] = {}
-        for split in ("validation", "oof"):
-            root = run / (
-                "07_validation/union_ensembles"
-                if split == "validation"
-                else "06_oof/union_ensembles"
-            ) / encoder
-            prediction = root / "per_candidate_scores.parquet"
-            decision = root / "per_sample_decisions.parquet"
-            root.mkdir(parents=True, exist_ok=True)
-            union_predictions.to_parquet(prediction, index=False)
-            union_decisions.to_parquet(decision, index=False)
-            manifest_path = root / "manifest.json"
-            payload = {
-                "status": "COMPLETE",
-                "identity": {
-                    "encoder": encoder,
-                    "split": "validation" if split == "validation" else "train",
-                    "seeds": list(SEEDS),
-                    "pool": "primary_union_top15_no_dedup",
-                },
-                "metrics": metrics,
-                "calibrated_union_baseline_metrics": baseline_metrics,
-                "comparison_to_calibrated_union_baseline": comparison,
-                "sources": {
-                    "cells": cell_records,
-                    "denominator": _record(denominator_path),
-                },
-                "artifacts": {
-                    "predictions": _record(prediction),
-                    "decisions": _record(decision),
-                },
-            }
-            _json(manifest_path, payload)
-            records[split] = _record(manifest_path)
-            if split == "validation":
-                ensemble_payloads[encoder] = payload
-        trial_ensembles[encoder] = records
-        trial_rows.append(
-            {
-                "encoder": encoder,
-                "validation_j_at_1": metrics["j_at_1"],
-                "harmful": comparison["harmful"],
-                "switch_rate": comparison["switch_rate"],
-            }
-        )
-    selection_path = run / "08_lock/union_ranker/selected_union_ranker.json"
-    selected_encoder = "lambdamart"
-    _json(
-        selection_path,
-        {
-            "status": "VALIDATION_LOCKED",
-            "selected_encoder": selected_encoder,
-            "fixed_budget": {"n_estimators": 100},
-            "selection_order": ["validation_j_at_1"],
-            "trials": trial_rows,
-            "trial_ensembles": trial_ensembles,
-            "selected_validation_manifest": trial_ensembles[selected_encoder][
-                "validation"
-            ],
-            "selected_oof_manifest": trial_ensembles[selected_encoder]["oof"],
-            "selected_validation_ensemble": ensemble_payloads[selected_encoder],
-            "test_access": "NONE",
-        },
-    )
-
-    prediction_path = run / "08_lock/union_ranker_test/per_candidate_scores.parquet"
-    prediction_path.parent.mkdir(parents=True, exist_ok=True)
-    application_predictions = predictions[
-        [
-            "sample_id",
-            "candidate_id",
-            "native_rank",
-            "source_route",
-            "source_candidate_id",
-            "candidate_geometry_sha256",
-        ]
-    ].copy()
-    for seed in SEEDS:
-        application_predictions[f"score_seed_{seed}"] = 0.0
-    application_predictions["ensemble_score"] = 0.0
-    application_predictions.to_parquet(prediction_path, index=False)
-    test_denominator = pd.read_parquet(
-        run / "01_manifests/paired_test.parquet", columns=["sample_id"]
-    )["sample_id"].astype(str).tolist()
-    decisions = select_order_only(
-        test_denominator,
-        application_predictions,
-        score_column="ensemble_score",
-    )
-    selected_rows = application_predictions[
-        [
-            "sample_id",
-            "candidate_id",
-            "source_route",
-            "source_candidate_id",
-            "candidate_geometry_sha256",
-        ]
-    ].rename(columns={"candidate_id": "selected_candidate_id"})
-    decisions = decisions.merge(
-        selected_rows,
-        on=["sample_id", "selected_candidate_id"],
-        how="left",
-        validate="one_to_one",
-    )
-    decisions["prediction_source"] = "test_label_free"
-    decision_path = run / "08_lock/union_ranker_test/per_sample_decisions.parquet"
-    decisions.to_parquet(decision_path, index=False)
-    selected_cells = {
-        str(seed): record
-        for seed, record in zip(
-            SEEDS,
-            ensemble_payloads[selected_encoder]["sources"]["cells"],
-            strict=True,
-        )
-    }
-    union_sources = {
-        "selection": _record(selection_path),
-        "test_feature_manifest": _record(feature_manifest),
-        "test_features": _record(feature_path),
-        "implementation_tool": _record(
-            Path(__file__).resolve().parents[2]
-            / "tools/unified_reranking/apply_locked_union_ranker.py"
-        ),
-        "cells": selected_cells,
-        "denominator": _record(run / "01_manifests/paired_test.parquet"),
-    }
-    union_configuration = {
-        "encoder": selected_encoder,
-        "seeds": list(SEEDS),
-        "pool": "primary_union_top15_no_dedup",
-        "label_free_test": True,
-        "candidate_test_labels_read": False,
-    }
-    _json(
-        run / "08_lock/union_ranker_test/manifest.json",
-        {
+        cell = {
             "status": "COMPLETE",
-            "candidate_test_labels_read": False,
-            "test_access": "LABEL_FREE_INFERENCE_ONLY",
-            "configuration": union_configuration,
-            "sources": union_sources,
-            "signature_sha256": canonical_sha256(
-                {"configuration": union_configuration, "sources": union_sources}
-            ),
+            "cell_id": cell_id,
+            "configuration": configuration,
+            "feature_columns": list(feature_columns),
+            "feature_schema_sha256": canonical_sha256(feature_columns),
+            "preprocessor": preprocessor.artifact(),
             "artifacts": {
+                "model": _record(model_path),
                 "predictions": _record(prediction_path),
-                "decisions": _record(decision_path),
             },
-            "sample_count": len(decisions),
-            "candidate_rows": len(application_predictions),
-        },
-    )
+            "test_access": "NONE",
+        }
+        _json(cell_root / "manifest.json", cell)
+        cells.append(cell)
+
+    train_union_rankers.select_union_ranker(run, cells)
+    run_union_test_application(run)
 
 
 def test_prelock_positive_union_binds_three_top5_pools_without_label_parse(
@@ -2759,7 +2576,11 @@ def test_prelock_positive_union_binds_three_top5_pools_without_label_parse(
         .eq(ranking["source_route"].str.upper() + ":" + ranking["source_candidate_id"])
         .all()
     )
-    assert ranking.groupby("sample_id").size().to_dict() == {"s0": 6, "s1": 6, "s2": 2}
+    assert ranking.groupby("sample_id").size().to_dict() == {
+        "s0": 6,
+        "s1": 6,
+        "s2": 6,
+    }
     for snapshot in (
         "selected_methods.json",
         "selected_features.json",

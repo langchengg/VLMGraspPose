@@ -7,20 +7,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pickle
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 for item in (ROOT, SRC):
     if str(item) not in sys.path:
         sys.path.insert(0, str(item))
+
+import torch
 
 from tools.unified_reranking.prepare_union_features import TRACK, run_split
 from unified_reranking.datasets import FoldPreprocessor, build_inference_query_arrays
@@ -39,6 +41,58 @@ _FORBIDDEN_TOKENS = (
     "ground_truth",
     "_correct",
 )
+
+
+def _native_lightgbm_scores(model_path: Path, features: np.ndarray) -> np.ndarray:
+    """Predict in a fresh process whose native runtime imports LightGBM first."""
+
+    script = """
+import sys
+from pathlib import Path
+
+import numpy as np
+
+from tools.unified_reranking.apply_locked_matrix_cell import _load_native_lightgbm_ranker
+
+model = _load_native_lightgbm_ranker(Path(sys.argv[1]))
+features = np.load(sys.argv[2], allow_pickle=False)
+scores = model.predict(features)
+np.save(sys.argv[3], scores, allow_pickle=False)
+"""
+    matrix = np.asarray(features, dtype=np.float64)
+    with tempfile.TemporaryDirectory(prefix="union-lightgbm-") as directory:
+        temporary = Path(directory)
+        feature_path = temporary / "features.npy"
+        score_path = temporary / "scores.npy"
+        np.save(feature_path, matrix, allow_pickle=False)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(model_path),
+                str(feature_path),
+                str(score_path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=ROOT,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(
+                "isolated LightGBM union prediction failed"
+                + (f": {detail}" if detail else "")
+            )
+        if not score_path.is_file():
+            raise RuntimeError("isolated LightGBM union prediction wrote no scores")
+        scores = np.asarray(
+            np.load(score_path, allow_pickle=False), dtype=np.float64
+        )
+    if scores.shape != (len(matrix),) or not np.isfinite(scores).all():
+        raise RuntimeError("isolated LightGBM union prediction returned invalid scores")
+    return scores
 
 
 def _atomic_parquet(path: Path, frame: pd.DataFrame) -> None:
@@ -70,10 +124,10 @@ def _predict_cell(cell: dict[str, Any], features: pd.DataFrame) -> pd.DataFrame:
     if sha256_file(model_path) != model_record["sha256"]:
         raise RuntimeError("locked union model hash mismatch")
     if encoder == "lambdamart":
-        with model_path.open("rb") as stream:
-            model = pickle.load(stream)
         valid = ~arrays.padding_mask.numpy()
-        scores = np.asarray(model.predict(arrays.features.numpy()[valid]), dtype=float)
+        scores = _native_lightgbm_scores(
+            model_path, arrays.features.numpy()[valid]
+        )
         rows: list[dict[str, object]] = []
         cursor = 0
         for sample_id, candidate_ids in zip(arrays.sample_ids, arrays.candidate_ids, strict=True):

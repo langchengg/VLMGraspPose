@@ -40,3 +40,13 @@ def test_access_log_append_is_process_safe_and_lossless(tmp_path: Path) -> None:
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == count
     assert {row["index"] for row in rows} == set(range(count))
+
+
+def test_access_log_event_id_is_idempotent(tmp_path: Path) -> None:
+    event = {"event": "synthetic_resume", "event_id": "stable-stage:artifact-sha"}
+    append_access_log(tmp_path, event)
+    append_access_log(tmp_path, event)
+    path = tmp_path / "09_formal_test" / "test_access.log"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["event_id"] == event["event_id"]

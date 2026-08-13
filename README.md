@@ -78,6 +78,12 @@ The current local checkout contains these relevant areas:
 ├── src/unified_reranking/           # Shared leakage-safe reranking pipeline
 ├── tools/unified_reranking/         # Unified pipeline command-line entrypoints
 ├── tests/unified_reranking/         # Unified reranking contract and pipeline tests
+├── src/d1_reranking/                # Retrospective Dex-Net/GQ-CNN reranking extension
+├── tools/d1_reranking/              # D1 planning, execution, and audit entrypoints
+├── tests/d1_reranking/              # D1 contracts and lifecycle tests
+├── src/gtmask_counterfactual/       # Post-formal GT-mask oracle diagnostic
+├── tools/gtmask_counterfactual/     # Counterfactual protocol and replay entrypoints
+├── tests/gtmask_counterfactual/     # Counterfactual mapping and reporting tests
 ├── reranking/                       # Modular experiment-matrix implementation
 ├── experiments/                     # Controlled cross-baseline evaluations
 ├── legacy/                         # Archived implementations and GraspNet adapters
@@ -215,6 +221,10 @@ Additional reproducibility entrypoints are grouped by experiment family:
 | Experiment family | Primary entrypoint | Configuration / dependency source |
 | --- | --- | --- |
 | Unified cross-backend reranking | `tools/unified_reranking/run_all.py` | `src/unified_reranking/`, `tests/unified_reranking/` |
+| Retrospective D1 reranking extension | `tools/d1_reranking/bootstrap.py` | `src/d1_reranking/`, `tests/d1_reranking/` |
+| Post-formal GT-mask counterfactual diagnostic | `tools/gtmask_counterfactual/bootstrap.py` | `src/gtmask_counterfactual/`, `tests/gtmask_counterfactual/` |
+| Post-formal case analysis | `tools/unified_reranking/run_case_analysis.py` | `src/unified_reranking/case_analysis.py`, `case_visuals.py` |
+| Post-lock R1-R6 Test comparison | `tools/unified_reranking/run_postlock_r1_r6_test_comparison.py` | Frozen unified-reranking run artifacts |
 | Controlled CROG/HiFi/G1/C1 comparison without reranking | `experiments/fair_crog_hifics_g1_c1_no_rerank/prepare_run.py` | Package-local scripts and tests |
 | 4-DoF analytic, GGCNN, and GR-ConvNet validation | `HiFi_reproduction/tools/grasp4dof/run_method.py` | `HiFi_reproduction/configs/grasp4dof_validation/`, `requirements-grasp4dof-macos.txt` |
 | SAM3 proposal-bank evaluation | `HiFi_reproduction/scripts/run_sam3_p90_experiment.py` | `HiFi_reproduction/configs/sam3_proposal_bank_p90_v1/` |

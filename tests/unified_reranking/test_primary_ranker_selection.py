@@ -214,6 +214,14 @@ def test_producer_hash_bindings_are_accepted_by_prelock(
         ),
         encoding="utf-8",
     )
+    selected_execution = (
+        run / "05_models" / "matrix_plans" / "selected_latest_execution.json"
+    )
+    selected_execution.parent.mkdir(parents=True, exist_ok=True)
+    selected_execution.write_text(
+        json.dumps({"status": "COMPLETE", "phase": "selected"}),
+        encoding="utf-8",
+    )
 
     def fake_ensemble(
         run_dir: Path,

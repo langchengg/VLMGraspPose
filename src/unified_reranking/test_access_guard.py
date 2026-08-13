@@ -31,6 +31,17 @@ def append_access_log(run_dir: str | Path, event: dict[str, Any]) -> None:
     with destination.open("a+", encoding="utf-8") as stream:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         try:
+            event_id = payload.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                stream.seek(0)
+                for existing_line in stream:
+                    try:
+                        existing = json.loads(existing_line)
+                    except json.JSONDecodeError:
+                        continue
+                    if existing.get("event_id") == event_id:
+                        return
+            stream.seek(0, os.SEEK_END)
             stream.write(line)
             stream.flush()
             os.fsync(stream.fileno())

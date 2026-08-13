@@ -144,7 +144,10 @@ def join_development_features_and_labels(
             raise ValueError("candidate labels contain invalid native rank")
         if "native_rank" in joined.columns:
             feature_rank = pd.to_numeric(joined["native_rank"], errors="coerce")
-            if feature_rank.isna().any() or not feature_rank.equals(label_rank):
+            if feature_rank.isna().any() or not np.array_equal(
+                feature_rank.to_numpy(dtype=np.float64),
+                label_rank.to_numpy(dtype=np.float64),
+            ):
                 raise ValueError("feature/label native rank mismatch")
         else:
             joined["native_rank"] = label_rank.astype(labels["native_rank"].dtype)

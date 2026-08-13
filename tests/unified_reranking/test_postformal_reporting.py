@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
@@ -12,6 +13,7 @@ from unified_reranking.postformal_reporting import (
     FormalBundle,
     _access_log_check,
     _current_source_hash_checks,
+    _exact_numeric_values_equal,
     _feature_leakage_check,
     _native_score_source_check,
     classify_failures,
@@ -19,12 +21,15 @@ from unified_reranking.postformal_reporting import (
     deterministic_case_selection,
     formal_results_table,
     hash_inventory,
+    markdown_table,
     normalize_candidate_labels,
     shared_hifi_mask_check,
 )
 from unified_reranking.hashing import canonical_sha256, sha256_file
 from unified_reranking.ledger import initialize_ledger, ledger_stage
 from tools.unified_reranking.build_postformal_artifacts import (
+    _cell_matches_phase_selection,
+    _metric_bar,
     _validation_cells,
     build_figures,
     build_postlock_bridge,
@@ -36,6 +41,82 @@ from tools.unified_reranking.build_postformal_artifacts import (
 
 
 ROUTES = ("crog", "g1", "c1")
+
+
+def test_markdown_table_has_no_optional_tabulate_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = pd.DataFrame([{"name": "a|b", "score": 0.25}])
+    monkeypatch.setattr(
+        pd.DataFrame,
+        "to_markdown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unused")),
+    )
+
+    rendered = markdown_table(frame, ["name", "score"])
+
+    assert "a\\|b" in rendered
+    assert "0.250000" in rendered
+
+
+def test_metric_bar_accepts_index_fallback_labels() -> None:
+    figure, axis = plt.subplots()
+    try:
+        _metric_bar(
+            axis,
+            pd.DataFrame({"j_at_1": [0.25, 0.75]}, index=["low", "high"]),
+            "j_at_1",
+            "Validation J@1",
+        )
+        assert [tick.get_text() for tick in axis.get_yticklabels()] == ["low", "high"]
+    finally:
+        plt.close(figure)
+
+
+def test_exact_numeric_rank_comparison_ignores_storage_width() -> None:
+    assert _exact_numeric_values_equal(
+        pd.Series([1, 2, 3], dtype="int64"),
+        pd.Series([1, 2, 3], dtype="int16"),
+    )
+    assert not _exact_numeric_values_equal(
+        pd.Series([1, 2, 3], dtype="int64"),
+        pd.Series([1, 3, 2], dtype="int16"),
+    )
+
+
+def test_encoder_phase_selection_allows_controlled_attention_block_axis(
+    tmp_path: Path,
+) -> None:
+    screen = tmp_path / "screen.json"
+    columns = ["safe_feature"]
+    _write_json(screen, {"feature_columns": columns})
+    choice = {
+        "loss": "bce",
+        "parameters": {"learning_rate": 0.0003, "num_attention_blocks": 2},
+        "screen_manifest": str(screen.resolve()),
+        "screen_manifest_sha256": sha256_file(screen),
+    }
+    cell = {
+        "configuration": {
+            "route": "crog",
+            "track": "T2_matched_common",
+            "encoder": "set_transformer",
+            "loss": "bce",
+            "learning_rate": 0.0003,
+            "num_attention_blocks": 1,
+            "source_identity": {
+                "selected_feature_schema_sha256": canonical_sha256(columns)
+            },
+        },
+        "feature_columns": columns,
+        "feature_schema_sha256": canonical_sha256(columns),
+    }
+
+    assert _cell_matches_phase_selection(
+        cell,
+        phase="encoder",
+        choices={"crog/t2_matched_common": [choice]},
+    )
 
 
 def _write_valid_ledger(run: Path) -> None:
@@ -314,8 +395,20 @@ def test_access_log_allows_opaque_prelock_hash_but_not_row_open(
         "path": str(stage_manifest.resolve()),
         "sha256": sha256_file(stage_manifest),
     }
+    calibration_manifest = run / "label_free_calibration.json"
+    _write_json(calibration_manifest, {"status": "COMPLETE"})
+    calibration_spec = {
+        "event": "prelock_label_free_test_calibration",
+        "stage": None,
+        "route": "crog",
+        "application_id": None,
+        "path": str(calibration_manifest.resolve()),
+        "sha256": sha256_file(calibration_manifest),
+    }
     monkeypatch.setattr(
-        reporting, "_access_manifest_specifications", lambda _run: [stage_spec]
+        reporting,
+        "_access_manifest_specifications",
+        lambda _run: [stage_spec, calibration_spec],
     )
     records = [
         {
@@ -324,6 +417,19 @@ def test_access_log_allows_opaque_prelock_hash_but_not_row_open(
             "allowed_access": "opaque_byte_hash_only",
         },
         {"event": "candidate_test_label_access_denied"},
+        {
+            "event": "prelock_label_free_test_calibration",
+            "route": "CROG",
+            "allowed": ["candidate_geometry", "native_score"],
+            "candidate_labels_loaded": False,
+        },
+        {
+            "event": "prelock_label_free_test_stage",
+            "stage": "synthetic_label_free_stage",
+            "output_manifest": str(stage_manifest.resolve()),
+            "output_manifest_sha256": "0" * 64,
+            "candidate_labels_opened_as_table": False,
+        },
         {
             "event": "prelock_label_free_test_stage",
             "stage": "synthetic_label_free_stage",
@@ -369,6 +475,7 @@ def test_access_log_allows_opaque_prelock_hash_but_not_row_open(
             "rows": 1,
         },
     ]
+    records.append(dict(records[-1]))
     log.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
     assert _access_log_check(run)[0] is True
     without_stage = [
@@ -520,6 +627,31 @@ def test_feature_leakage_uses_canonical_forbidden_contract(tmp_path: Path) -> No
             },
         )
         records[f"{route}_feature_manifest_record"] = _artifact_record(manifest)
+    source_code = tmp_path / "tools" / "historical_extractor.py"
+    source_code.parent.mkdir(parents=True)
+    source_code.write_text("# historical extractor\n", encoding="utf-8")
+    union = (
+        tmp_path
+        / "03_features"
+        / "tracks"
+        / "T5_cross_route"
+        / "union_test"
+        / "feature_manifest.json"
+    )
+    union_columns = ["safe_feature"]
+    _write_json(
+        union,
+        {
+            "status": "COMPLETE",
+            "model_feature_columns": union_columns,
+            "feature_schema_sha256": canonical_sha256(union_columns),
+            "sources": {
+                "tool": {"path": str(source_code.resolve()), "sha256": "a" * 64}
+            },
+            "artifact": _artifact_record(artifact),
+        },
+    )
+    records["union_test_features"] = _artifact_record(union)
     prelock = tmp_path / "08_lock" / "prelock_assembly_manifest.json"
     _write_json(
         prelock,

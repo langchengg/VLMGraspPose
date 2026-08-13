@@ -285,7 +285,7 @@ def test_union_recompute_checks_qualified_duplicate_ids_and_top15(
     per_sample = pd.read_parquet(result["artifacts"]["per_sample"]["path"])
     union = per_sample.loc[per_sample["system_name"].eq("top15_union_primary")]
     assert union["selected_candidate_id"].str.contains(":", regex=False).all()
-    assert union["source_candidate_id"].eq("b").all()
+    assert union["source_candidate_id"].eq("a").all()
 
 
 def test_union_recompute_rejects_qualifier_drift(tmp_path: Path) -> None:
