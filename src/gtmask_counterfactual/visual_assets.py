@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 import json
 from pathlib import Path
 from typing import Any
@@ -54,37 +54,23 @@ def _verify_record(record: Mapping[str, Any], *, name: str) -> Path:
         raise VisualAssetContractError(f"{name} is not an artifact record")
     path = Path(str(record.get("path", ""))).expanduser().resolve()
     observed = artifact_record(path)
-    if dict(record) != observed:
+    if any(record.get(key) != observed[key] for key in ("path", "sha256", "bytes")):
         raise VisualAssetContractError(f"{name} artifact differs")
     return path
 
 
-def _collect_inventory(value: Any, result: set[tuple[str, str, int]]) -> None:
-    if isinstance(value, Mapping):
-        if {"path", "sha256", "bytes"}.issubset(value):
-            path = _verify_record(value, name="protocol source inventory")
-            result.add((str(path), str(value["sha256"]), int(value["bytes"])))
-            if path.suffix.lower() == ".json":
-                try:
-                    nested = _object(path, name="protocol source inventory JSON")
-                except VisualAssetContractError:
-                    nested = None
-                if nested is not None:
-                    _collect_inventory(nested, result)
-            return
-        for child in value.values():
-            _collect_inventory(child, result)
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for child in value:
-            _collect_inventory(child, result)
-
-
 def _locked_inventory(lock: Mapping[str, Any]) -> set[tuple[str, str, int]]:
-    result: set[tuple[str, str, int]] = set()
-    bindings = lock.get("bindings")
-    if not isinstance(bindings, Mapping):
-        raise VisualAssetContractError("protocol lock bindings are malformed")
-    _collect_inventory(bindings.get("source_locks"), result)
+    # Import locally because postprocess validates visual assets and therefore
+    # imports this module.  Reuse its canonical parser instead of recursively
+    # rehashing every transitive artifact referenced by a final source lock.
+    from .postprocess import PostprocessContractError, _locked_source_inventory
+
+    try:
+        result = _locked_source_inventory(lock)
+    except PostprocessContractError as error:
+        raise VisualAssetContractError(
+            "protocol source inventory differs"
+        ) from error
     if not result:
         raise VisualAssetContractError("protocol lock exposes no source inventory")
     return result

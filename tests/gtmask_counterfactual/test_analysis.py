@@ -156,6 +156,44 @@ def test_locked_adapter_matches_independent_and_ignores_branch_identity() -> Non
     assert marked.loc[0, "candidate_success"] == False  # noqa: E712
 
 
+def test_independent_uses_frozen_float32_corner_raster_boundary() -> None:
+    candidate = {
+        "sample_id": "boundary",
+        "route": "C1",
+        "branch": "gt_oracle",
+        "candidate_id": "c1-boundary",
+        "native_rank": 1,
+        "native_score": 0.0,
+        "cx_px": 118.26733333333333,
+        "cy_px": 241.84799999999998,
+        "theta_deg": 39.1212272644043,
+        "width_px": 79.82875870768228,
+        "height_px": 39.91437935384114,
+    }
+    gt_corners = [
+        [129.0, 205.0],
+        [144.0, 213.0],
+        [125.176, 248.294],
+        [110.176, 240.294],
+    ]
+    independent = evaluate_same_gt_candidate(candidate, [gt_corners])
+    locked = evaluate_candidate_rows(
+        pd.DataFrame([candidate]),
+        pd.DataFrame(
+            {
+                "sample_id": ["boundary"],
+                "gt_grasp_rectangles": [[gt_corners]],
+            }
+        ),
+        evaluator_path=EVALUATOR,
+    ).iloc[0]
+
+    assert independent["candidate_success"] is True
+    assert independent["best_same_gt_iou"] == pytest.approx(0.25367992483557783)
+    assert independent["candidate_success"] == bool(locked["candidate_success"])
+    assert independent["best_same_gt_iou"] == locked["best_same_gt_iou"]
+
+
 def test_branch_metrics_keep_empty_samples_and_compute_oracle_mrr() -> None:
     manifest = pd.DataFrame({"sample_id": ["s1", "s2", "s3"]})
     candidates = pd.DataFrame(

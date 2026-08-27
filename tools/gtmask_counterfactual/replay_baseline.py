@@ -20,6 +20,7 @@ from gtmask_counterfactual.baseline import (  # noqa: E402
     replay_baselines,
 )
 from gtmask_counterfactual.io import (  # noqa: E402
+    artifact_record,
     atomic_json,
     atomic_text,
     canonical_sha256,
@@ -83,6 +84,11 @@ def main() -> int:
             _mismatch_markdown(error),
         )
         return 2
+    result["source_artifacts"] = {
+        "d1_formal_outcomes": artifact_record(d1_path),
+        "unified_formal_outcomes": artifact_record(unified_path),
+        "unified_full_pool_taxonomy": artifact_record(full_pool_path),
+    }
     result["content_sha256"] = canonical_sha256(result)
     atomic_json(output_dir / "derived_baseline_reconciliation.json", result)
     atomic_text(

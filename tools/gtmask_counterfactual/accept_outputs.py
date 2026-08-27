@@ -11,11 +11,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from gtmask_counterfactual.acceptance import (  # noqa: E402
-    accept_gallery,
-    accept_independent_recompute,
-)
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -27,11 +22,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    result = (
-        accept_gallery(args.run_dir, resume=args.resume)
-        if args.action == "gallery"
-        else accept_independent_recompute(args.run_dir, resume=args.resume)
-    )
+    if args.action == "gallery":
+        # P9 owns the gallery producer/validator dependency graph.  Keep this
+        # import action-local so the independent process never imports it.
+        from gtmask_counterfactual.acceptance import accept_gallery
+
+        result = accept_gallery(args.run_dir, resume=args.resume)
+    else:
+        from gtmask_counterfactual.independent_acceptance import (
+            accept_independent_recompute,
+        )
+
+        result = accept_independent_recompute(args.run_dir, resume=args.resume)
     print(result)
     return 0
 

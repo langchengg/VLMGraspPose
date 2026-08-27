@@ -28,6 +28,9 @@ EXECUTION_RELATIVE_PATH = Path("01_protocol_lock/COUNTERFACTUAL_EXECUTION.json")
 EXECUTION_COMPLETION_RELATIVE_PATH = Path(
     "01_protocol_lock/COUNTERFACTUAL_EXECUTION_COMPLETE.json"
 )
+D1_EXECUTION_COMPLETION_RELATIVE_PATH = Path(
+    "d1_secondary/D1_SECONDARY_EXECUTION_COMPLETE.json"
+)
 
 
 def _now() -> str:
@@ -128,8 +131,19 @@ def _binding_payload(value: Any, *, name: str) -> Any:
 def _validate_declaration(
     declaration: Mapping[str, Any], *, test_only_allow_synthetic_contract: bool = False
 ) -> dict[str, Any]:
-    if declaration.get("gt_candidate_generation_authorized") is not True:
-        raise PermissionError("protocol must authorize GT candidate generation")
+    execution_mode = declaration.get("execution_mode", "prospective_locked_execution")
+    if execution_mode == "retrospective_verified_import":
+        if declaration.get("gt_candidate_generation_authorized") is not False:
+            raise PermissionError("retrospective G1/C1 import must forbid generation")
+        if declaration.get("retrospective_test_outcomes_exposed_before_binding") is not True:
+            raise PermissionError("retrospective protocol must disclose exposed outcomes")
+        if declaration.get("d1_candidate_generation_authorized") is not True:
+            raise PermissionError("retrospective import must state D1 authority separately")
+    elif (
+        execution_mode != "prospective_locked_execution"
+        or declaration.get("gt_candidate_generation_authorized") is not True
+    ):
+        raise PermissionError("protocol must authorize prospective generation")
     if declaration.get("bulk_execution_max_count") != 1:
         raise ValueError("counterfactual bulk execution maximum must equal one")
     mapping_reads = declaration.get("mapping_qa_gt_mask_rows_read_before_lock")
@@ -174,6 +188,7 @@ def _validate_bindings(
         "configs",
         "baseline_replay",
         "sample_manifest",
+        "gt_grasp_source",
         "gt_mask_registry",
         "mapping_qa",
         "evaluator",
@@ -196,6 +211,9 @@ def _validate_bindings(
     )
     sample_manifest = _single_artifact_record(
         bindings["sample_manifest"], name="sample_manifest"
+    )
+    gt_grasp_source = _single_artifact_record(
+        bindings["gt_grasp_source"], name="gt_grasp_source"
     )
     gt_mask_registry = _single_artifact_record(
         bindings["gt_mask_registry"], name="gt_mask_registry"
@@ -300,7 +318,11 @@ def _validate_bindings(
         if not isinstance(evidence_record, Mapping):
             raise ValueError("P2 per-sample evidence manifest is absent")
         _validate_per_sample_evidence_manifest(evidence_record)
-        _validate_p1_audit(mapping_qa=mapping_qa, sample_manifest=sample_manifest)
+        _validate_p1_audit(
+            mapping_qa=mapping_qa,
+            sample_manifest=sample_manifest,
+            gt_grasp_source=gt_grasp_source,
+        )
         _validate_exact_partition(
             sample_manifest=sample_manifest,
             gt_mask_registry=gt_mask_registry,
@@ -321,6 +343,7 @@ def _validate_bindings(
     return {
         "baseline_replay": baseline_replay,
         "sample_manifest": sample_manifest,
+        "gt_grasp_source": gt_grasp_source,
         "gt_mask_registry": gt_mask_registry,
         "mapping_qa": mapping_qa_record,
         "routes": dict(declaration["routes"]),
@@ -387,7 +410,10 @@ def _validate_exact_partition(
 
 
 def _validate_p1_audit(
-    *, mapping_qa: Mapping[str, Any], sample_manifest: Mapping[str, Any]
+    *,
+    mapping_qa: Mapping[str, Any],
+    sample_manifest: Mapping[str, Any],
+    gt_grasp_source: Mapping[str, Any],
 ) -> None:
     inputs = mapping_qa.get("inputs")
     record = inputs.get("join_audit") if isinstance(inputs, Mapping) else None
@@ -415,14 +441,15 @@ def _validate_p1_audit(
         or not isinstance(outputs, Mapping)
         or outputs.get("counterfactual_manifest_parquet") != sample_manifest
         or not isinstance(audit.get("sources"), Mapping)
-        or set(audit["sources"]) != {
+        or not {
             "denominator",
             "g1",
             "c1",
             "d1",
             "unified_final_lock",
             "d1_final_lock",
-        }
+        }.issubset(audit["sources"])
+        or audit["sources"].get("denominator") != gt_grasp_source
     ):
         raise ValueError("P1 exact denominator join audit contract differs")
     verify_artifact_records_recursive(
@@ -532,16 +559,31 @@ def create_protocol_lock(
         "schema_version": 1,
         "status": "LOCKED",
         "created_at_utc": _now(),
-        "scientific_role": "post-formal oracle stage-replacement diagnostic",
+        "scientific_role": (
+            "retrospective verified-import stage-replacement diagnostic"
+            if validated_declaration.get("execution_mode")
+            == "retrospective_verified_import"
+            else "post-formal oracle stage-replacement diagnostic"
+        ),
+        "execution_mode": validated_declaration.get(
+            "execution_mode", "prospective_locked_execution"
+        ),
         "counterfactual_execution_count": 0,
         "formal_test_execution_count_increment": 0,
         "mapping_qa_gt_mask_rows_read_before_lock": validated_declaration[
             "mapping_qa_gt_mask_rows_read_before_lock"
         ],
         "candidate_generation_gt_mask_rows_read_before_lock": 0,
-        "gt_candidate_generation_authorized": True,
+        "gt_candidate_generation_authorized": validated_declaration[
+            "gt_candidate_generation_authorized"
+        ],
+        "d1_candidate_generation_authorized": validated_declaration.get(
+            "d1_candidate_generation_authorized",
+            validated_declaration["gt_candidate_generation_authorized"],
+        ),
         "gt_mapping_pixel_qa_status": "PASS",
         "sample_manifest": execution_bindings["sample_manifest"],
+        "gt_grasp_source": execution_bindings["gt_grasp_source"],
         "gt_mask_registry": execution_bindings["gt_mask_registry"],
         "mapping_qa": execution_bindings["mapping_qa"],
         "routes": execution_bindings["routes"],
@@ -556,7 +598,7 @@ def create_protocol_lock(
     transition_pipeline_status(
         root,
         RunState.P3_PROTOCOL_LOCKED,
-        first_incomplete_stage=RunState.P4_G1_COUNTERFACTUAL_COMPLETE.value,
+        first_incomplete_stage=RunState.P4_C1_PILOT_PASS.value,
     )
     return destination
 
@@ -593,9 +635,20 @@ def verify_protocol_lock(run_dir: str | Path) -> dict[str, Any]:
             lock.get("mapping_qa_gt_mask_rows_read_before_lock")
             != validated_declaration["mapping_qa_gt_mask_rows_read_before_lock"]
             or lock.get("candidate_generation_gt_mask_rows_read_before_lock") != 0
-            or lock.get("gt_candidate_generation_authorized") is not True
+            or lock.get("gt_candidate_generation_authorized")
+            != validated_declaration["gt_candidate_generation_authorized"]
+            or lock.get("d1_candidate_generation_authorized")
+            != validated_declaration.get(
+                "d1_candidate_generation_authorized",
+                validated_declaration["gt_candidate_generation_authorized"],
+            )
+            or lock.get("execution_mode")
+            != validated_declaration.get(
+                "execution_mode", "prospective_locked_execution"
+            )
             or lock.get("gt_mapping_pixel_qa_status") != "PASS"
             or lock.get("sample_manifest") != execution_bindings["sample_manifest"]
+            or lock.get("gt_grasp_source") != execution_bindings["gt_grasp_source"]
             or lock.get("gt_mask_registry") != execution_bindings["gt_mask_registry"]
             or lock.get("mapping_qa") != execution_bindings["mapping_qa"]
             or lock.get("routes") != execution_bindings["routes"]
@@ -619,16 +672,90 @@ def load_execution_authority(protocol_lock_path: str | Path) -> dict[str, Any]:
     lock = verify_protocol_lock(root)
     return {
         "protocol_lock": artifact_record(path),
-        "gt_candidate_generation_authorized": True,
+        "execution_mode": lock["execution_mode"],
+        "gt_candidate_generation_authorized": lock[
+            "gt_candidate_generation_authorized"
+        ],
+        "d1_candidate_generation_authorized": lock[
+            "d1_candidate_generation_authorized"
+        ],
         "bulk_execution_max_count": 1,
         "mapping_qa_gt_mask_rows_read_before_lock": lock[
             "mapping_qa_gt_mask_rows_read_before_lock"
         ],
         "candidate_generation_gt_mask_rows_read_before_lock": 0,
         "sample_manifest": dict(lock["sample_manifest"]),
+        "gt_grasp_source": dict(lock["gt_grasp_source"]),
         "gt_mask_registry": dict(lock["gt_mask_registry"]),
         "mapping_qa": dict(lock["mapping_qa"]),
         "routes": dict(lock["routes"]),
+    }
+
+
+def resolve_postlock_access_authority(
+    run_dir: str | Path,
+    *,
+    authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the artifact that authorizes post-lock Test-GT reads.
+
+    Prospective runs are authorized by their exactly-once execution claim.
+    Verified retrospective imports deliberately have no such claim: their
+    immutable protocol lock is the read authority and the current execution
+    count must remain zero.
+    """
+
+    root = Path(run_dir).expanduser().resolve()
+    resolved = (
+        dict(authority)
+        if authority is not None
+        else load_execution_authority(root / LOCK_RELATIVE_PATH)
+    )
+    protocol_record = resolved.get("protocol_lock")
+    if not isinstance(protocol_record, Mapping):
+        raise PermissionError("post-lock access has no protocol authority")
+    if dict(protocol_record) != artifact_record(root / LOCK_RELATIVE_PATH):
+        raise PermissionError("post-lock protocol authority differs")
+    claim_path = root / EXECUTION_RELATIVE_PATH
+    pipeline = _read_object(root / "pipeline_status.json")
+    if resolved.get("execution_mode") == "retrospective_verified_import":
+        d1_claim: dict[str, Any] | None = None
+        if claim_path.exists():
+            d1_claim = _read_object(claim_path)
+        if (
+            resolved.get("gt_candidate_generation_authorized") is not False
+            or (
+                d1_claim is None
+                and int(pipeline.get("counterfactual_execution_count", -1)) != 0
+            )
+            or (
+                d1_claim is not None
+                and (
+                    d1_claim.get("scope") != "d1_secondary"
+                    or d1_claim.get("status") != "RUNNING"
+                    or int(d1_claim.get("execution_count", -1)) != 1
+                    or d1_claim.get("protocol_lock_file_sha256")
+                    != protocol_record.get("sha256")
+                    or int(pipeline.get("counterfactual_execution_count", -1)) != 1
+                )
+            )
+        ):
+            raise PermissionError("retrospective post-lock access authority differs")
+        return {
+            "mode": "retrospective_protocol_lock",
+            "record": dict(protocol_record),
+        }
+    claim = _read_object(claim_path)
+    if (
+        claim.get("status") != "RUNNING"
+        or int(claim.get("execution_count", -1)) != 1
+        or claim.get("protocol_lock_file_sha256") != protocol_record.get("sha256")
+        or int(pipeline.get("counterfactual_execution_count", -1)) != 1
+    ):
+        raise PermissionError("post-lock access requires the exactly-once claim")
+    return {
+        "mode": "prospective_execution_claim",
+        "record": artifact_record(claim_path),
     }
 
 
@@ -638,13 +765,23 @@ def claim_bulk_execution(run_dir: str | Path, *, resume: bool = False) -> Path:
     root = Path(run_dir).expanduser().resolve()
     lock = verify_protocol_lock(root)
     status = _read_object(root / "pipeline_status.json")
+    retrospective_d1 = lock.get("execution_mode") == "retrospective_verified_import"
     allowed_resume_states = {
         RunState.P3_PROTOCOL_LOCKED.value,
-        RunState.P4_G1_COUNTERFACTUAL_COMPLETE.value,
-        RunState.P5_C1_COUNTERFACTUAL_COMPLETE.value,
+        RunState.P4_C1_PILOT_PASS.value,
+        RunState.P5_C1_FULL_COMPLETE.value,
+        RunState.P5B_G1_FULL_COMPLETE.value,
         RunState.P6_D1_COUNTERFACTUAL_COMPLETE.value,
     }
-    if status.get("status") != RunState.P3_PROTOCOL_LOCKED.value and not (
+    if retrospective_d1:
+        if (
+            status.get("status") != RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value
+            or lock.get("d1_candidate_generation_authorized") is not True
+        ):
+            raise PermissionError(
+                "retrospective D1 claim requires the completed P10 core"
+            )
+    elif status.get("status") != RunState.P3_PROTOCOL_LOCKED.value and not (
         resume and status.get("status") in allowed_resume_states
     ):
         raise PermissionError("bulk execution requires P3 or an exact resumed route stage")
@@ -658,6 +795,7 @@ def claim_bulk_execution(run_dir: str | Path, *, resume: bool = False) -> Path:
         "execution_count": 1,
         "protocol_lock_file_sha256": sha256_file(root / LOCK_RELATIVE_PATH),
         "protocol_lock_self_sha256": lock["self_sha256"],
+        "scope": "d1_secondary" if retrospective_d1 else "core_counterfactual",
     }
     destination = root / EXECUTION_RELATIVE_PATH
     if destination.exists():
@@ -671,6 +809,7 @@ def claim_bulk_execution(run_dir: str | Path, *, resume: bool = False) -> Path:
             != payload["protocol_lock_file_sha256"]
             or existing.get("protocol_lock_self_sha256")
             != payload["protocol_lock_self_sha256"]
+            or existing.get("scope") != payload["scope"]
         ):
             raise RuntimeError("existing counterfactual execution claim differs")
     else:

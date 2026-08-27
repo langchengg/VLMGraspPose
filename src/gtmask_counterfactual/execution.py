@@ -22,7 +22,7 @@ from unified_reranking.hashing import canonical_sha256, sha256_file
 from gtmask_counterfactual.protocol import load_execution_authority
 
 from .candidate_matching import stable_candidate_id
-from .io import atomic_parquet
+from .io import artifact_record, atomic_json, atomic_parquet
 
 from .resource import validate_fresh_gate
 
@@ -94,11 +94,6 @@ def _load_json(path: Path, *, label: str) -> dict[str, Any]:
     return value
 
 
-def artifact_record(path: Path) -> dict[str, str]:
-    source = path.expanduser().resolve()
-    return {"path": str(source), "sha256": sha256_file(source)}
-
-
 def _verify_artifact(record: Mapping[str, Any], *, label: str) -> Path:
     path = Path(str(record.get("path", ""))).expanduser().resolve()
     expected = str(record.get("sha256", ""))
@@ -133,7 +128,12 @@ def authorize_gt_candidate_generation(
         raise PermissionError(
             "GT candidate generation is forbidden before P4 lock"
         ) from error
-    if authority.get("gt_candidate_generation_authorized") is not True:
+    authorized = (
+        authority.get("d1_candidate_generation_authorized")
+        if route_name == "d1"
+        else authority.get("gt_candidate_generation_authorized")
+    )
+    if authorized is not True:
         raise PermissionError(
             "protocol lock does not authorize GT candidate generation"
         )
@@ -166,6 +166,46 @@ def authorize_gt_candidate_generation(
     allowed = route_contract.get("allowed_gt_branches", ["gt_oracle"])
     if branch_name not in allowed:
         raise PermissionError(f"{route_name}/{branch_name} is not locked")
+    return authority, route_contract
+
+
+def authorize_retrospective_import(
+    *,
+    protocol_lock_path: Path,
+    registry_path: Path,
+    route: str,
+    branch: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Authorize a verified import without a current-run execution claim."""
+
+    route_name = route.lower()
+    branch_name = branch.lower()
+    if route_name not in {"g1", "c1"} or branch_name != "gt_oracle":
+        raise ExecutionContractError("retrospective import supports G1/C1 GT-oracle")
+    lock_path = protocol_lock_path.expanduser().resolve()
+    run_dir = lock_path.parents[1]
+    if lock_path != run_dir / "01_protocol_lock/COUNTERFACTUAL_PROTOCOL_LOCK.json":
+        raise ExecutionContractError("protocol lock is outside the canonical run path")
+    authority = load_execution_authority(lock_path)
+    registry = authority.get("gt_mask_registry")
+    if not isinstance(registry, Mapping) or (
+        _verify_artifact(registry, label="locked GT registry")
+        != registry_path.expanduser().resolve()
+    ):
+        raise ExecutionContractError("requested GT registry differs from protocol lock")
+    routes = authority.get("routes")
+    if not isinstance(routes, Mapping) or not isinstance(routes.get(route_name), Mapping):
+        raise ExecutionContractError(f"protocol lock lacks route: {route_name}")
+    route_contract = dict(routes[route_name])
+    if route_contract.get("execution_mode") != "retrospective_verified_import":
+        raise PermissionError("route is not locked for retrospective verified import")
+    pipeline = _load_json(run_dir / "pipeline_status.json", label="pipeline status")
+    if int(pipeline.get("counterfactual_execution_count", -1)) != 0:
+        raise PermissionError(
+            "retrospective import requires current-run execution count zero"
+        )
+    if (lock_path.parent / "COUNTERFACTUAL_EXECUTION.json").exists():
+        raise PermissionError("retrospective import must not create an execution claim")
     return authority, route_contract
 
 
@@ -338,6 +378,7 @@ def atomic_sample_json(
     branch: str,
     sample_id: str,
     payload: Mapping[str, Any],
+    output_scope: str | None = None,
 ) -> Path:
     """Write one immutable sample shard via temporary/fsync/atomic rename."""
 
@@ -345,9 +386,14 @@ def atomic_sample_json(
     if not sample:
         raise ExecutionContractError("sample_id is empty")
     digest = hashlib.sha256(sample.encode("utf-8")).hexdigest()
+    prediction_root = run_dir.expanduser().resolve() / "06_gtmask_predictions"
+    if output_scope is not None:
+        scope = str(output_scope).strip().lower()
+        if not scope or "/" in scope or scope in {".", ".."}:
+            raise ExecutionContractError("output scope is unsafe")
+        prediction_root /= scope
     destination = (
-        run_dir.expanduser().resolve()
-        / "06_gtmask_predictions"
+        prediction_root
         / route.lower()
         / branch.lower()
         / "samples"
@@ -428,6 +474,9 @@ def adapt_native_cumulative_to_sample_shards(
     expected_executed_sample_ids: set[str] | None = None,
     technical_complement_ids: set[str] | None = None,
     source_adapter_manifest: Path | None = None,
+    allow_source_superset: bool = False,
+    output_scope: str | None = None,
+    stage: str | None = None,
 ) -> Path:
     """Safely adapt the frozen runner's cumulative parquets to atomic shards."""
 
@@ -441,6 +490,22 @@ def adapt_native_cumulative_to_sample_shards(
         raise ExecutionContractError("native inference output is incomplete")
     samples = pq.read_table(sample_path).to_pylist()
     candidates = pq.read_table(candidate_path).to_pylist()
+    source_identities = [str(row["sample_id"]) for row in samples]
+    if len(set(source_identities)) != len(source_identities):
+        raise ExecutionContractError("native per-sample output has duplicate IDs")
+    if expected_executed_sample_ids is not None:
+        expected = set(expected_executed_sample_ids)
+        source_set = set(source_identities)
+        if not expected.issubset(source_set):
+            raise ExecutionContractError("native output omits an expected sample")
+        if not allow_source_superset and source_set != expected:
+            raise ExecutionContractError(
+                "native output differs from the expected execution set"
+            )
+        samples = [row for row in samples if str(row["sample_id"]) in expected]
+        candidates = [
+            row for row in candidates if str(row["sample_id"]) in expected
+        ]
     for candidate in candidates:
         candidate["source_candidate_id"] = str(candidate.get("candidate_id", ""))
         candidate["source_candidate_index"] = int(candidate.get("native_rank", 0))
@@ -463,14 +528,12 @@ def adapt_native_cumulative_to_sample_shards(
     for candidate in candidates:
         by_sample[str(candidate["sample_id"])].append(dict(candidate))
     identities = [str(row["sample_id"]) for row in samples]
-    if len(set(identities)) != len(identities):
-        raise ExecutionContractError("native per-sample output has duplicate IDs")
     if set(by_sample).difference(identities):
         raise ExecutionContractError("candidate output references an unknown sample")
     if expected_executed_sample_ids is not None and set(identities) != set(
         expected_executed_sample_ids
     ):
-        raise ExecutionContractError("native output differs from the P2 executable set")
+        raise ExecutionContractError("filtered native output differs from expected IDs")
     complement = set(technical_complement_ids or set())
     if set(identities).intersection(complement):
         raise ExecutionContractError("native output overlaps the P2 technical complement")
@@ -510,14 +573,12 @@ def adapt_native_cumulative_to_sample_shards(
     inventory: list[dict[str, Any]] = []
     for sample in sorted(samples, key=lambda row: str(row["sample_id"])):
         sample_id = str(sample["sample_id"])
-        stage = (
-            "P4_G1_COUNTERFACTUAL_COMPLETE"
-            if route == "g1"
-            else "P5_C1_COUNTERFACTUAL_COMPLETE"
+        job_stage = stage or (
+            "P5B_G1_FULL_COMPLETE" if route == "g1" else "P5_C1_FULL_COMPLETE"
         )
         with counterfactual_job(
             run_dir,
-            stage=stage,
+            stage=job_stage,
             route=route,
             branch=branch,
             sample_id=sample_id,
@@ -543,6 +604,7 @@ def adapt_native_cumulative_to_sample_shards(
                         "run_manifest_sha256": sha256_file(manifest_path),
                     },
                 },
+                output_scope=output_scope,
             )
             job["artifact_path"] = str(shard)
             job["artifact_sha256"] = sha256_file(shard)
@@ -554,12 +616,10 @@ def adapt_native_cumulative_to_sample_shards(
                 "candidate_count": len(by_sample.get(sample_id, [])),
             }
         )
-    canonical_root = (
-        run_dir.expanduser().resolve()
-        / "06_gtmask_predictions"
-        / route.lower()
-        / branch.lower()
-    )
+    canonical_root = run_dir.expanduser().resolve() / "06_gtmask_predictions"
+    if output_scope is not None:
+        canonical_root /= output_scope.lower()
+    canonical_root = canonical_root / route.lower() / branch.lower()
     canonical_sample_path = _exact_or_write_parquet(
         pd.DataFrame(samples), canonical_root / "per_sample.parquet"
     )
@@ -590,6 +650,8 @@ def adapt_native_cumulative_to_sample_shards(
         "executed_sample_count": len(identities),
         "technical_complement_count": len(complement),
         "candidate_count": len(candidates),
+        "source_sample_count": len(source_identities),
+        "source_subset_import": allow_source_superset,
         "atomic_write_contract": "temporary_fsync_atomic_rename_v1",
         "source_native_manifest": artifact_record(manifest_path),
         "per_sample": artifact_record(canonical_sample_path),
@@ -603,15 +665,386 @@ def adapt_native_cumulative_to_sample_shards(
     }
     if source_adapter_manifest is not None:
         result["execution_source_adapter"] = artifact_record(source_adapter_manifest)
+    if output_scope is not None:
+        result["output_scope"] = output_scope.lower()
     result["content_sha256"] = canonical_sha256(result)
-    destination = (
-        run_dir.expanduser().resolve()
-        / "06_gtmask_predictions"
-        / route.lower()
-        / branch.lower()
-        / "manifest.json"
-    )
+    destination = canonical_root / "manifest.json"
     return _atomic_json(destination, result)
+
+
+def _retrospective_native_source(
+    route: str, route_contract: Mapping[str, Any]
+) -> tuple[Path, dict[str, Any]]:
+    """Verify every locked byte required for a Case-A retrospective import."""
+
+    if route_contract.get("execution_mode") != "retrospective_verified_import":
+        raise ExecutionContractError("G1/C1 contract does not authorize inference")
+    for name in (
+        "retrospective_source_lock",
+        "retrospective_finalization",
+        "retrospective_result_hashes",
+        "retrospective_canonical_candidates",
+    ):
+        record = route_contract.get(name)
+        if not isinstance(record, Mapping):
+            raise ExecutionContractError(f"route lacks locked {name}")
+        _verify_artifact(record, label=name)
+    snapshot_record = route_contract.get("retrospective_native_inference")
+    if not isinstance(snapshot_record, Mapping):
+        raise ExecutionContractError("route lacks stored native source snapshot")
+    snapshot = _verify_artifact(snapshot_record, label="stored native source snapshot")
+    if (
+        sha256_file(snapshot) != FROZEN_NATIVE_INFERENCE_SHA256
+        or sha256_file(NATIVE_INFERENCE) != FROZEN_NATIVE_INFERENCE_SHA256
+    ):
+        raise ExecutionContractError("stored/current native inference bytes differ")
+    source = route_contract.get("retrospective_native_output")
+    if not isinstance(source, Mapping) or set(source) != {
+        "run_manifest",
+        "per_sample",
+        "candidates",
+    }:
+        raise ExecutionContractError("retrospective native output inventory differs")
+    paths = {
+        name: _verify_artifact(record, label=f"retrospective {route} {name}")
+        for name, record in source.items()
+        if isinstance(record, Mapping)
+    }
+    if set(paths) != set(source) or len({path.parent for path in paths.values()}) != 1:
+        raise ExecutionContractError("retrospective native output paths differ")
+    manifest = _load_json(paths["run_manifest"], label=f"stored {route} manifest")
+    expected = route_contract.get("native_manifest_fields")
+    if not isinstance(expected, Mapping) or any(
+        manifest.get(name) != value for name, value in expected.items()
+    ):
+        raise ExecutionContractError("stored native manifest differs from protocol")
+    if int(manifest.get("sample_count", -1)) != 7_675:
+        raise ExecutionContractError("stored native output is not the full denominator")
+    result_hashes_path = _verify_artifact(
+        route_contract["retrospective_result_hashes"],
+        label="retrospective result hashes",
+    )
+    result_hashes = _load_json(result_hashes_path, label="retrospective result hashes")
+    canonical_record = route_contract["retrospective_canonical_candidates"]
+    recorded = result_hashes.get("files", {}).get(
+        "03_canonical/canonical_candidates.parquet"
+    )
+    if not isinstance(recorded, Mapping) or (
+        recorded.get("sha256") != canonical_record.get("sha256")
+        or recorded.get("bytes") != canonical_record.get("bytes")
+    ):
+        raise ExecutionContractError("final result hashes do not bind candidates")
+    raw = pd.read_parquet(paths["candidates"])
+    canonical = pd.read_parquet(
+        route_contract["retrospective_canonical_candidates"]["path"]
+    )
+    canonical = canonical.loc[
+        canonical["method"].astype(str).eq(f"{route.upper()}-ORACLE")
+    ].copy()
+    core_columns = [
+        "sample_id",
+        "candidate_id",
+        "native_rank",
+        "native_score",
+        "cx_px",
+        "cy_px",
+        "theta_deg",
+        "jaw_width_px",
+        "rectangle_height_px",
+        "source_row",
+        "source_column",
+        "status",
+        "failure_reason",
+        "transform_json",
+        "checkpoint_sha256",
+        "selected_config_sha256",
+        "native_decoder_config_sha256",
+    ]
+    if any(column not in raw or column not in canonical for column in core_columns):
+        raise ExecutionContractError("raw/canonical candidate core schema differs")
+    order = ["sample_id", "native_rank", "candidate_id"]
+    raw_core = raw.loc[:, core_columns].sort_values(order, kind="mergesort").reset_index(drop=True)
+    canonical_core = canonical.loc[:, core_columns].sort_values(
+        order, kind="mergesort"
+    ).reset_index(drop=True)
+    if not raw_core.equals(canonical_core):
+        raise ExecutionContractError(
+            "stored raw candidates differ from formally locked canonical core fields"
+        )
+    return paths["run_manifest"].parent, manifest
+
+
+def _pilot_acceptance_payload(
+    *,
+    route_contract: Mapping[str, Any],
+    pilot_manifest: Mapping[str, Any],
+    imported_manifest_path: Path,
+) -> dict[str, Any]:
+    """Independently recount the 200 stored raw and finalized C1 outputs."""
+
+    imported = _load_json(imported_manifest_path, label="C1 pilot import manifest")
+    selection = pd.read_parquet(pilot_manifest["selection"]["path"])
+    selected = selection["sample_id"].astype(str).tolist()
+    selected_set = set(selected)
+    native_records = route_contract["retrospective_native_output"]
+    raw_samples = pd.read_parquet(native_records["per_sample"]["path"])
+    raw_candidates = pd.read_parquet(native_records["candidates"]["path"])
+    raw_samples = raw_samples.loc[
+        raw_samples["sample_id"].astype(str).isin(selected_set)
+    ].copy()
+    raw_candidates = raw_candidates.loc[
+        raw_candidates["sample_id"].astype(str).isin(selected_set)
+    ].copy()
+    imported_samples = pd.read_parquet(imported["per_sample"]["path"])
+    imported_candidates = pd.read_parquet(imported["per_candidate"]["path"])
+    finalized = pd.read_parquet(
+        route_contract["retrospective_canonical_candidates"]["path"],
+        columns=["sample_id", "method"],
+    )
+    finalized = finalized.loc[
+        finalized["sample_id"].astype(str).isin(selected_set)
+        & finalized["method"].astype(str).eq("C1-ORACLE")
+    ]
+    if (
+        len(selected) != 200
+        or len(selected_set) != 200
+        or set(raw_samples["sample_id"].astype(str)) != selected_set
+        or set(imported_samples["sample_id"].astype(str)) != selected_set
+        or int(imported.get("technical_complement_count", -1)) != 0
+        or len(raw_candidates) != len(imported_candidates)
+        or len(finalized) != len(raw_candidates)
+    ):
+        raise ExecutionContractError("C1 pilot retrospective population differs")
+    raw_counts = raw_candidates.groupby(
+        raw_candidates["sample_id"].astype(str)
+    ).size()
+    declared_counts = raw_samples.set_index(
+        raw_samples["sample_id"].astype(str)
+    )["candidate_count"].astype(int)
+    if not declared_counts.equals(raw_counts.reindex(declared_counts.index, fill_value=0)):
+        raise ExecutionContractError("C1 pilot native candidate recount differs")
+    predicted_counts = {
+        str(name): int(count)
+        for name, count in selection["predicted_outcome_class"]
+        .astype(str)
+        .value_counts()
+        .sort_index()
+        .items()
+    }
+    required = {
+        "predicted_success",
+        "predicted_no_positive",
+        "predicted_no_output",
+    }
+    if not required.issubset(predicted_counts):
+        raise ExecutionContractError("C1 pilot lacks required predicted outcomes")
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "PASS",
+        "stage": "P4_C1_PILOT_PASS",
+        "acceptance_method": "independent_raw_manifest_and_finalized_recount_v1",
+        "sample_count": 200,
+        "candidate_count": len(raw_candidates),
+        "no_output_count": int((declared_counts == 0).sum()),
+        "ordered_selected_ids_sha256": canonical_sha256(selected),
+        "predicted_outcome_counts": predicted_counts,
+        "query_type_counts": {
+            str(name): int(count)
+            for name, count in selection["query_type"]
+            .astype(str)
+            .value_counts()
+            .sort_index()
+            .items()
+        },
+        "target_size_quartile_counts": {
+            str(name): int(count)
+            for name, count in selection["target_size_quartile"]
+            .astype(str)
+            .value_counts()
+            .sort_index()
+            .items()
+        },
+        "raw_and_finalized_candidate_count_match": True,
+        "pilot_source_adapter": dict(route_contract["c1_pilot_source_adapter"]),
+        "import_manifest": artifact_record(imported_manifest_path),
+        "stored_native_manifest": dict(native_records["run_manifest"]),
+        "stored_native_per_sample": dict(native_records["per_sample"]),
+        "stored_native_candidates": dict(native_records["candidates"]),
+        "stored_finalized_candidates": dict(
+            route_contract["retrospective_canonical_candidates"]
+        ),
+        "retrospective_reconstruction": artifact_record(
+            imported_manifest_path.parent / "RETROSPECTIVE_RECONSTRUCTION.json"
+        ),
+    }
+    payload["content_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def verify_c1_pilot_acceptance(
+    path: Path, *, route_contract: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Recompute and verify the independently accepted C1 audit pilot."""
+
+    observed = _load_json(path, label="C1 pilot acceptance")
+    unsigned = dict(observed)
+    recorded = unsigned.pop("content_sha256", None)
+    if recorded != canonical_sha256(unsigned):
+        raise ExecutionContractError("C1 pilot acceptance content hash differs")
+    pilot_record = route_contract.get("c1_pilot_source_adapter")
+    if not isinstance(pilot_record, Mapping):
+        raise ExecutionContractError("C1 route lacks a pilot adapter")
+    from .pilot import verify_c1_pilot_source_adapter
+
+    pilot = verify_c1_pilot_source_adapter(
+        _verify_artifact(pilot_record, label="C1 pilot source adapter")
+    )
+    imported_path = _verify_artifact(
+        observed.get("import_manifest", {}), label="C1 pilot import manifest"
+    )
+    expected = _pilot_acceptance_payload(
+        route_contract=route_contract,
+        pilot_manifest=pilot,
+        imported_manifest_path=imported_path,
+    )
+    if observed != expected:
+        raise ExecutionContractError("C1 pilot independent acceptance differs")
+    return observed
+
+
+def import_g1_c1_retrospective(
+    *,
+    run_dir: Path,
+    route: str,
+    scope: str,
+    registry_path: Path,
+    protocol_lock_path: Path,
+) -> Path:
+    """Import immutable Case-A outputs; this function never launches a model."""
+
+    route_name = route.lower()
+    scope_name = scope.lower()
+    if route_name not in {"g1", "c1"} or scope_name not in {"pilot", "full"}:
+        raise ExecutionContractError("unsupported retrospective route/scope")
+    if scope_name == "pilot" and route_name != "c1":
+        raise ExecutionContractError("the audit pilot is defined only for C1")
+    _, route_contract = authorize_retrospective_import(
+        protocol_lock_path=protocol_lock_path,
+        registry_path=registry_path,
+        route=route_name,
+        branch="gt_oracle",
+    )
+    native_output, _ = _retrospective_native_source(route_name, route_contract)
+    complement: set[str] = set()
+    output_scope: str | None = None
+    if scope_name == "pilot":
+        from .pilot import verify_c1_pilot_source_adapter
+
+        adapter_path = _verify_artifact(
+            route_contract["c1_pilot_source_adapter"],
+            label="C1 pilot source adapter",
+        )
+        adapter = verify_c1_pilot_source_adapter(adapter_path)
+        expected_ids = set(
+            pd.read_parquet(
+                adapter["test_samples"]["path"], columns=["sample_id"]
+            )["sample_id"].astype(str)
+        )
+        stage = "P4_C1_PILOT_PASS"
+        output_scope = "pilot"
+    else:
+        from .g1_c1_adapter import verify_g1_c1_source_adapter
+
+        adapter_path = _verify_artifact(
+            route_contract["execution_source_adapter"],
+            label=f"{route_name} full source adapter",
+        )
+        adapter = verify_g1_c1_source_adapter(adapter_path)
+        expected_ids = set(
+            pd.read_parquet(
+                adapter["test_samples"]["path"], columns=["sample_id"]
+            )["sample_id"].astype(str)
+        )
+        complement = set(
+            str(value)
+            for value in _load_json(
+                Path(str(adapter["unresolved_partition"]["path"])),
+                label="G1/C1 unresolved partition",
+            ).get("sample_ids", [])
+        )
+        stage = "P5_C1_FULL_COMPLETE" if route_name == "c1" else "P5B_G1_FULL_COMPLETE"
+    append_gt_access_log(
+        run_dir,
+        {
+            "stage": stage,
+            "route": route_name,
+            "branch": "gt_oracle",
+            "purpose": "hash_bound_retrospective_case_a_import",
+            "model_inference_performed": False,
+            "protocol_lock": artifact_record(protocol_lock_path),
+            "gt_registry": artifact_record(registry_path),
+        },
+    )
+    imported = adapt_native_cumulative_to_sample_shards(
+        run_dir=run_dir,
+        route=route_name,
+        branch="gt_oracle",
+        native_output=native_output,
+        expected_executed_sample_ids=expected_ids,
+        technical_complement_ids=complement,
+        source_adapter_manifest=adapter_path,
+        allow_source_superset=True,
+        output_scope=output_scope,
+        stage=stage,
+    )
+    reconstruction: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "VERIFIED",
+        "execution_mode": "retrospective_verified_import",
+        "route": route_name,
+        "scope": scope_name,
+        "current_run_model_inference_performed": False,
+        "current_run_counterfactual_execution_count": 0,
+        "historical_source_execution_preexisting": True,
+        "test_outcomes_exposed_before_current_protocol_binding": True,
+        "protocol_lock": artifact_record(protocol_lock_path),
+        "source_run": route_contract["retrospective_source_run"],
+        "source_lock": dict(route_contract["retrospective_source_lock"]),
+        "source_finalization": dict(route_contract["retrospective_finalization"]),
+        "source_result_hashes": dict(route_contract["retrospective_result_hashes"]),
+        "source_native_output": dict(route_contract["retrospective_native_output"]),
+        "source_canonical_candidates": dict(
+            route_contract["retrospective_canonical_candidates"]
+        ),
+        "import_manifest": artifact_record(imported),
+        "raw_to_locked_canonical_core_fields_exact": True,
+    }
+    reconstruction["content_sha256"] = canonical_sha256(reconstruction)
+    reconstruction_path = imported.parent / "RETROSPECTIVE_RECONSTRUCTION.json"
+    if reconstruction_path.exists():
+        if _load_json(
+            reconstruction_path, label="retrospective reconstruction"
+        ) != reconstruction:
+            raise ExecutionContractError("existing retrospective reconstruction differs")
+    else:
+        atomic_json(reconstruction_path, reconstruction)
+    if scope_name == "full":
+        return imported
+    pilot = verify_c1_pilot_source_adapter(adapter_path)
+    acceptance = _pilot_acceptance_payload(
+        route_contract=route_contract,
+        pilot_manifest=pilot,
+        imported_manifest_path=imported,
+    )
+    destination = imported.parent / "C1_PILOT_ACCEPTANCE.json"
+    if destination.exists():
+        observed = _load_json(destination, label="C1 pilot acceptance")
+        if observed != acceptance:
+            raise ExecutionContractError("existing C1 pilot acceptance differs")
+    else:
+        atomic_json(destination, acceptance)
+    verify_c1_pilot_acceptance(destination, route_contract=route_contract)
+    return destination
 
 
 def run_g1_c1_oracle(
@@ -904,7 +1337,10 @@ __all__ = [
     "artifact_record",
     "atomic_sample_json",
     "authorize_gt_candidate_generation",
+    "authorize_retrospective_import",
     "d1_case_b_preflight",
+    "import_g1_c1_retrospective",
     "probe_frozen_docker_image",
     "run_g1_c1_oracle",
+    "verify_c1_pilot_acceptance",
 ]

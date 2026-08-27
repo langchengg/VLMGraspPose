@@ -13,8 +13,12 @@ import json
 from pathlib import Path
 
 from gtmask_counterfactual.figures import render_all_figures
-from gtmask_counterfactual.finalize import assert_counterfactual_run, finalize_run
-from gtmask_counterfactual.reporting import write_reports
+from gtmask_counterfactual.finalize import (
+    assert_counterfactual_run,
+    finalize_run,
+    load_bound_d1_blocker,
+)
+from gtmask_counterfactual.reporting import load_bound_tables, write_reports
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -23,29 +27,23 @@ def _parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build", help="render figures and reports from bound tables")
     build.add_argument("--run-dir", required=True, type=Path)
     build.add_argument("--table-manifest", type=Path)
-    build.add_argument("--d1-blocker-json", type=Path)
     finalize = subparsers.add_parser("finalize", help="create COMPLETE or PARTIAL final lock")
     finalize.add_argument("--run-dir", required=True, type=Path)
-    finalize.add_argument("--d1-blocker-json", type=Path)
     return parser
 
 
 def main() -> int:
     arguments = _parser().parse_args()
     root = assert_counterfactual_run(arguments.run_dir)
-    blocker = None
-    if arguments.d1_blocker_json is not None:
-        blocker_path = arguments.d1_blocker_json.expanduser().resolve()
-        if blocker_path.is_symlink() or not blocker_path.is_file():
-            raise ValueError(f"D1 blocker JSON is not a regular file: {blocker_path}")
-        blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
-        if not isinstance(blocker, dict):
-            raise ValueError("D1 blocker JSON must be an object")
+    blocker = load_bound_d1_blocker(root)
     if arguments.command == "build":
+        tables, _ = load_bound_tables(root, arguments.table_manifest)
+        branch_metrics = tables["branch_metrics.csv"]
+        has_d1_primary = branch_metrics["route"].astype(str).str.upper().eq("D1").any()
         figures = render_all_figures(
             root,
             arguments.table_manifest,
-            allow_missing_d1_primary=blocker is not None,
+            allow_missing_d1_primary=blocker is not None or not has_d1_primary,
         )
         reports = write_reports(root, arguments.table_manifest, d1_blocker=blocker)
         figure_status = json.loads(figures.read_text(encoding="utf-8"))["status"]
@@ -63,7 +61,7 @@ def main() -> int:
             )
         )
         return 0
-    print(json.dumps(finalize_run(root, d1_blocker=blocker), sort_keys=True))
+    print(json.dumps(finalize_run(root), sort_keys=True))
     return 0
 
 

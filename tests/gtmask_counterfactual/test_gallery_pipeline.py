@@ -13,12 +13,18 @@ from gtmask_counterfactual.audit import bootstrap_run, transition_pipeline_statu
 from gtmask_counterfactual.contracts import RunState
 from gtmask_counterfactual.gallery_pipeline import (
     GalleryContractError,
+    _align_probability_to_native,
+    _categories,
+    _raw_gt_rectangles,
     accept_gallery_manual_qa,
     manual_qa_signature,
     prepare_gallery,
     verify_gallery_build,
 )
-from gtmask_counterfactual.independent import canonical_corners
+from gtmask_counterfactual.independent import (
+    canonical_corners,
+    evaluate_same_gt_candidate,
+)
 from gtmask_counterfactual.io import (
     artifact_record,
     atomic_json,
@@ -32,6 +38,7 @@ from gtmask_counterfactual.protocol import (
     inline_binding,
 )
 from gtmask_counterfactual.taxonomy import NATIVE_CLASSES
+import gtmask_counterfactual.visual_assets as visual_assets_module
 from gtmask_counterfactual.visual_assets import write_visual_asset_registry
 
 
@@ -49,10 +56,73 @@ CATEGORIES = (
 )
 
 
+def test_borderline_category_accepts_outcome_blind_resize_evidence() -> None:
+    row = {
+        "technical_failure": False,
+        "native_taxonomy": "T1_deployed_native_success",
+        "pred_all_positive": True,
+        "pred_native_correct": True,
+        "final_correct": True,
+        "GT_mask_regression": False,
+        "pred_first_positive_rank": 1,
+        "gt_first_positive_rank": 1,
+        "pred_no_output": False,
+        "gt_no_output": False,
+        "gt_native_correct": True,
+        "annotation_suspect": False,
+    }
+
+    assert "borderline_annotation_sensitive" not in _categories(
+        row, geometry_match=False
+    )
+    assert "borderline_annotation_sensitive" in _categories(
+        row, geometry_match=False, borderline_mapping=True
+    )
+
+
+def test_probability_display_aligns_model_map_to_native() -> None:
+    probability = np.linspace(0.0, 1.0, 352 * 352, dtype=np.float32).reshape(
+        352, 352
+    )
+
+    aligned = _align_probability_to_native(probability, (480, 640))
+
+    assert aligned.shape == (480, 640)
+    assert aligned.dtype == np.float32
+    assert 0.0 <= float(aligned.min()) < float(aligned.max()) <= 1.0
+
+
+def test_raw_gt_rectangles_decode_parquet_json_string() -> None:
+    rectangles = [[[-1.0, -2.0], [3.0, -2.0], [3.0, 4.0], [-1.0, 4.0]]]
+
+    assert _raw_gt_rectangles(json.dumps(rectangles)) == rectangles
+
+    with pytest.raises(GalleryContractError, match="not valid JSON"):
+        _raw_gt_rectangles("[")
+
+
 def _content_json(path: Path, value: dict[str, object]) -> Path:
     payload = dict(value)
     payload["content_sha256"] = canonical_sha256(payload)
     return atomic_json(path, payload)
+
+
+def test_visual_artifact_identity_allows_locked_metadata(tmp_path: Path) -> None:
+    source = atomic_json(tmp_path / "source.json", {"status": "COMPLETE"})
+    enriched = {
+        **artifact_record(source),
+        "rows": 7_675,
+        "samples_with_candidates": 7_661,
+    }
+
+    assert visual_assets_module._verify_record(enriched, name="source") == source
+
+    enriched["sha256"] = "0" * 64
+    with pytest.raises(
+        visual_assets_module.VisualAssetContractError,
+        match="artifact differs",
+    ):
+        visual_assets_module._verify_record(enriched, name="source")
 
 
 def _candidate(
@@ -65,7 +135,7 @@ def _candidate(
     success: bool,
     cx: float,
 ) -> dict[str, object]:
-    return {
+    candidate = {
         "sample_id": sample_id,
         "route": route,
         "branch": branch,
@@ -76,12 +146,26 @@ def _candidate(
         "cy_px": 4.0,
         "theta_deg": 0.0,
         "width_px": 3.0,
-        "height_px": 2.0,
-        "candidate_success": success,
-        "matched_gt_index": 0,
-        "best_same_gt_iou": 0.6 if success else 0.1,
-        "best_same_gt_angle_error_deg": 5.0 if success else 40.0,
+        "height_px": 20.0,
     }
+    evaluated = evaluate_same_gt_candidate(
+        candidate,
+        [
+            canonical_corners(
+                {
+                    "cx_px": 4.0,
+                    "cy_px": 4.0,
+                    "theta_deg": 0.0,
+                    "width_px": 3.0,
+                    "height_px": 20.0,
+                }
+            ).tolist()
+        ],
+        shape=(8, 8),
+    )
+    evaluated.pop("pairwise")
+    assert evaluated["candidate_success"] is success
+    return {**candidate, **evaluated}
 
 
 def _scenario(
@@ -112,26 +196,26 @@ def _scenario(
 
     flags: dict[str, object]
     if category == "clear":
-        add(pred, "predicted", "p1", 1, False, 6.0)
+        add(pred, "predicted", "p1", 1, False, 7.0)
         add(gt, "gt_oracle", "g1", 1, True, 4.0)
         flags = dict(tax=NATIVE_CLASSES[4], pred=False, pred_native=False, gt=True, gt_native=True)
     elif category == "grounding_selection":
-        add(pred, "predicted", "p1", 1, False, 6.0)
-        add(gt, "gt_oracle", "g1", 1, False, 6.0)
+        add(pred, "predicted", "p1", 1, False, 7.0)
+        add(gt, "gt_oracle", "g1", 1, False, 7.0)
         add(gt, "gt_oracle", "g2", 2, True, 4.0)
         flags = dict(tax=NATIVE_CLASSES[5], pred=False, pred_native=False, gt=True, gt_native=False)
     elif category == "generator":
-        add(pred, "predicted", "p1", 1, False, 6.0)
-        add(gt, "gt_oracle", "g1", 1, False, 6.0)
+        add(pred, "predicted", "p1", 1, False, 7.0)
+        add(gt, "gt_oracle", "g1", 1, False, 7.0)
         flags = dict(tax=NATIVE_CLASSES[7], pred=False, pred_native=False, gt=False, gt_native=False)
     elif category == "ranking":
-        add(pred, "predicted", "p1", 1, False, 6.0)
+        add(pred, "predicted", "p1", 1, False, 7.0)
         add(pred, "predicted", "p2", 2, True, 4.0)
         add(gt, "gt_oracle", "g1", 1, True, 4.0)
         flags = dict(tax=NATIVE_CLASSES[2], pred=True, pred_native=False, gt=True, gt_native=True)
     elif category == "regression":
         add(pred, "predicted", "p1", 1, True, 4.0)
-        add(gt, "gt_oracle", "g1", 1, False, 6.0)
+        add(gt, "gt_oracle", "g1", 1, False, 7.0)
         flags = dict(tax=NATIVE_CLASSES[1], pred=True, pred_native=True, gt=False, gt_native=False)
     elif category == "no_output":
         add(gt, "gt_oracle", "g1", 1, True, 4.0)
@@ -142,7 +226,7 @@ def _scenario(
         flags = dict(tax=NATIVE_CLASSES[1], pred=True, pred_native=True, gt=True, gt_native=True)
     else:
         add(pred, "predicted", "p1", 1, True, 3.0)
-        add(gt, "gt_oracle", "g1", 1, True, 7.0)
+        add(gt, "gt_oracle", "g1", 1, True, 4.0)
         flags = dict(tax=NATIVE_CLASSES[1], pred=True, pred_native=True, gt=True, gt_native=True)
     pred_first = next((int(row["native_rank"]) for row in pred if row["candidate_success"]), None)
     gt_first = next((int(row["native_rank"]) for row in gt if row["candidate_success"]), None)
@@ -349,6 +433,7 @@ def _build_gallery_run(tmp_path: Path) -> Path:
             "configs": {"synthetic": code_record},
             "baseline_replay": source_record,
             "sample_manifest": artifact_record(sample_path),
+            "gt_grasp_source": artifact_record(sample_path),
             "gt_mask_registry": artifact_record(registry_path),
             "mapping_qa": artifact_record(mapping_qa),
             "route_contracts": inline_binding(route_contracts),
@@ -402,8 +487,9 @@ def _build_gallery_run(tmp_path: Path) -> Path:
     }
     _content_json(run / "08_metrics/POSTPROCESS_MANIFEST.json", output_payload)
     transitions = (
-        (RunState.P4_G1_COUNTERFACTUAL_COMPLETE, RunState.P5_C1_COUNTERFACTUAL_COMPLETE),
-        (RunState.P5_C1_COUNTERFACTUAL_COMPLETE, RunState.P6_D1_COUNTERFACTUAL_COMPLETE),
+        (RunState.P4_C1_PILOT_PASS, RunState.P5_C1_FULL_COMPLETE),
+        (RunState.P5_C1_FULL_COMPLETE, RunState.P5B_G1_FULL_COMPLETE),
+        (RunState.P5B_G1_FULL_COMPLETE, RunState.P6_D1_COUNTERFACTUAL_COMPLETE),
         (RunState.P6_D1_COUNTERFACTUAL_COMPLETE, RunState.P7_TAXONOMY_COMPLETE),
         (RunState.P7_TAXONOMY_COMPLETE, RunState.P8_STATISTICS_COMPLETE),
         (RunState.P8_STATISTICS_COMPLETE, RunState.P9_GALLERIES_COMPLETE),

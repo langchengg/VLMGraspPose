@@ -1,0 +1,17 @@
+schema_version: 1
+schema: configs/graspnet6d/feature_schema_6d_v1.json
+runtime_sources: [rgb, depth, selected_grounding_mask, scene_point_cloud, frozen_vgn_candidate, camera_geometry, table_geometry]
+forbidden_sources: [target_object_mesh, gt_object_pose, gt_friction, gt_collision, gt_instance_id]
+missing_values:
+  fit_imputer_on: train
+  transform_only_on: [validation, test]
+  strategy: median
+  add_indicator: true
+ablations:
+  A1_q_only: [native_confidence]
+  A2_all: [native_confidence, target_support_2d, target_support_3d, width, orientation, collision_risk, local_geometry, grounding_quality]
+  A3_without_semantic_mask: [native_confidence, width, orientation, collision_risk, local_geometry]
+  A4_without_collision_risk: [native_confidence, target_support_2d, target_support_3d, width, orientation, local_geometry, grounding_quality]
+  A5_without_local_geometry: [native_confidence, target_support_2d, target_support_3d, width, orientation, collision_risk, grounding_quality]
+  A6_without_orientation_relative: [native_confidence, target_support_2d, target_support_3d, width, rotation_6d_only, collision_risk, local_geometry, grounding_quality]
+

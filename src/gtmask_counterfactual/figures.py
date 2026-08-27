@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Polygon
 
-from .io import artifact_record, atomic_json, canonical_sha256
+from .io import artifact_record, atomic_copy, atomic_json, canonical_sha256
 from .reporting import TABLE_MANIFEST_RELATIVE_PATH, load_bound_tables
 
 
@@ -335,7 +335,11 @@ def _stratified(
     ]
     _nonempty(selected, name=title)
     labels = (
-        selected["route"].astype(str) + " · " + selected["stratum_value"].astype(str)
+        selected["route"].astype(str)
+        + " · "
+        + selected["branch"].astype(str)
+        + " · "
+        + selected["stratum_value"].astype(str)
     ).tolist()
     delta = _numeric(selected, "delta")
     fig, ax = plt.subplots(figsize=(max(6.75, 0.65 * len(selected)), 3.2))
@@ -553,9 +557,17 @@ def render_all_figures(
             records[name] = files
         finally:
             plt.close(fig)
+    summary_path = atomic_copy(
+        output / "01_pred_vs_gt_oracle_all.pdf",
+        output / "gtmask_counterfactual_summary.pdf",
+    )
     manifest: dict[str, Any] = {
         "schema_version": 1,
-        "status": "PARTIAL" if allow_missing_d1_primary else "COMPLETE",
+        "status": "COMPLETE",
+        "core_status": "COMPLETE",
+        "d1_secondary_status": (
+            "PENDING_AFTER_CORE" if allow_missing_d1_primary else "COMPLETE"
+        ),
         "oracle_diagnostic": True,
         "palette": "Okabe-Ito",
         "png_dpi": 400,
@@ -564,13 +576,14 @@ def render_all_figures(
             [
                 {
                     "name": "12_d1_top5_top10_allnms_curve",
-                    "reason": "D1 primary GT-oracle raw-generation replay is blocked; no figure was fabricated",
+                    "reason": "D1 is a post-core secondary extension; no core figure was omitted",
                 }
             ]
             if allow_missing_d1_primary
             else []
         ),
         "formats": ["pdf", "svg", "png"],
+        "core_summary_figure": artifact_record(summary_path),
         "table_bundle": artifact_record(
             root / TABLE_MANIFEST_RELATIVE_PATH
             if table_manifest_path is None

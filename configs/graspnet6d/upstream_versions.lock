@@ -1,0 +1,44 @@
+# Verified against the official upstream repositories on 2026-08-15.
+# A commit is a source pin, not a claim that model weights share the code licence.
+schema_version: 1
+verified_at_utc: "2026-08-15T22:45:00Z"
+sources:
+  vgn:
+    url: https://github.com/ethz-asl/vgn
+    ref: corl2020
+    commit: d7af0622433f52ae88ebe81533f12b46b33e951a
+    code_license: BSD-3-Clause
+    local_path: HiFi_reproduction/third_party/vgn
+    local_checkout_kind: vendored_snapshot_without_nested_git_metadata
+    local_patch: none_in_upstream_tree
+    adapter: src/graspnet6d/vgn.py
+    adapter_reason: deterministic score ordering, device audit, and an isolated candidate contract
+    model_weight_license: not_separately_stated_by_upstream
+  graspnet_api:
+    url: https://github.com/graspnet/graspnetAPI
+    ref: master
+    commit: eb57dd2092d8dbe05312a29c3d0c22f3226efbfc
+    code_license: MIT_at_repository_root
+    bundled_dexnet_notice: research_and_nonprofit_restrictions_apply_to_bundled_dexnet_code
+    local_path: legacy/external_graspnet/graspnetAPI
+    local_commit: bd6783c3effdebd895abfba8b96dc22a42ec3b5a
+    local_patch: none_in_upstream_tree
+    adapter: src/graspnet6d/evaluator.py
+    adapter_reason: expose per-frozen-candidate results without official score-dependent NMS/top-k pruning
+  lightgbm:
+    url: https://github.com/lightgbm-org/LightGBM
+    ref: v4.7.0
+    commit: 8f7036f03627054d5a54a6f965b13f4b9ff2cb63
+    current_main_checked: bdf3704eaca8940676bfd9f5fcd74b50d520d77a
+    code_license: MIT
+    local_patch: none
+    adapter: src/graspnet6d/ranker.py
+    adapter_reason: isolated graded relevance 0-6 while preserving the existing binary 4-DoF wrapper
+  openai_clip_hifics_dependency:
+    url: https://github.com/openai/CLIP
+    ref: main
+    commit: d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
+    code_license: MIT
+    local_patch: none
+    reason: existing HiFi-CS architecture imports the official clip Python package
+    weight_sha256: 5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f

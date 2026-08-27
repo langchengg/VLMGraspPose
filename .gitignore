@@ -90,6 +90,13 @@
 /crog_reproduction/CROG/train_ssg.py
 
 # Virtual environments and installed packages.
+/.venv-graspnet6d/
+# Data-derived scene splits are content-addressed inside immutable runs.  The
+# convenience config copy can be force-added after a formal run, but must not
+# alter the dirty-tree identity between resumable stages.
+/configs/graspnet6d/splits/graspnet*_scene_split_*.json
+/configs/graspnet6d/graspnet_object_catalog_v1.json
+/third_party/**/.venv/
 .venv/
 .venv-*/
 venv/
@@ -121,6 +128,8 @@ env/
 
 # Local datasets and raw/processed data. Source loaders under data/ are
 # explicitly preserved where a project uses data as a Python package.
+/data_external/
+/downloads/
 /data/
 /dataset/
 /datasets/
@@ -146,6 +155,7 @@ env/
 !/target_aware_vlm_grasping/data/.gitkeep
 
 # Model checkpoints, pretrained assets, and serialized experiment data.
+/checkpoints/
 **/checkpoints/
 **/checkpoint/
 **/ckpts/
@@ -179,6 +189,10 @@ env/
 *.npz
 
 # Training, inference, and analysis outputs.
+/artifacts/graspnet6d/**/cache/
+/artifacts/graspnet6d/**/raw/
+/figures/ch4/
+/images/chapter4/
 **/runs/
 **/wandb/
 **/tensorboard/

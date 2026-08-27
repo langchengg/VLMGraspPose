@@ -172,13 +172,22 @@ def _base_reasons(row: Mapping[str, Any]) -> list[str]:
         "depth",
         "intrinsics",
         "prepared_gt_mask",
-        "source_instance_mask",
         "gt_grasp_set",
     ):
         if not _absolute(row.get(f"{prefix}_path")):
             reasons.append(f"invalid absolute {prefix}_path")
         if not _digest(row.get(f"{prefix}_sha256")):
             reasons.append(f"invalid {prefix}_sha256")
+    if not _absolute(row.get("source_instance_mask_path")):
+        reasons.append("invalid absolute source_instance_mask_path")
+    source_instance_sha256 = _text(row.get("source_instance_mask_sha256"))
+    if source_instance_sha256:
+        if not _digest(source_instance_sha256):
+            reasons.append("invalid source_instance_mask_sha256")
+    elif row.get("source_instance_mask_hash_status") != (
+        "PENDING_P2_AUTHORIZED_HASH"
+    ):
+        reasons.append("source instance mask hash lacks P2-pending authority")
     dimensions: dict[str, int] = {}
     for name in ("rgb_height", "rgb_width", "depth_height", "depth_width"):
         try:

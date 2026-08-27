@@ -9,10 +9,7 @@ import pytest
 import numpy as np
 
 import gtmask_counterfactual.postprocess as postprocess_module
-from gtmask_counterfactual.acceptance import (
-    accept_gallery,
-    accept_independent_recompute,
-)
+from gtmask_counterfactual.acceptance import accept_gallery
 from gtmask_counterfactual.audit import bootstrap_run, transition_pipeline_status
 from gtmask_counterfactual.contracts import RunState
 from gtmask_counterfactual.independent import canonical_corners
@@ -22,6 +19,7 @@ from gtmask_counterfactual.io import (
     atomic_parquet,
     canonical_sha256,
 )
+from gtmask_counterfactual.gt_grasp_authority import materialize_gt_grasp_authority
 from gtmask_counterfactual.postprocess import (
     PostprocessContractError,
     run_postprocess,
@@ -105,7 +103,12 @@ def _pool(route: str, branch: str) -> pd.DataFrame:
         add("s5", 6, 6)
         add("s6", None, 1)
         add("s7", None, 1)
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if route == "D1":
+        # The real D1 producer persists both canonical and source aliases.
+        frame["jaw_width_px"] = frame["width_px"]
+        frame["rectangle_height_px"] = frame["height_px"]
+    return frame
 
 
 def _per_sample(candidates: pd.DataFrame, route: str, branch: str) -> pd.DataFrame:
@@ -130,6 +133,63 @@ def _content_json(path: Path, value: dict[str, Any]) -> Path:
     payload = dict(value)
     payload["content_sha256"] = canonical_sha256(payload)
     return atomic_json(path, payload)
+
+
+def test_nested_source_lock_discovery_ignores_logical_path_fields() -> None:
+    final_lock = {
+        "path": "/immutable/FINAL_RUN_LOCK.json",
+        "sha256": "a" * 64,
+        "bytes": 123,
+    }
+    payload = {
+        "sources": {"unified": {"final_lock": final_lock}},
+        "integrity_checks": {
+            "deterministic_galleries_audited": {
+                "details": {
+                    "summaries": [
+                        {
+                            "path": "qualitative/recovery/example",
+                            "status": "PASS",
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    observed = postprocess_module._collect_named_artifact_records(
+        payload,
+        names=frozenset({"final_lock", "source_lock_verification"}),
+        prefix="source_lock_payload",
+    )
+
+    assert observed == [("source_lock_payload.sources.unified.final_lock", final_lock)]
+
+
+def test_nested_source_lock_discovery_rejects_incomplete_named_record() -> None:
+    with pytest.raises(PostprocessContractError, match="incomplete named artifact"):
+        postprocess_module._collect_named_artifact_records(
+            {"sources": {"unified": {"final_lock": {"path": "/missing/hash"}}}},
+            names=frozenset({"final_lock", "source_lock_verification"}),
+        )
+
+
+def test_artifact_collection_honors_inline_discriminator_first() -> None:
+    inline = {
+        "kind": "inline",
+        "sha256": "a" * 64,
+        "value": {"path": "logical.evaluator.call.path"},
+    }
+
+    assert postprocess_module._collect_records(
+        {"contract": inline}, prefix="bindings.evaluator"
+    ) == []
+
+    with pytest.raises(PostprocessContractError, match="incomplete artifact record"):
+        postprocess_module._collect_records(
+            {"implementation": {"path": "/missing/hash"}},
+            prefix="bindings.evaluator",
+        )
 
 
 def _build_run(
@@ -252,7 +312,7 @@ def _build_run(
         }
     )
     covariate_path = atomic_parquet(
-        covariates, run / "02_sample_manifest/sample_covariates.parquet"
+        covariates, run / "03_gt_mask_registry/sample_covariates.parquet"
     )
     gt_path = sample_path
     registry = pd.DataFrame(
@@ -307,6 +367,7 @@ def _build_run(
         "configs": {"synthetic_source": code_record},
         "baseline_replay": record,
         "sample_manifest": artifact_record(sample_path),
+        "gt_grasp_source": artifact_record(sample_path),
         "gt_mask_registry": artifact_record(registry_path),
         "mapping_qa": artifact_record(mapping_qa),
         "route_contracts": inline_binding(routes),
@@ -330,6 +391,35 @@ def _build_run(
     )
     if claim:
         claim_bulk_execution(run)
+        gt_authority_path = materialize_gt_grasp_authority(
+            run, protocol_lock=lock, expected_count=8
+        )
+        gt_authority = json.loads(gt_authority_path.read_text(encoding="utf-8"))
+        gt_path = Path(gt_authority["registry"]["path"])
+        covariate_authority_path = _content_json(
+            run / "03_gt_mask_registry/SAMPLE_COVARIATES_AUTHORITY.json",
+            {
+                "schema_version": 1,
+                "status": "COMPLETE",
+                "sample_count": 8,
+                "protocol_lock": artifact_record(lock),
+                "execution_authority_mode": "prospective_execution_claim",
+                "execution_claim": artifact_record(
+                    run / "01_protocol_lock/COUNTERFACTUAL_EXECUTION.json"
+                ),
+                "sample_manifest": artifact_record(sample_path),
+                "gt_mask_registry": artifact_record(registry_path),
+                "visual_assets": {"synthetic": True},
+                "resource_gate": {"synthetic": True},
+                "covariates": artifact_record(covariate_path),
+                "gt_mask_rows_read": 8,
+                "gt_grasp_rows_read": 0,
+            },
+        )
+    else:
+        # The no-authority test must fail before this placeholder can be opened.
+        gt_authority_path = sample_path
+        covariate_authority_path = sample_path
 
     visual_manifest = write_visual_asset_registry(
         run,
@@ -512,7 +602,9 @@ def _build_run(
     input_artifacts = {
         "sample_manifest": artifact_record(sample_path),
         "ground_truth": artifact_record(gt_path),
+        "ground_truth_authority": artifact_record(gt_authority_path),
         "sample_covariates": artifact_record(covariate_path),
+        "sample_covariates_authority": artifact_record(covariate_authority_path),
         "final_outcomes": artifact_record(final_path),
         "final_outcomes_authority": artifact_record(final_authority_path),
         "baseline_replay": artifact_record(baseline_path),
@@ -532,11 +624,15 @@ def _build_run(
     if claim:
         transitions = [
             (
-                RunState.P4_G1_COUNTERFACTUAL_COMPLETE,
-                RunState.P5_C1_COUNTERFACTUAL_COMPLETE,
+                RunState.P4_C1_PILOT_PASS,
+                RunState.P5_C1_FULL_COMPLETE,
             ),
             (
-                RunState.P5_C1_COUNTERFACTUAL_COMPLETE,
+                RunState.P5_C1_FULL_COMPLETE,
+                RunState.P5B_G1_FULL_COMPLETE,
+            ),
+            (
+                RunState.P5B_G1_FULL_COMPLETE,
                 RunState.P6_D1_COUNTERFACTUAL_COMPLETE,
             ),
         ]
@@ -742,7 +838,6 @@ def test_resume_repairs_crash_between_route_status_and_completion(
 
 def test_legacy_caller_authored_gallery_cannot_advance_lifecycle(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run, lock, input_manifest, _ = _build_run(tmp_path, claim=True)
     run_postprocess(
@@ -810,30 +905,6 @@ def test_legacy_caller_authored_gallery_cannot_advance_lifecycle(
     pipeline = json.loads((run / "pipeline_status.json").read_text(encoding="utf-8"))
     assert pipeline["status"] == "P8_STATISTICS_COMPLETE"
 
-    # The canonical gallery producer/acceptor is covered end-to-end in
-    # test_gallery_pipeline.  This seam isolates the saved-frame P10 replay.
-    p9 = _content_json(
-        run / "12_case_selection/P9_GALLERY_ACCEPTANCE.json",
-        {"status": "PASS", "gallery_manifest": artifact_record(gallery)},
-    )
-    transition_pipeline_status(
-        run,
-        RunState.P9_GALLERIES_COMPLETE,
-        first_incomplete_stage=RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value,
-    )
-    monkeypatch.setattr(
-        "gtmask_counterfactual.acceptance.verify_complete_gallery",
-        lambda *args, **kwargs: {"status": "COMPLETE"},
-    )
-    validation = accept_independent_recompute(run, expected_sample_count=8)
-    assert validation.is_file()
-    assert artifact_record(p9)["sha256"] == artifact_record(
-        run / "12_case_selection/P9_GALLERY_ACCEPTANCE.json"
-    )["sha256"]
-    pipeline = json.loads((run / "pipeline_status.json").read_text(encoding="utf-8"))
-    assert pipeline["status"] == RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value
-
-
 def test_no_scientific_frame_is_opened_before_execution_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -864,7 +935,7 @@ def test_frozen_final_authority_rejects_arbitrary_copied_bits(tmp_path: Path) ->
         _build_run(tmp_path, claim=True, tamper_final_bits=True)
 
 
-def test_legal_d1_blocker_is_partial_and_does_not_fabricate_p6(
+def test_core_postprocess_is_complete_without_fabricating_d1(
     tmp_path: Path,
 ) -> None:
     run, lock, input_manifest, _ = _build_run(
@@ -878,9 +949,10 @@ def test_legal_d1_blocker_is_partial_and_does_not_fabricate_p6(
         bootstrap_iterations=16,
     )
     route = json.loads(route_path.read_text(encoding="utf-8"))
-    assert route["status"] == "PARTIAL"
-    assert route["routes"]["D1"] == "UNRECOVERABLE_BLOCKER"
+    assert route["status"] == "COMPLETE"
+    assert route["routes"] == {"G1": "COMPLETE", "C1": "COMPLETE"}
+    assert route["d1_secondary_status"] == "PENDING_AFTER_CORE"
     pipeline = json.loads((run / "pipeline_status.json").read_text(encoding="utf-8"))
-    assert pipeline["status"] == "P5_C1_COUNTERFACTUAL_COMPLETE"
+    assert pipeline["status"] == "P8_STATISTICS_COMPLETE"
     tables, _ = load_bound_tables(run)
     assert set(tables["branch_metrics.csv"]["route"]) == {"G1", "C1"}

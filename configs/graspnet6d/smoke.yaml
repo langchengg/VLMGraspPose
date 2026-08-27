@@ -1,0 +1,92 @@
+schema_version: 1
+profile: smoke
+formal_results: false
+seed: 20260815
+paths:
+  dataset_root: data_external/graspnet
+  download_root: downloads/graspnet
+  output_root: artifacts/graspnet6d
+camera: kinect
+disk:
+  minimum_free_reserve_gb: 20
+  staged_download: true
+  one_archive_at_a_time: true
+  delete_archive_after_verified_extract: true
+  compact_dataset: true
+  retain_camera: kinect
+  retain_all_frames: false
+  frames_per_scene: 16
+dataset:
+  archives: [train_4.zip, grasp_label.zip, collision_label.zip, models.zip]
+  scenes: 3
+  frames_per_scene: 16
+  max_targets_per_frame: 1
+  max_groups: 24
+  depth_scale_source: meta.factor_depth
+  prohibit_depth_scale_fallback: true
+split:
+  ratios: {train: 0.60, validation: 0.20, test: 0.20}
+  min_validation_scenes: 1
+  min_test_scenes: 1
+  scene_disjoint: true
+target_selection:
+  min_mask_pixels: 500
+  min_valid_depth_fraction: 0.70
+  require_untruncated: true
+language:
+  provenance: derived
+  require_unique_resolution: true
+grounding:
+  conditions: [oracle_gt_mask, hifics_zero_shot_mask, hifics_adapted_mask]
+  hifics_checkpoint: HiFi_reproduction/runs/hifics_ocidvlg_hierfilm_20260727_214615/checkpoints/best.pth
+tsdf:
+  physical_size_m: 0.30
+  resolution: 40
+  voxel_size_m: 0.0075
+  truncation_m: 0.03
+  views: 1
+  preserve_full_scene_geometry: true
+vgn:
+  upstream_commit: d7af0622433f52ae88ebe81533f12b46b33e951a
+  checkpoint: HiFi_reproduction/third_party/vgn/data/models/vgn_conv.pth
+  checkpoint_sha256: ba3391d0805e9c9b178cd18106866313cee808ff2b654f689663e92a814cec4b
+  device: cpu
+  quality_threshold: 0.90
+  pre_nms_max_candidates: 100
+  frozen_top_k: 20
+  deterministic_native_order: score_desc_then_voxel_lexicographic
+  freeze_parameters: true
+candidate_geometry:
+  # A reviewable hypothesis, never an accepted conversion by itself.
+  graspnet_height_m: 0.02
+  graspnet_depth_m: 0.05
+  R_vgn_gripper_to_graspnet_gripper:
+    - [0.0, 0.0, -1.0]
+    - [0.0, 1.0, 0.0]
+    - [1.0, 0.0, 0.0]
+  proposal_provenance: official_graspnet_fixed_height_and_vgn_finger_depth_axis_hypothesis
+  vgn_to_graspnet_frame_status: requires_real_data_regression_and_visual_validation
+  formal_generation_allowed: false
+nms:
+  translation_threshold_m: 0.015
+  rotation_threshold_deg: 15.0
+  width_threshold_m: 0.010
+  status: experiment_specific_validation_initial_value
+  official_graspnet_width_threshold: null
+evaluation:
+  friction_thresholds: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]
+  require_official_adapter_parity: true
+ranker:
+  config: configs/graspnet6d/ranker.yaml
+features:
+  config: configs/graspnet6d/features.yaml
+statistics:
+  bootstrap_replicates: 10000
+  bootstrap_seed: 20260815
+  training_seeds: [20260815, 20260816, 20260817]
+smoke:
+  geometry_groups: 8
+  evaluator_groups: 8
+  minimum_nonempty_candidate_groups: 4
+ranker_integration:
+  minimum_groups: 20

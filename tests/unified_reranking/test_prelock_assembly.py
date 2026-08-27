@@ -2148,7 +2148,7 @@ def test_prelock_requires_feature_extraction_benchmark(tmp_path: Path) -> None:
     (run / "07_validation/telemetry/feature_extraction_benchmark.json").unlink()
     with pytest.raises(
         RuntimeError,
-        match=r"train_feature_extraction_benchmark is missing",
+        match=r"feature_extraction_benchmark is missing or not a regular file",
     ):
         assemble_prelock_bundle(
             run,
@@ -2214,7 +2214,7 @@ def test_prelock_rejects_reauthored_feature_benchmark_contract(tmp_path: Path) -
     _json(benchmark_path, benchmark)
     with pytest.raises(
         RuntimeError,
-        match=r"train_feature_extraction_benchmark SHA-256 mismatch",
+        match=r"feature_extraction_benchmark SHA-256 mismatch",
     ):
         assemble_prelock_bundle(
             run,

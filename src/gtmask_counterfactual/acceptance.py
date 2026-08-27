@@ -89,9 +89,8 @@ def accept_gallery(
     if pipeline.get("status") not in {
         RunState.P8_STATISTICS_COMPLETE.value,
         RunState.P9_GALLERIES_COMPLETE.value,
-        RunState.P5_C1_COUNTERFACTUAL_COMPLETE.value,
     }:
-        raise PermissionError("P9 acceptance requires P8 or legal partial P5")
+        raise PermissionError("P9 core acceptance requires P8")
     gallery_path = root / "14_galleries/GALLERY_MANIFEST.json"
     gallery = verify_complete_gallery(
         root, expected_sample_count=expected_sample_count
@@ -277,9 +276,8 @@ def accept_independent_recompute(
     if pipeline.get("status") not in {
         RunState.P9_GALLERIES_COMPLETE.value,
         RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value,
-        RunState.P5_C1_COUNTERFACTUAL_COMPLETE.value,
     }:
-        raise PermissionError("P10 acceptance requires P9 or legal partial P5")
+        raise PermissionError("P10 core acceptance requires P9")
     gallery_acceptance = root / GALLERY_ACCEPTANCE_RELATIVE_PATH
     verify_complete_gallery(root, expected_sample_count=expected_sample_count)
     gallery = _object(gallery_acceptance, name="P9 gallery acceptance")

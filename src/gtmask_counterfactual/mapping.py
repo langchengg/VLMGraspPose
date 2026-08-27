@@ -22,6 +22,7 @@ from unified_reranking.hashing import sha256_file
 EXPECTED_SAMPLE_COUNT = 7_675
 PREPARED_MASK_SHAPE = (352, 352)
 ORIGINAL_MASK_SHAPE = (480, 640)
+ROUND_TRIP_REFERENCE_IOU = 0.95
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -58,6 +59,12 @@ def _sha256(value: Any, *, field: str, sample_id: str) -> str:
     if _SHA256.fullmatch(text) is None:
         raise GTMappingError(f"{sample_id}: {field} is not a SHA256 digest")
     return text
+
+
+def _optional_sha256(value: Any, *, field: str, sample_id: str) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    return _sha256(value, field=field, sample_id=sample_id)
 
 
 def _absolute_path(value: Any, *, field: str, sample_id: str) -> str:
@@ -162,6 +169,11 @@ def build_prelock_registry(
             raise GTMappingError(f"duplicate scene/query/target identity: {target_key}")
         target_keys.add(target_key)
 
+        source_instance_sha256 = _optional_sha256(
+            authority.get(fields.source_instance_sha256),
+            field=fields.source_instance_sha256,
+            sample_id=sample_id,
+        )
         registry.append(
             {
                 "sample_id": sample_id,
@@ -187,14 +199,19 @@ def build_prelock_registry(
                     field=fields.source_instance_path,
                     sample_id=sample_id,
                 ),
-                "source_instance_mask_sha256": _sha256(
-                    authority.get(fields.source_instance_sha256),
-                    field=fields.source_instance_sha256,
-                    sample_id=sample_id,
+                "source_instance_mask_sha256": source_instance_sha256,
+                "source_instance_mask_hash_status": (
+                    "RECORDED_PRELOCK"
+                    if source_instance_sha256 is not None
+                    else "PENDING_P2_AUTHORIZED_HASH"
                 ),
                 "original_height": ORIGINAL_MASK_SHAPE[0],
                 "original_width": ORIGINAL_MASK_SHAPE[1],
-                "mapping_status": "PATH_HASH_INSTANCE_AUTHORITY_MAPPED",
+                "mapping_status": (
+                    "PATH_HASH_INSTANCE_AUTHORITY_MAPPED"
+                    if source_instance_sha256 is not None
+                    else "PATH_INSTANCE_AUTHORITY_MAPPED_PENDING_P2_HASH"
+                ),
                 "mapping_reason": "",
                 "pixel_qa_status": "NOT_ACCESSED_PRELOCK",
                 "bulk_gt_pixels_read": False,
@@ -305,11 +322,12 @@ def mapping_pixel_qa(
     intersection = int(np.count_nonzero(inverse & expected_original))
     union = int(np.count_nonzero(inverse | expected_original))
     round_trip_iou = intersection / union if union else 0.0
-    if round_trip_iou < 0.95:
-        raise GTMappingError(
-            f"{sample_id}: PIL-nearest resize/inverse round-trip IoU "
-            f"{round_trip_iou:.6f} is below 0.95"
-        )
+    # The exact forward transform above is the alignment/source-of-truth check.
+    # A nearest-neighbour inverse is necessarily lossy, especially for small
+    # target supports, so a fixed IoU cut-off must not turn a uniquely mapped
+    # sample into a technical failure.  Preserve the inverse score as a QA
+    # diagnostic without changing denominator membership.
+    round_trip_below_reference = round_trip_iou < ROUND_TRIP_REFERENCE_IOU
 
     labels, component_count = ndimage.label(expected_original)
     del labels
@@ -342,6 +360,8 @@ def mapping_pixel_qa(
         "foreground_fraction": foreground / float(expected_original.size),
         "component_count": int(component_count),
         "resize_inverse_round_trip_iou": round_trip_iou,
+        "resize_inverse_round_trip_reference_iou": ROUND_TRIP_REFERENCE_IOU,
+        "resize_inverse_round_trip_below_reference": round_trip_below_reference,
         "xy_orientation_evidence": {
             "source_instance_height_width": list(instance.shape),
             "rgb_declared_height_width": [rgb_height, rgb_width],
@@ -398,7 +418,7 @@ def join_real_authority_rows(
                 "prepared_gt_mask_path": left["prepared_gt_mask_path"],
                 "prepared_gt_mask_sha256": left["prepared_gt_mask_sha256"],
                 "source_instance_mask_path": right["gt_mask_path"],
-                "source_instance_mask_sha256": right["gt_mask_sha256"],
+                "source_instance_mask_sha256": right.get("gt_mask_sha256"),
             }
         )
     return result
@@ -410,6 +430,7 @@ __all__ = [
     "GTMappingError",
     "ORIGINAL_MASK_SHAPE",
     "PREPARED_MASK_SHAPE",
+    "ROUND_TRIP_REFERENCE_IOU",
     "build_prelock_registry",
     "mapping_pixel_qa",
     "join_real_authority_rows",

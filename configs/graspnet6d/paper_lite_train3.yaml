@@ -1,0 +1,78 @@
+extends: configs/graspnet6d/paper_lite.yaml
+schema_version: 1
+profile: paper-lite-train3
+formal_results: true
+seed: 20260815
+
+lineage:
+  parent_run_id: 20260819_220717_graspnet6d_vgn_lambdamart
+  parent_parent_run_id: 20260819_155310_graspnet6d_vgn_lambdamart
+  change_reason: >-
+    train_4 public and authenticated sources unavailable; formal experiment
+    continued on a locked 30-scene subset from verified train_3.zip. The prior
+    child stopped on an over-strict collision-NPZ key-order check; this child
+    accepts the exact official key set while preserving array validation.
+
+camera: kinect
+dataset:
+  required_scene_archives: [train_3.zip]
+  optional_scene_archives: [train_2.zip, train_4.zip]
+  archives: [train_3.zip, grasp_label.zip, collision_label.zip, models.zip]
+  conditional_archives: [train_2.zip]
+  optional_archives: [dex_models.zip]
+  camera: kinect
+  minimum_unique_scenes: 30
+  scene_policy: deterministic_object_distribution_stratified_30_scenes
+  scenes: 30
+  frames_per_scene: 16
+  total_views_per_scene: 256
+  max_targets_per_frame: 3
+  max_groups: 3000
+
+split:
+  seed: 20260815
+  train_scenes: 18
+  validation_scenes: 5
+  test_scenes: 7
+  ratios: {train: 0.6, validation: 0.16666666666666666, test: 0.23333333333333334}
+  min_validation_scenes: 5
+  min_test_scenes: 7
+  scene_disjoint: true
+  manifest_filename: graspnet_train3_scene_split_v1.json
+  description: held-out GraspNet training-scene subset split
+
+sampling:
+  frames_per_scene: 16
+  adaptive_frames_per_scene: [16, 24, 32]
+  max_targets_per_frame: 3
+  min_mask_pixels: 500
+  min_valid_depth_fraction: 0.70
+  max_target_groups: 3000
+  minimum_groups:
+    train: 400
+    validation: 100
+    test: 150
+  minimum_test_nonempty_candidate_groups: 50
+
+target_selection:
+  min_mask_pixels: 500
+  min_valid_depth_fraction: 0.70
+
+disk:
+  minimum_free_reserve_gb: 20
+  staged_download: true
+  one_archive_at_a_time: true
+  delete_archive_after_verified_extract: true
+  compact_dataset: true
+  compact_extraction: true
+  retain_camera: kinect
+  retain_all_frames: false
+  frames_per_scene: 16
+  estimated_formal_cache_bytes: 16000000000
+
+experiment_scope:
+  official_graspnet_test_benchmark: false
+  scope_label: held-out GraspNet training-scene subset
+  source_archive: train_3.zip
+  source_scenes: 30
+  completion_status: COMPLETE_TRAIN3_SUBSET

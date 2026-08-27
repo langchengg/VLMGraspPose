@@ -33,7 +33,9 @@ from gtmask_counterfactual.d1_adapter import (  # noqa: E402
 )
 from gtmask_counterfactual.d1_source_view import (  # noqa: E402
     build_d1_source_view,
+    verify_d1_execution_binding,
     verify_d1_source_view,
+    write_d1_execution_binding,
 )
 from gtmask_counterfactual.execution import (  # noqa: E402
     FROZEN_D1_SOURCE,
@@ -43,8 +45,18 @@ from gtmask_counterfactual.execution import (  # noqa: E402
     counterfactual_job,
     probe_frozen_docker_image,
 )
-from gtmask_counterfactual.io import atomic_json, sha256_file  # noqa: E402
+from gtmask_counterfactual.io import (  # noqa: E402
+    atomic_json,
+    canonical_sha256,
+    sha256_file,
+)
+from gtmask_counterfactual.protocol import (  # noqa: E402
+    D1_EXECUTION_COMPLETION_RELATIVE_PATH,
+)
 from gtmask_counterfactual.resource import (  # noqa: E402
+    DOCKER_SCORING_RESOURCE_SCOPE,
+    STANDARD_RESOURCE_SCOPE,
+    collect_fresh_three_by_five_gate,
     exclusive_d1_flock,
     validate_fresh_gate,
     validate_live_resources,
@@ -52,7 +64,6 @@ from gtmask_counterfactual.resource import (  # noqa: E402
 from gtmask_counterfactual.audit import (  # noqa: E402
     RunState,
     require_verified_source,
-    transition_pipeline_status,
 )
 from unified_reranking.ledger import ledger_stage  # noqa: E402
 
@@ -68,6 +79,7 @@ REGISTRY_COLUMNS = (
     "original_gt_mask_path",
     "original_gt_mask_sha256",
 )
+SOURCE_VIEW_EXECUTION_MANIFEST = "SOURCE_VIEW_EXECUTION_MANIFEST.json"
 
 
 def _json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -109,10 +121,88 @@ def _authorise(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]
     )
 
 
-def _fresh_gate(path: Path) -> dict[str, Any]:
+def _assert_command_stage(args: argparse.Namespace) -> None:
+    """Reject out-of-order D1 work before any gate, GT read, or subprocess."""
+
+    run = args.run_dir.expanduser().resolve()
+    pipeline = _json_object(run / "pipeline_status.json", label="pipeline status")
+    observed = str(pipeline.get("status", ""))
+    execution_count = int(pipeline.get("counterfactual_execution_count", -1))
+    predicted_commands = {
+        "print-predicted-replay",
+        "execute-predicted-candidates",
+        "score-predicted",
+        "close-predicted",
+    }
+    if args.command in predicted_commands:
+        if observed != RunState.P0_AUDIT.value or execution_count != 0:
+            raise PermissionError(
+                "D1 predicted replay is pre-protocol P0 work and requires count zero"
+            )
+        return
+    completion = run / D1_EXECUTION_COMPLETION_RELATIVE_PATH
+    if completion.is_file():
+        if args.command != "assemble" or not getattr(args, "resume", False):
+            raise PermissionError(
+                "completed D1 output may only be revalidated by assemble --resume"
+            )
+        if execution_count != 1:
+            raise PermissionError("completed D1 output requires one execution claim")
+        return
+    if observed != RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value:
+        raise PermissionError(
+            "D1 secondary work requires P10_INDEPENDENT_RECOMPUTE_PASS"
+        )
+    required_core = (
+        run / "08_metrics/POSTPROCESS_MANIFEST.json",
+        run / "13_figures/FIGURES_MANIFEST.json",
+        run / "14_galleries/GALLERY_MANIFEST.json",
+        run / "15_reports/REPORTS_MANIFEST.json",
+        run / "16_independent_recompute/INDEPENDENT_VALIDATION.json",
+    )
+    missing = [str(path) for path in required_core if not path.is_file()]
+    if missing:
+        raise PermissionError(
+            f"D1 secondary requires completed core artifacts: {missing}"
+        )
+    if execution_count not in {0, 1}:
+        raise PermissionError("D1 GT-oracle work has an invalid execution count")
+
+
+def _fresh_gate(
+    path: Path, *, resource_scope: str = STANDARD_RESOURCE_SCOPE
+) -> dict[str, Any]:
     value = _json_object(path, label="D1 resource gate")
-    validate_fresh_gate(value)
+    validate_fresh_gate(value, resource_scope=resource_scope)
     return value
+
+
+def _prepare_gate(args: argparse.Namespace, *, stage: str) -> dict[str, Any]:
+    """Collect or load a fresh gate while the global heavy lease is held."""
+
+    resource_scope = (
+        DOCKER_SCORING_RESOURCE_SCOPE
+        if stage in {"predicted_scoring", "oracle_scoring"}
+        else STANDARD_RESOURCE_SCOPE
+    )
+    if getattr(args, "collect_resource_gate", False):
+        value = collect_fresh_three_by_five_gate(
+            repo_root=ROOT,
+            rank1_run_dir=args.rank1_run_dir.expanduser().resolve(),
+            resource_scope=resource_scope,
+        )
+        path = (
+            args.run_dir.expanduser().resolve()
+            / "00_audit/resource_gates"
+            / f"d1_{stage}_{value['content_sha256'][:20]}.json"
+        )
+        if path.exists():
+            raise FileExistsError(f"resource gate already exists: {path}")
+        atomic_json(path, value)
+        args.resource_gate = path
+    if args.resource_gate is None:
+        raise D1AdapterError("D1 heavy execution requires a resource gate")
+    return _fresh_gate(args.resource_gate, resource_scope=resource_scope)
 
 
 def _resume_command() -> list[str]:
@@ -121,6 +211,31 @@ def _resume_command() -> list[str]:
         str(Path(__file__).resolve()),
         *sys.argv[1:],
     ]
+
+
+def _ledger_identity(command: list[str] | None = None) -> str:
+    """Canonicalize a D1 scientific command without recovery-only flags."""
+
+    values = list(_resume_command() if command is None else command)
+    ignored_flags = {
+        "--resume",
+        "--verify-existing",
+        "--retry-failed",
+        "--retry-failures",
+    }
+    result: list[str] = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value in ignored_flags:
+            index += 1
+            continue
+        if value == "--resource-gate":
+            index += 2
+            continue
+        result.append(value)
+        index += 1
+    return shlex.join(result)
 
 
 def _write_machine_blocker(
@@ -224,6 +339,89 @@ def _source_view(run_dir: Path) -> tuple[Path, Path]:
     return manifest.parent, manifest
 
 
+def _local_source_verified_command(
+    command: list[str], *, source_view: Path, source_manifest: Path
+) -> list[str]:
+    """Route a frozen local script through the hash-verifying bootstrap."""
+
+    if len(command) < 2:
+        raise D1AdapterError("D1 source command is incomplete")
+    script = Path(command[1]).expanduser().resolve(strict=False)
+    try:
+        relative = script.relative_to(source_view.expanduser().resolve())
+    except ValueError as error:
+        raise D1AdapterError("D1 executable is outside its source view") from error
+    bootstrap = source_view / "scripts/gtmask_oracle_candidate_bootstrap.py"
+    return [
+        command[0],
+        str(bootstrap),
+        "--source-view",
+        str(source_view),
+        "--source-view-manifest-sha256",
+        sha256_file(source_manifest),
+        "--exec-source-member",
+        relative.as_posix(),
+        "--",
+        *command[2:],
+    ]
+
+
+def _container_source_verified_command(
+    command: list[str], *, source_manifest: Path
+) -> list[str]:
+    """Make the container rehash its read-only source mount before scoring."""
+
+    scorer = "scripts/run_full_gqcnn_scoring.py"
+    try:
+        script_index = command.index(scorer)
+    except ValueError as error:
+        raise D1AdapterError("D1 container command lacks the frozen scorer") from error
+    if script_index == 0 or command[script_index - 1] != "python":
+        raise D1AdapterError("D1 container scorer launch shape differs")
+    return [
+        *command[: script_index - 1],
+        "python",
+        "scripts/gtmask_oracle_candidate_bootstrap.py",
+        "--source-view",
+        "/workspace",
+        "--source-view-manifest-sha256",
+        sha256_file(source_manifest),
+        "--allow-relocated-source-view",
+        "--exec-source-member",
+        scorer,
+        "--",
+        *command[script_index + 1 :],
+    ]
+
+
+def _run_source_bound(
+    command: list[str], *, source_manifest: Path, **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Leave no unchecked host work between a full source rehash and launch."""
+
+    verify_d1_source_view(source_manifest)
+    return subprocess.run(command, check=False, **kwargs)
+
+
+def _execution_binding(
+    output_root: Path,
+    *,
+    stage: str,
+    source_manifest: Path,
+    artifacts: Mapping[str, Path],
+) -> Path:
+    destination = (
+        output_root.expanduser().resolve(strict=False)
+        / SOURCE_VIEW_EXECUTION_MANIFEST
+    )
+    return write_d1_execution_binding(
+        destination,
+        stage=stage,
+        source_view_manifest=source_manifest,
+        artifacts=artifacts,
+    )
+
+
 def _predicted_authority(args: argparse.Namespace) -> set[str]:
     """Verify source locks and return the label-free D1 Test denominator."""
 
@@ -270,14 +468,14 @@ def _predicted_authority(args: argparse.Namespace) -> set[str]:
 
 
 def prepare(args: argparse.Namespace) -> int:
+    authority, _ = _authorise(args)
     with exclusive_d1_flock(args.run_dir, purpose="D1 Case-B bundle materialisation"):
-        _fresh_gate(args.resource_gate)
+        _prepare_gate(args, stage="oracle_bundle")
         validate_live_resources(
             repo_root=ROOT,
             rank1_run_dir=args.rank1_run_dir,
             prefix="gtmask_d1_bundle_materialisation_launch",
         )
-        authority, _ = _authorise(args)
         rows = _load_registry_after_authorization(args.registry, authority)
         append_gt_access_log(
             args.run_dir,
@@ -299,6 +497,7 @@ def prepare(args: argparse.Namespace) -> int:
             registry_rows=rows,
             authority=authority,
             expected_count=args.expected_count,
+            resume=args.resume,
         )
     print(json.dumps({"status": "COMPLETE", "bundle_root": str(root)}, sort_keys=True))
     return 0
@@ -306,6 +505,8 @@ def prepare(args: argparse.Namespace) -> int:
 
 def print_predicted_replay(args: argparse.Namespace) -> int:
     sample_ids = _predicted_authority(args)
+    if args.collect_resource_gate:
+        raise D1AdapterError("planning cannot consume a 15-minute resource gate")
     _fresh_gate(args.resource_gate)
     source_view, source_manifest = _source_view(args.run_dir)
     command = build_predicted_replay_command(
@@ -315,6 +516,9 @@ def print_predicted_replay(args: argparse.Namespace) -> int:
         output_root=args.candidate_root,
         source_view_root=source_view,
         resume=args.resume,
+    )
+    command = _local_source_verified_command(
+        command, source_view=source_view, source_manifest=source_manifest
     )
     print(
         json.dumps(
@@ -343,7 +547,7 @@ def execute_predicted_candidates(args: argparse.Namespace) -> int:
         raise D1AdapterError("predicted candidate root must be inside the new run")
     source_view, source_manifest = _source_view(run)
     with exclusive_d1_flock(run, purpose="D1 predicted candidate replay"):
-        _fresh_gate(args.resource_gate)
+        _prepare_gate(args, stage="predicted_candidates")
         validate_live_resources(
             repo_root=ROOT,
             rank1_run_dir=args.rank1_run_dir,
@@ -382,21 +586,25 @@ def execute_predicted_candidates(args: argparse.Namespace) -> int:
         if args.resume:
             arguments.extend(["--resume", "--verify-existing", "--retry-failures"])
         candidate_script = source_view / "scripts/run_hifics_dexnet_candidates.py"
-        command_values = [str(CANDIDATE_PYTHON.resolve()), str(candidate_script), *arguments]
-        command = shlex.join(command_values)
+        command_values = _local_source_verified_command(
+            [str(CANDIDATE_PYTHON), str(candidate_script), *arguments],
+            source_view=source_view,
+            source_manifest=source_manifest,
+        )
         with ledger_stage(
             run / "run_ledger.sqlite",
             stage="P3_PREDICTED_REPLAY",
             substage="d1_candidates",
             route="d1",
             pool="allnms",
-            command=command,
+            command=_ledger_identity(command_values),
         ) as ledger:
             environment = dict(os.environ)
             environment["PYTHONPATH"] = str(source_view)
-            completed = subprocess.run(
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            completed = _run_source_bound(
                 command_values,
-                check=False,
+                source_manifest=source_manifest,
                 cwd=source_view,
                 env=environment,
             )
@@ -409,8 +617,14 @@ def execute_predicted_candidates(args: argparse.Namespace) -> int:
                 candidate_root, expected_sample_ids=expected_ids
             )
             run_config = candidate_root / "run_config.json"
-            ledger["artifact_path"] = str(run_config.resolve())
-            ledger["artifact_sha256"] = sha256_file(run_config)
+            binding = _execution_binding(
+                candidate_root,
+                stage="P3_PREDICTED_REPLAY/d1_candidates",
+                source_manifest=source_manifest,
+                artifacts={"candidate_run_config": run_config},
+            )
+            ledger["artifact_path"] = str(binding.resolve())
+            ledger["artifact_sha256"] = sha256_file(binding)
         append_gt_access_log(
             run,
             {
@@ -437,11 +651,12 @@ def score_predicted(args: argparse.Namespace) -> int:
         raise D1AdapterError("predicted replay outputs must be inside the new run")
     source_view, source_manifest = _source_view(run)
     with exclusive_d1_flock(run, purpose="D1 predicted GQ-CNN replay"):
-        _fresh_gate(args.resource_gate)
+        _prepare_gate(args, stage="predicted_scoring")
         validate_live_resources(
             repo_root=ROOT,
             rank1_run_dir=args.rank1_run_dir,
             prefix="gtmask_d1_predicted_scoring_launch",
+            resource_scope=DOCKER_SCORING_RESOURCE_SCOPE,
         )
         inventory = candidate_inventory_from_summary(
             candidate_root, expected_sample_ids=expected_ids
@@ -461,6 +676,9 @@ def score_predicted(args: argparse.Namespace) -> int:
             source_view_root=source_view,
             resume=args.resume,
         )
+        command = _container_source_verified_command(
+            command, source_manifest=source_manifest
+        )
         if not args.execute:
             print(json.dumps({"status": "READY", "command": command}, sort_keys=True))
             return 0
@@ -470,16 +688,26 @@ def score_predicted(args: argparse.Namespace) -> int:
             substage="d1_scoring",
             route="d1",
             pool="allnms",
-            command=shlex.join(command),
+            command=_ledger_identity(command),
         ) as ledger:
-            completed = subprocess.run(command, check=False)
+            completed = _run_source_bound(
+                command, source_manifest=source_manifest
+            )
             if completed.returncode != 0:
                 raise D1AdapterError(
                     f"frozen predicted scorer returned {completed.returncode}"
                 )
-            run_config = scored_root / "run_config.json"
-            ledger["artifact_path"] = str(run_config.resolve())
-            ledger["artifact_sha256"] = sha256_file(run_config)
+            binding = _execution_binding(
+                scored_root,
+                stage="P3_PREDICTED_REPLAY/d1_scoring",
+                source_manifest=source_manifest,
+                artifacts={
+                    "scorer_manifest": scored_root / "scoring_manifest.jsonl",
+                    "scorer_summary": scored_root / "summary.csv",
+                },
+            )
+            ledger["artifact_path"] = str(binding.resolve())
+            ledger["artifact_sha256"] = sha256_file(binding)
         append_gt_access_log(
             run,
             {
@@ -505,7 +733,7 @@ def close_predicted(args: argparse.Namespace) -> int:
     run = args.run_dir.expanduser().resolve()
     _, source_manifest = _source_view(run)
     with exclusive_d1_flock(run, purpose="D1 predicted replay semantic closure"):
-        _fresh_gate(args.resource_gate)
+        _prepare_gate(args, stage="predicted_closure")
         validate_live_resources(
             repo_root=ROOT,
             rank1_run_dir=args.rank1_run_dir,
@@ -517,7 +745,7 @@ def close_predicted(args: argparse.Namespace) -> int:
             substage="d1_semantic_closure",
             route="d1",
             pool="allnms",
-            command=shlex.join(_resume_command()),
+            command=_ledger_identity(),
         ) as ledger:
             manifest = build_d1_predicted_replay_manifest(
                 run_dir=run,
@@ -528,14 +756,37 @@ def close_predicted(args: argparse.Namespace) -> int:
                 derived_reconciliation=args.derived_reconciliation,
                 source_view_manifest=source_manifest,
             )
-            ledger["artifact_path"] = str(manifest.resolve())
-            ledger["artifact_sha256"] = sha256_file(manifest)
+            candidate_binding = verify_d1_execution_binding(
+                args.candidate_root / SOURCE_VIEW_EXECUTION_MANIFEST
+            )
+            scorer_binding = verify_d1_execution_binding(
+                args.scored_root / SOURCE_VIEW_EXECUTION_MANIFEST
+            )
+            del candidate_binding, scorer_binding
+            binding = _execution_binding(
+                manifest.parent,
+                stage="P3_PREDICTED_REPLAY/d1_semantic_closure",
+                source_manifest=source_manifest,
+                artifacts={
+                    "candidate_execution": (
+                        args.candidate_root / SOURCE_VIEW_EXECUTION_MANIFEST
+                    ),
+                    "predicted_replay_manifest": manifest,
+                    "scorer_execution": (
+                        args.scored_root / SOURCE_VIEW_EXECUTION_MANIFEST
+                    ),
+                },
+            )
+            ledger["artifact_path"] = str(binding.resolve())
+            ledger["artifact_sha256"] = sha256_file(binding)
     print(json.dumps({"status": "PASS", "manifest": str(manifest)}, sort_keys=True))
     return 0
 
 
 def print_plan(args: argparse.Namespace) -> int:
     _authorise(args)
+    if args.collect_resource_gate:
+        raise D1AdapterError("planning cannot consume a 15-minute resource gate")
     _fresh_gate(args.resource_gate)
     bundle = verify_isolated_bundle_root(args.bundle_root)
     source_view, source_manifest = _source_view(args.run_dir)
@@ -582,13 +833,16 @@ def print_plan(args: argparse.Namespace) -> int:
         docker = shutil.which("docker")
         if docker is None:
             raise D1AdapterError("Docker disappeared after a successful probe")
-        result["scorer_command"] = build_frozen_scorer_command(
+        scorer_command = build_frozen_scorer_command(
             docker=Path(docker),
             candidate_root=args.candidate_root,
             output_root=args.scored_root,
             inventory=inventory,
             source_view_root=source_view,
             resume=args.resume,
+        )
+        result["scorer_command"] = _container_source_verified_command(
+            scorer_command, source_manifest=source_manifest
         )
     print(json.dumps(result, sort_keys=True))
     return 0 if blocker is None else 75
@@ -598,7 +852,7 @@ def execute_candidates(args: argparse.Namespace) -> int:
     authority, _ = _authorise(args)
     del authority
     with exclusive_d1_flock(args.run_dir, purpose="D1 Case-B GT candidate generation"):
-        _fresh_gate(args.resource_gate)
+        _prepare_gate(args, stage="oracle_candidates")
         validate_live_resources(
             repo_root=ROOT,
             rank1_run_dir=args.rank1_run_dir,
@@ -647,13 +901,12 @@ def execute_candidates(args: argparse.Namespace) -> int:
             "--",
             *frozen_arguments,
         ]
-        command_text = shlex.join(command)
         with counterfactual_job(
             args.run_dir,
             stage="P6_D1_RAW_CANDIDATES",
             route="d1",
             branch="gt_oracle",
-            command=command_text,
+            command=_ledger_identity(command),
         ) as job:
             environment = os.environ.copy()
             environment.update(
@@ -663,10 +916,14 @@ def execute_candidates(args: argparse.Namespace) -> int:
                     "OPENBLAS_NUM_THREADS": "1",
                     "MKL_NUM_THREADS": "1",
                     "VECLIB_MAXIMUM_THREADS": "1",
+                    "PYTHONDONTWRITEBYTECODE": "1",
                 }
             )
-            completed = subprocess.run(
-                command, check=False, cwd=source_view, env=environment
+            completed = _run_source_bound(
+                command,
+                source_manifest=source_manifest,
+                cwd=source_view,
+                env=environment,
             )
             if completed.returncode != 0:
                 raise D1AdapterError(
@@ -676,39 +933,22 @@ def execute_candidates(args: argparse.Namespace) -> int:
                 args.candidate_root, expected_sample_ids=_bundle_sample_ids(bundle)
             )
             run_config = args.candidate_root / "run_config.json"
-            job["artifact_path"] = str(run_config.resolve())
-            job["artifact_sha256"] = sha256_file(run_config)
-            job["source_view_sha256"] = sha256_file(source_manifest)
+            binding = _execution_binding(
+                args.candidate_root,
+                stage="P6_D1_RAW_CANDIDATES",
+                source_manifest=source_manifest,
+                artifacts={"candidate_run_config": run_config},
+            )
+            job["artifact_path"] = str(binding.resolve())
+            job["artifact_sha256"] = sha256_file(binding)
     return 0
 
 
 def scorer(args: argparse.Namespace) -> int:
     _authorise(args)
     if not args.execute:
-        _fresh_gate(args.resource_gate)
-        bundle = verify_isolated_bundle_root(args.bundle_root)
-        inventory = candidate_inventory_from_summary(
-            args.candidate_root, expected_sample_ids=_bundle_sample_ids(bundle)
-        )
-        probe, blocker = _docker_or_block(args)
-        if blocker is not None:
-            print(json.dumps({"status": "MACHINE_BLOCKED", "artifact": str(blocker)}))
-            return 75
-        docker = shutil.which("docker")
-        if docker is None:
-            raise D1AdapterError("Docker disappeared after a successful probe")
-        source_view, _ = _source_view(args.run_dir)
-        command = build_frozen_scorer_command(
-            docker=Path(docker),
-            candidate_root=args.candidate_root,
-            output_root=args.scored_root,
-            inventory=inventory,
-            source_view_root=source_view,
-            resume=args.resume,
-        )
-        print(json.dumps({"status": "READY", "command": command}, sort_keys=True))
-        return 0
-    with exclusive_d1_flock(args.run_dir, purpose="D1 Case-B frozen GQ-CNN scoring"):
+        if args.collect_resource_gate:
+            raise D1AdapterError("planning cannot consume a 15-minute resource gate")
         _fresh_gate(args.resource_gate)
         bundle = verify_isolated_bundle_root(args.bundle_root)
         inventory = candidate_inventory_from_summary(
@@ -730,20 +970,67 @@ def scorer(args: argparse.Namespace) -> int:
             source_view_root=source_view,
             resume=args.resume,
         )
+        command = _container_source_verified_command(
+            command, source_manifest=source_manifest
+        )
+        print(json.dumps({"status": "READY", "command": command}, sort_keys=True))
+        return 0
+    with exclusive_d1_flock(args.run_dir, purpose="D1 Case-B frozen GQ-CNN scoring"):
+        _prepare_gate(args, stage="oracle_scoring")
+        validate_live_resources(
+            repo_root=ROOT,
+            rank1_run_dir=args.rank1_run_dir,
+            prefix="gtmask_d1_gqcnn_scoring_launch",
+            resource_scope=DOCKER_SCORING_RESOURCE_SCOPE,
+        )
+        bundle = verify_isolated_bundle_root(args.bundle_root)
+        inventory = candidate_inventory_from_summary(
+            args.candidate_root, expected_sample_ids=_bundle_sample_ids(bundle)
+        )
+        probe, blocker = _docker_or_block(args)
+        if blocker is not None:
+            print(json.dumps({"status": "MACHINE_BLOCKED", "artifact": str(blocker)}))
+            return 75
+        docker = shutil.which("docker")
+        if docker is None:
+            raise D1AdapterError("Docker disappeared after a successful probe")
+        source_view, source_manifest = _source_view(args.run_dir)
+        command = build_frozen_scorer_command(
+            docker=Path(docker),
+            candidate_root=args.candidate_root,
+            output_root=args.scored_root,
+            inventory=inventory,
+            source_view_root=source_view,
+            resume=args.resume,
+        )
+        command = _container_source_verified_command(
+            command, source_manifest=source_manifest
+        )
         with counterfactual_job(
             args.run_dir,
             stage="P6_D1_GQCNN_SCORING",
             route="d1",
             branch="gt_oracle",
-            command=shlex.join(command),
+            command=_ledger_identity(command),
         ) as job:
-            completed = subprocess.run(command, check=False)
+            completed = _run_source_bound(
+                command, source_manifest=source_manifest
+            )
             if completed.returncode != 0:
                 raise D1AdapterError(f"frozen scorer returned {completed.returncode}")
-            run_config = args.scored_root / "run_config.json"
-            job["artifact_path"] = str(run_config.resolve())
-            job["artifact_sha256"] = sha256_file(run_config)
-            job["source_view_sha256"] = sha256_file(source_manifest)
+            binding = _execution_binding(
+                args.scored_root,
+                stage="P6_D1_GQCNN_SCORING",
+                source_manifest=source_manifest,
+                artifacts={
+                    "scorer_manifest": (
+                        args.scored_root / "scoring_manifest.jsonl"
+                    ),
+                    "scorer_summary": args.scored_root / "summary.csv",
+                },
+            )
+            job["artifact_path"] = str(binding.resolve())
+            job["artifact_sha256"] = sha256_file(binding)
     return 0
 
 
@@ -752,7 +1039,7 @@ def assemble(args: argparse.Namespace) -> int:
 
     _authorise(args)
     with exclusive_d1_flock(args.run_dir, purpose="D1 Case-B canonical assembly"):
-        _fresh_gate(args.resource_gate)
+        _prepare_gate(args, stage="oracle_assembly")
         validate_live_resources(
             repo_root=ROOT,
             rank1_run_dir=args.rank1_run_dir,
@@ -761,6 +1048,13 @@ def assemble(args: argparse.Namespace) -> int:
         bundle = verify_isolated_bundle_root(args.bundle_root)
         if int(bundle.get("denominator_sample_count", -1)) != EXPECTED_SAMPLE_COUNT:
             raise D1AdapterError("D1 bundle denominator differs before assembly")
+        _, source_manifest = _source_view(args.run_dir)
+        verify_d1_execution_binding(
+            args.candidate_root / SOURCE_VIEW_EXECUTION_MANIFEST
+        )
+        verify_d1_execution_binding(
+            args.scored_root / SOURCE_VIEW_EXECUTION_MANIFEST
+        )
         append_gt_access_log(
             args.run_dir,
             {
@@ -781,7 +1075,7 @@ def assemble(args: argparse.Namespace) -> int:
             stage="P6_D1_CANONICAL_OUTPUT",
             route="d1",
             branch="gt_oracle",
-            command=shlex.join(_resume_command()),
+            command=_ledger_identity(),
         ) as job:
             manifest = assemble_d1_scored_outputs(
                 run_dir=args.run_dir,
@@ -793,14 +1087,60 @@ def assemble(args: argparse.Namespace) -> int:
                     args.run_dir / "01_protocol_lock/COUNTERFACTUAL_EXECUTION.json"
                 ),
             )
-            job["artifact_path"] = str(manifest)
-            job["artifact_sha256"] = sha256_file(manifest)
-        transition_pipeline_status(
-            args.run_dir,
-            RunState.P6_D1_COUNTERFACTUAL_COMPLETE,
-            first_incomplete_stage=RunState.P7_TAXONOMY_COMPLETE.value,
+            binding = _execution_binding(
+                manifest.parent,
+                stage="P6_D1_CANONICAL_OUTPUT",
+                source_manifest=source_manifest,
+                artifacts={
+                    "candidate_execution": (
+                        args.candidate_root / SOURCE_VIEW_EXECUTION_MANIFEST
+                    ),
+                    "canonical_manifest": manifest,
+                    "scorer_execution": (
+                        args.scored_root / SOURCE_VIEW_EXECUTION_MANIFEST
+                    ),
+                },
+            )
+            job["artifact_path"] = str(binding.resolve())
+            job["artifact_sha256"] = sha256_file(binding)
+        claim = args.run_dir / "01_protocol_lock/COUNTERFACTUAL_EXECUTION.json"
+        completion: dict[str, Any] = {
+            "schema_version": 1,
+            "status": "COMPLETE",
+            "scope": "d1_secondary",
+            "execution_count": 1,
+            "protocol_lock": artifact_record(args.protocol_lock),
+            "execution_claim": artifact_record(claim),
+            "canonical_manifest": artifact_record(manifest),
+            "source_view_execution_manifest": artifact_record(binding),
+            "core_pipeline_status_preserved": RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value,
+        }
+        completion["content_sha256"] = canonical_sha256(completion)
+        completion_path = args.run_dir / D1_EXECUTION_COMPLETION_RELATIVE_PATH
+        if completion_path.exists():
+            if _json_object(completion_path, label="D1 completion") != completion:
+                raise D1AdapterError("existing D1 secondary completion differs")
+        else:
+            atomic_json(completion_path, completion)
+        for status_path in (
+            args.run_dir / "pipeline_status.json",
+            args.run_dir / "manifest.json",
+        ):
+            status_value = _json_object(status_path, label=status_path.name)
+            status_value["d1_secondary_status"] = "COMPLETE"
+            status_value["d1_secondary_execution_count"] = 1
+            atomic_json(status_path, status_value)
+    print(
+        json.dumps(
+            {
+                "status": "COMPLETE",
+                "manifest": str(manifest),
+                "source_view_execution_manifest": str(binding),
+                "d1_secondary_completion": str(completion_path),
+            },
+            sort_keys=True,
         )
-    print(json.dumps({"status": "COMPLETE", "manifest": str(manifest)}, sort_keys=True))
+    )
     return 0
 
 
@@ -812,7 +1152,9 @@ def _add_authority(parser: argparse.ArgumentParser) -> None:
 
 def _add_heavy_authority(parser: argparse.ArgumentParser) -> None:
     _add_authority(parser)
-    parser.add_argument("--resource-gate", type=Path, required=True)
+    gate = parser.add_mutually_exclusive_group(required=True)
+    gate.add_argument("--resource-gate", type=Path)
+    gate.add_argument("--collect-resource-gate", action="store_true")
     parser.add_argument(
         "--rank1-run-dir",
         type=Path,
@@ -842,7 +1184,9 @@ def _add_predicted_paths(
 ) -> None:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--d1-run", type=Path, required=True)
-    parser.add_argument("--resource-gate", type=Path, required=True)
+    gate = parser.add_mutually_exclusive_group(required=True)
+    gate.add_argument("--resource-gate", type=Path)
+    gate.add_argument("--collect-resource-gate", action="store_true")
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--predicted-root", type=Path, required=True)
     parser.add_argument("--candidate-root", type=Path, required=True)
@@ -866,6 +1210,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     prepare_parser.add_argument(
         "--expected-count", type=int, default=EXPECTED_SAMPLE_COUNT
     )
+    prepare_parser.add_argument("--resume", action="store_true")
     prepare_parser.set_defaults(handler=prepare)
 
     predicted = commands.add_parser("print-predicted-replay")
@@ -908,6 +1253,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    _assert_command_stage(args)
     if args.command in {"plan", "scorer"} and args.scored_root is None:
         raise D1AdapterError("--scored-root is required for planning/scoring")
     return int(args.handler(args))

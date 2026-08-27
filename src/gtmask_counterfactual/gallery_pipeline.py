@@ -6,12 +6,17 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from PIL import Image
+
+from HiFi_reproduction.src.grasping.backends.conditioning import (
+    resize_probability_to_native,
+)
 
 from .candidate_matching import geometry_equivalence
 from .contracts import RunState
@@ -29,6 +34,7 @@ from .io import (
     atomic_csv,
     atomic_json,
     atomic_parquet,
+    atomic_text,
     canonical_sha256,
     sha256_file,
 )
@@ -275,7 +281,9 @@ def _first_rank(value: Any) -> float:
     return -1.0 if pd.isna(value) else float(value)
 
 
-def _categories(row: Mapping[str, Any], *, geometry_match: bool) -> list[str]:
+def _categories(
+    row: Mapping[str, Any], *, geometry_match: bool, borderline_mapping: bool = False
+) -> list[str]:
     if bool(row["technical_failure"]):
         return []
     result: list[str] = []
@@ -304,7 +312,7 @@ def _categories(row: Mapping[str, Any], *, geometry_match: bool) -> list[str]:
         result.append("no_output_recovered_by_gt_mask")
     if bool(row["pred_native_correct"]) and bool(row["gt_native_correct"]) and geometry_match:
         result.append("no_change_success")
-    if bool(row.get("annotation_suspect", False)):
+    if bool(row.get("annotation_suspect", False)) or borderline_mapping:
         result.append("borderline_annotation_sensitive")
     return result
 
@@ -416,6 +424,7 @@ def _canonical_cases(
         gt_native = _native_by_sample(gt_route, label=f"{route} GT")
         for row in route_rows.to_dict(orient="records"):
             sample_id = str(row["sample_id"])
+            registry_row = registry_index.loc[sample_id].to_dict()
             pred_row = pred_native.loc[sample_id] if sample_id in pred_native.index else None
             gt_row = gt_native.loc[sample_id] if sample_id in gt_native.index else None
             geometry_match = bool(
@@ -423,11 +432,17 @@ def _canonical_cases(
                 and gt_row is not None
                 and geometry_equivalence(pred_row, gt_row)["matched"]
             )
-            categories = _categories(row, geometry_match=geometry_match)
+            categories = _categories(
+                row,
+                geometry_match=geometry_match,
+                borderline_mapping=(
+                    registry_row.get("resize_inverse_round_trip_below_reference")
+                    is True
+                ),
+            )
             if not categories:
                 continue
             visual_row = visual_index.loc[sample_id].to_dict()
-            registry_row = registry_index.loc[sample_id].to_dict()
             asset_meta = _asset_metadata(
                 visual_row, registry_row, ground_truth_record=ground_truth_record
             )
@@ -490,7 +505,7 @@ def _canonical_cases(
                         "sample_id": sample_id,
                         "route": route,
                         "category": category,
-                        "predicate_version": "gtmask_case_predicates_v1",
+                        "predicate_version": "gtmask_case_predicates_v2",
                         "mechanism_pure": True,
                         "presentation_eligible": presentation,
                         "feature_vector_json": json.dumps(list(feature_values.values()), separators=(",", ":")),
@@ -539,8 +554,31 @@ def _load_image(record: Mapping[str, Any], *, name: str) -> np.ndarray:
         return np.asarray(image)
 
 
+def _align_probability_to_native(
+    probability: np.ndarray, native_shape: tuple[int, int]
+) -> np.ndarray:
+    """Apply the frozen soft-probability transform used by G1/C1 features."""
+
+    try:
+        return resize_probability_to_native(probability, native_shape)
+    except ValueError as error:
+        raise GalleryContractError(
+            "predicted probability cannot be aligned to the RGB-native frame"
+        ) from error
+
+
+def _raw_gt_rectangles(values: Any) -> list[Any]:
+    try:
+        parsed = json.loads(values) if isinstance(values, str) else values
+    except json.JSONDecodeError as error:
+        raise GalleryContractError("GT grasp rectangles are not valid JSON") from error
+    if not isinstance(parsed, list):
+        raise GalleryContractError("GT grasp rectangles must be a list")
+    return parsed
+
+
 def _gt_rectangles(values: Any) -> list[dict[str, float]]:
-    parsed = json.loads(values) if isinstance(values, str) else values
+    parsed = _raw_gt_rectangles(values)
     result = []
     for corners in parsed:
         rectangle = gt_corners_to_canonical(corners)
@@ -608,9 +646,8 @@ def _prepare_gallery(
     pipeline = _pipeline(root)
     if pipeline.get("status") not in {
         RunState.P8_STATISTICS_COMPLETE.value,
-        RunState.P5_C1_COUNTERFACTUAL_COMPLETE.value,
     }:
-        raise PermissionError("gallery preparation requires P8 or legal partial P5")
+        raise PermissionError("core gallery preparation requires P8")
     destination = root / BUILD_RELATIVE_PATH
     if destination.exists():
         if not resume:
@@ -625,31 +662,86 @@ def _prepare_gallery(
     gallery_dir = root / "14_galleries"
     eligible_path = atomic_parquet(eligible, selection_dir / "eligible_cases.parquet")
     selected_path = atomic_parquet(selected, selection_dir / "selected_cases.parquet")
+    selected_csv_path = atomic_csv(selected, selection_dir / "selected_cases.csv")
+    selection_rule = canonical_semantic_contracts()["case_selection"]
+    selection_rules_path = atomic_json(
+        selection_dir / "selection_rules.json", selection_rule
+    )
     audit_payload: dict[str, Any] = {
         "schema_version": 1,
         "status": "PASS",
-        "selection_rule": canonical_semantic_contracts()["case_selection"],
+        "selection_rule": selection_rule,
         "eligible": artifact_record(eligible_path),
         "selected": artifact_record(selected_path),
         "groups": audit.to_dict(orient="records"),
     }
     audit_payload["content_sha256"] = canonical_sha256(audit_payload)
     audit_path = atomic_json(selection_dir / "selection_audit.json", audit_payload)
+    audit_markdown = [
+        "# Case-selection audit",
+        "",
+        "Status: PASS.",
+        "",
+        "Cases were selected only after constructing the complete eligible table, "
+        "using the protocol-bound mechanism-purity and presentation checks, "
+        "cluster medoids where features were available, and the locked SHA-256 tie-break.",
+        "",
+        "| Route | Category | Eligible | Selected |",
+        "|---|---|---:|---:|",
+    ]
+    for row in audit.to_dict(orient="records"):
+        audit_markdown.append(
+            f"| {row['route']} | {row['category']} | {int(row['eligible_count'])} | "
+            f"{int(row['selected_count'])} |"
+        )
+    audit_markdown_path = atomic_text(
+        selection_dir / "case_selection_audit.md", "\n".join(audit_markdown) + "\n"
+    )
     board_rows: list[dict[str, Any]] = []
     for selected_row in selected.to_dict(orient="records"):
         case_id = str(selected_row["case_id"])
         payload = context["case_payloads"][case_id]
         assets_meta = payload["assets"]
-        probability = (
-            None
-            if assets_meta["pred_probability"].get("status") == "NOT_AVAILABLE"
-            else _load_image(assets_meta["pred_probability"], name=f"{case_id} probability")
-        )
+        rgb = _load_image(assets_meta["rgb"], name=f"{case_id} RGB")
+        probability = None
+        if assets_meta["pred_probability"].get("status") != "NOT_AVAILABLE":
+            probability = _align_probability_to_native(
+                _load_image(
+                    assets_meta["pred_probability"],
+                    name=f"{case_id} probability",
+                ),
+                rgb.shape[:2],
+            )
         pred_rows = list(payload["pred_candidates"])
         gt_rows = list(payload["gt_candidates"])
+        raw_gt = _raw_gt_rectangles(_normal(payload["gt_grasp_rectangles"]))
+        gt_rectangles = _gt_rectangles(raw_gt)
+        selected_id = str(
+            payload["r7_candidate_id"] or payload["native_candidate_id"] or ""
+        )
+        selected_row = next(
+            (
+                row
+                for row in pred_rows
+                if str(row["candidate_id"]) == selected_id
+            ),
+            None,
+        )
+        matched_gt: list[dict[str, float]] = []
+        if selected_row is not None:
+            matched_index = selected_row.get("matched_gt_index")
+            if (
+                matched_index is None
+                or int(matched_index) < 0
+                or int(matched_index) >= len(gt_rectangles)
+            ):
+                raise GalleryContractError(
+                    f"{case_id} selected candidate has no valid matched GT"
+                )
+            matched_gt = [gt_rectangles[int(matched_index)]]
         k = 10 if payload["route"] == "D1" else 5
         board_assets = {
-            "rgb": _load_image(assets_meta["rgb"], name=f"{case_id} RGB"),
+            "rgb": rgb,
             "gt_mask": _load_image(assets_meta["gt_mask"], name=f"{case_id} GT mask"),
             "pred_probability": probability,
             "pred_mask": _load_image(assets_meta["pred_mask"], name=f"{case_id} predicted mask"),
@@ -658,7 +750,9 @@ def _prepare_gallery(
             "pred_top_candidates": [row for row in pred_rows if int(row["native_rank"]) <= k],
             "gt_all_candidates": gt_rows,
             "gt_top_candidates": [row for row in gt_rows if int(row["native_rank"]) <= k],
-            "gt_grasps": _gt_rectangles(payload["gt_grasp_rectangles"]),
+            "gt_grasps": gt_rectangles,
+            "raw_gt_grasp_rectangles": raw_gt,
+            "matched_gt_grasps": matched_gt,
             "asset_bundle_payload": payload,
         }
         board_dir = gallery_dir / "boards"
@@ -673,6 +767,37 @@ def _prepare_gallery(
         spec_payload["content_sha256"] = canonical_sha256(spec_payload)
         spec = atomic_json(gallery_dir / "BOARD_SPECS" / f"{case_id}.json", spec_payload)
         board_rows.append({**qa, "case_id": case_id, "spec": artifact_record(spec)})
+    ordered_pngs = [
+        Path(str(row["png"]["path"]))
+        for row in sorted(board_rows, key=lambda row: str(row["case_id"]))
+    ]
+    case_pdf_path = root / "13_figures/gtmask_counterfactual_cases.pdf"
+    case_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_pdf = case_pdf_path.with_name(
+        f".{case_pdf_path.name}.{os.getpid()}.tmp"
+    )
+    pages: list[Image.Image] = []
+    try:
+        for png in ordered_pngs:
+            with Image.open(png) as image:
+                pages.append(image.convert("RGB"))
+        if not pages:
+            raise GalleryContractError("case-board PDF requires at least one board")
+        pages[0].save(
+            temporary_pdf,
+            "PDF",
+            save_all=True,
+            append_images=pages[1:],
+            resolution=144.0,
+        )
+        with temporary_pdf.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(temporary_pdf, case_pdf_path)
+    finally:
+        for page in pages:
+            page.close()
+        if temporary_pdf.exists():
+            temporary_pdf.unlink()
     qa_template = pd.DataFrame(
         [
             {
@@ -704,7 +829,11 @@ def _prepare_gallery(
         ),
         "eligible": artifact_record(eligible_path),
         "selected": artifact_record(selected_path),
+        "selected_csv": artifact_record(selected_csv_path),
+        "selection_rules": artifact_record(selection_rules_path),
         "selection_audit": artifact_record(audit_path),
+        "case_selection_audit": artifact_record(audit_markdown_path),
+        "core_cases_figure": artifact_record(case_pdf_path),
         "manual_qa_template": artifact_record(qa_template_path),
         "eligible_count": len(eligible),
         "selected_count": len(selected),
@@ -826,11 +955,22 @@ def verify_gallery_build(
         selected,
         name="selected cases",
     )
+    _compare_frame(
+        pd.read_csv(_record(value["selected_csv"], root=root, name="selected cases CSV")),
+        selected,
+        name="selected cases CSV",
+    )
+    rules_path = _record(value["selection_rules"], root=root, name="selection rules")
+    rules = _object(rules_path, name="selection rules")
+    if rules != canonical_semantic_contracts()["case_selection"]:
+        raise GalleryContractError("selection rules differ")
     audit_path = _record(value["selection_audit"], root=root, name="selection audit")
     audit = _object(audit_path, name="selection audit")
     _self_hash(audit, name="selection audit")
     if audit.get("groups") != context["audit"].to_dict(orient="records"):
         raise GalleryContractError("selection audit groups differ from recompute")
+    _record(value["case_selection_audit"], root=root, name="case-selection audit")
+    _record(value["core_cases_figure"], root=root, name="core cases figure")
     selected_ids = set(selected["case_id"].astype(str))
     boards = value.get("boards")
     if not isinstance(boards, Sequence) or isinstance(boards, (str, bytes)):
@@ -956,6 +1096,11 @@ def accept_gallery_manual_qa(
         "manual_qa_acceptance": artifact_record(acceptance_path),
         "eligible": build["eligible"],
         "selected": build["selected"],
+        "selected_csv": build["selected_csv"],
+        "selection_rules": build["selection_rules"],
+        "selection_audit": build["selection_audit"],
+        "case_selection_audit": build["case_selection_audit"],
+        "core_cases_figure": build["core_cases_figure"],
         "eligible_count": int(build["eligible_count"]),
         "selected_count": int(build["selected_count"]),
         "boards": build["boards"],
@@ -993,6 +1138,7 @@ def verify_complete_gallery(
         or final.get("eligible") != build["eligible"]
         or final.get("selected") != build["selected"]
         or final.get("boards") != build["boards"]
+        or final.get("core_cases_figure") != build["core_cases_figure"]
     ):
         raise GalleryContractError("completed gallery contract differs")
     qa_path = _record(acceptance["manual_qa"], root=root, name="manual QA CSV")

@@ -100,9 +100,12 @@ TABLE_CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
     "stratified_results.csv": (
         "route",
+        "branch",
         "stratum_name",
         "stratum_value",
         "N",
+        "branch_positive",
+        "branch_positive_rate",
         "recovered",
         "harmful",
         "delta",
@@ -146,7 +149,23 @@ REPORT_NAMES = (
     "THESIS_READY_FIGURE_CAPTIONS.md",
     "BOTTLENECK_SHIFT_CONCLUSION.md",
     "LIMITATIONS_AND_CLAIM_BOUNDARIES.md",
+    "RESULTS_DATA_DICTIONARY.md",
+    "LIMITATIONS_AND_CLAIMS.md",
+    "REPRODUCIBILITY_CHECKLIST.md",
     "EXPERIMENT_CONCLUSION.json",
+)
+
+THESIS_INTEGRATION_NAMES = (
+    "gtmask_counterfactual_section.tex",
+    "gtmask_counterfactual_appendix.tex",
+    "gtmask_counterfactual_captions.tex",
+)
+
+PUBLICATION_TABLE_NAMES = (
+    "gtmask_primary_results.tex",
+    "gtmask_failure_taxonomy.tex",
+    "gtmask_statistics.tex",
+    "gtmask_stratified_summary.tex",
 )
 
 
@@ -545,6 +564,121 @@ def _mechanism_lines(
     return "\n".join(lines)
 
 
+def _topk_lines(tables: Mapping[str, pd.DataFrame], *, language: str) -> str:
+    rows = tables["branch_metrics.csv"].copy()
+    lines: list[str] = []
+    for row in rows.sort_values(["route", "branch"]).to_dict("records"):
+        branch = str(row["branch"])
+        if language == "zh":
+            lines.append(
+                f"- {row['route']} / {branch}：native={int(row['native_correct'])}/{int(row['N'])}，"
+                f"Top-5={int(row['oracle_at_5'])}/{int(row['N'])}，"
+                f"All-NMS={int(row['oracle_all'])}/{int(row['N'])}，"
+                f"no-output={int(row['no_output'])}，MRR={float(row.get('mrr', float('nan'))):.4f}。"
+            )
+        else:
+            lines.append(
+                f"- {row['route']} / {branch}: native {int(row['native_correct'])}/{int(row['N'])}; "
+                f"Top-5 {int(row['oracle_at_5'])}/{int(row['N'])}; "
+                f"All-NMS {int(row['oracle_all'])}/{int(row['N'])}; "
+                f"no-output {int(row['no_output'])}; MRR {float(row.get('mrr', float('nan'))):.4f}."
+            )
+    return "\n".join(lines)
+
+
+def _stat_lines(tables: Mapping[str, pd.DataFrame], *, language: str) -> str:
+    rows = tables["statistical_tests.csv"].copy()
+    lines: list[str] = []
+    for row in rows.sort_values(["route", "metric"]).to_dict("records"):
+        delta_pp = 100.0 * float(row["delta"])
+        low_pp = 100.0 * float(row["ci_low"])
+        high_pp = 100.0 * float(row["ci_high"])
+        if language == "zh":
+            lines.append(
+                f"- {row['route']} {row['metric']}：Δ={delta_pp:.2f} pp，"
+                f"scene-cluster 95% CI [{low_pp:.2f}, {high_pp:.2f}] pp，"
+                f"Holm p={float(row['holm_p']):.3g}；scene={int(row.get('scene_cluster_count', 0))}。"
+            )
+        else:
+            lines.append(
+                f"- {row['route']} {row['metric']}: Δ={delta_pp:.2f} pp; "
+                f"scene-cluster 95% CI [{low_pp:.2f}, {high_pp:.2f}] pp; "
+                f"Holm p={float(row['holm_p']):.3g}; scenes={int(row.get('scene_cluster_count', 0))}."
+            )
+    return "\n".join(lines)
+
+
+def _taxonomy_lines(tables: Mapping[str, pd.DataFrame], *, language: str) -> str:
+    lines: list[str] = []
+    for table_name, label in (
+        ("native_failure_taxonomy.csv", "T0–T7"),
+        ("post_r7_bottleneck_taxonomy.csv", "R0–R5"),
+    ):
+        frame = tables[table_name]
+        for route, group in frame.groupby("route", sort=True):
+            total = int(group["count"].sum())
+            denominator = int(group["N"].iloc[0])
+            if label == "T0–T7" and total != denominator:
+                raise ValueError(f"{label} taxonomy does not sum to N for {route}")
+            values = ", ".join(
+                f"{row.taxonomy}={int(row.count)}"
+                for row in group.itertuples(index=False)
+            )
+            if label == "T0–T7":
+                scope = f"N={denominator}"
+            else:
+                scope = f"residual failures={total}; full denominator={denominator}"
+            prefix = "互斥完备" if language == "zh" else "mutually exclusive and exhaustive"
+            lines.append(f"- {route} {label} ({prefix}; {scope}): {values}.")
+    return "\n".join(lines)
+
+
+def _tex_escape(value: Any) -> str:
+    text = str(value)
+    for source, replacement in (
+        ("\\", r"\textbackslash{}"),
+        ("_", r"\_"),
+        ("%", r"\%"),
+        ("&", r"\&"),
+        ("#", r"\#"),
+    ):
+        text = text.replace(source, replacement)
+    return text
+
+
+def _latex_table(
+    frame: pd.DataFrame,
+    columns: list[str],
+    headers: list[str],
+    *,
+    caption: str,
+    label: str,
+) -> str:
+    if frame.empty:
+        raise ValueError(f"publication table {label} has no rows")
+    alignment = "l" + "r" * (len(columns) - 1)
+    rows = []
+    for record in frame[columns].to_dict("records"):
+        cells = []
+        for column in columns:
+            value = record[column]
+            if isinstance(value, (float, np.floating)):
+                cells.append("--" if not math.isfinite(float(value)) else f"{float(value):.4f}")
+            else:
+                cells.append(_tex_escape(value))
+        rows.append(" & ".join(cells) + r" \\")
+    return (
+        "\\begin{table}[t]\n\\centering\n"
+        f"\\caption{{{caption}}}\n\\label{{{label}}}\n"
+        f"\\begin{{tabular}}{{{alignment}}}\n\\toprule\n"
+        + " & ".join(headers)
+        + r" \\"
+        + "\n\\midrule\n"
+        + "\n".join(rows)
+        + "\n\\bottomrule\n\\end{tabular}\n\\end{table}\n"
+    )
+
+
 def write_reports(
     run_dir: str | Path,
     manifest_path: str | Path | None = None,
@@ -566,8 +700,28 @@ def write_reports(
     answer_zh = _answer_lines(facts, language="zh")
     mechanism_en = _mechanism_lines(tables, language="en")
     mechanism_zh = _mechanism_lines(tables, language="zh")
+    topk_en = _topk_lines(tables, language="en")
+    topk_zh = _topk_lines(tables, language="zh")
+    taxonomy_en = _taxonomy_lines(tables, language="en")
+    taxonomy_zh = _taxonomy_lines(tables, language="zh")
+    statistics_en = _stat_lines(tables, language="en")
+    statistics_zh = _stat_lines(tables, language="zh")
+    source_lines = "\n".join(
+        f"- `{row['source_name']}`: `{row['path']}`; SHA-256 `{row['sha256']}`; status `{row['status']}`."
+        for row in tables["source_reconciliation.csv"].to_dict("records")
+    )
+    strata = sorted(tables["stratified_results.csv"]["stratum_name"].astype(str).unique())
+    stratified_en = (
+        f"The bound stratified table contains {len(tables['stratified_results.csv']):,} rows "
+        f"across {len(strata)} preregistered stratum families: " + ", ".join(strata) + "."
+    )
+    stratified_zh = (
+        f"冻结的 stratified table 共 {len(tables['stratified_results.csv']):,} 行，覆盖 "
+        f"{len(strata)} 个预注册 strata family：" + "、".join(strata) + "。"
+    )
     d1_branches = tables["branch_metrics.csv"]
     d1_branches = d1_branches[d1_branches["route"].astype(str).str.upper().eq("D1")]
+    d1_pending = d1_branches.empty and d1_blocker is None
     if not d1_branches.empty:
         if "oracle_at_10" not in d1_branches:
             raise ValueError("D1 reports require oracle_at_10")
@@ -597,40 +751,86 @@ def write_reports(
     )
     blocker_en = ""
     blocker_zh = ""
-    if d1_blocker is not None:
+    if d1_pending:
+        blocker_en = (
+            "\n## D1 secondary status: PENDING_AFTER_CORE\n\n"
+            "The completed G1/C1 core is unaffected. D1 is intentionally deferred "
+            "until the core reports and independent acceptance are complete.\n"
+        )
+        blocker_zh = (
+            "\n## D1 secondary 状态：PENDING_AFTER_CORE\n\n"
+            "完整 G1/C1 核心结果不受影响。D1 按协议延后到核心报告和独立验收完成后执行。\n"
+        )
+    elif d1_blocker is not None:
         required = {"missing_evidence", "search_paths", "stack_trace", "resume_command"}
         missing = sorted(required.difference(d1_blocker))
         if missing:
             raise ValueError(f"D1 blocker report misses fields: {missing}")
         blocker_en = (
-            "\n## D1 unrecoverable blocker\n\n"
-            f"D1 primary was not fabricated. Missing evidence: {d1_blocker['missing_evidence']}. "
+            "\n## D1 secondary status: BLOCKED_WITH_EVIDENCE\n\n"
+            f"The completed G1/C1 core is unaffected. Missing D1 evidence: {d1_blocker['missing_evidence']}. "
             f"Resume command: `{d1_blocker['resume_command']}`.\n"
         )
         blocker_zh = (
-            "\n## D1 不可恢复 blocker\n\n"
-            f"未伪造 D1 primary。缺失证据：{d1_blocker['missing_evidence']}。"
+            "\n## D1 secondary 状态：BLOCKED_WITH_EVIDENCE\n\n"
+            f"完整 G1/C1 核心结果不受影响。D1 缺失证据：{d1_blocker['missing_evidence']}。"
             f"恢复命令：`{d1_blocker['resume_command']}`。\n"
         )
     en = f"""# GT-mask Counterfactual Diagnostic
 
-## Source formal results
+## Research questions
 
-Predicted-mask replay is reported only from the hash-bound replay table and remains distinct from this diagnostic.
+How much candidate coverage is lost to target grounding, how much failure remains under perfect target-instance support, and how much ranking headroom remains after candidate recovery?
 
-## Post-formal counterfactual verified facts
+## Source provenance
+
+{source_lines}
+
+G1/C1 use pre-existing, formally locked no-rerank GT-mask candidates. This run performs retrospective verified import and independent re-evaluation; it does not rerun either neural candidate generator.
+
+## Intervention contract
+
+Only target-mask support changes. Route checkpoints, decoder thresholds, candidate budgets, native ordering, frozen R7 outcomes, and the same-GT offline evaluator remain fixed. The GT mask is an oracle input unavailable at deployment.
+
+## Baseline replay
+
+Predicted-mask replay is reported only from the hash-bound replay table and remains distinct from this diagnostic. Candidate geometry, scores, sample coverage, no-output rows, and evaluator labels were required to match their immutable authorities.
+
+## Primary results and Top-K sensitivity
+
+{topk_en}
+
+## Paired counterfactual facts
 
 {fact_en}
 
-## Operational taxonomy and associations
+## Native and post-R7 taxonomy
 
-T0–T7 and R0–R5 are exhaustive operational labels over saved offline outcomes. Route differences are descriptive associations.
+{taxonomy_en}
+
+## Paired statistics
+
+{statistics_en}
+
+Exact McNemar tests are paired by sample; Holm adjustment covers the six primary route/metric tests. Confidence intervals resample scene clusters with 10,000 deterministic bootstrap replicates; frame-cluster sensitivity is retained in the bound statistical table.
+
+## Stratified analysis
+
+{stratified_en}
 
 ## Candidate-pool mechanism evidence
 
 {mechanism_en}
 
 Matching supports final-NMS-pool transition statements only. Crop, dense-peak, raw-sampling, and filter-stage attribution remains unknown without explicit frozen lineage.
+
+## Qualitative evidence
+
+The canonical gallery is selected from the complete eligible table using mechanism purity, presentation checks, deterministic medoids, and a SHA-256 tie-break. Its acceptance status is recorded separately from this table-derived report.
+
+## Negative and regression results
+
+GT-mask regressions are reported alongside recoveries. Residual no-positive pools under the GT mask are retained as generator/backend-limited evidence under the operational taxonomy; they are not discarded as inconvenient negatives.
 
 ## Required research answers
 
@@ -643,23 +843,47 @@ Matching supports final-NMS-pool transition statements only. Crop, dense-peak, r
 """
     zh = f"""# GT-mask Counterfactual 诊断摘要
 
-## Source formal 结果
+## 实验做了什么与来源
 
-Predicted-mask replay 仅来自 hash-bound replay 表，并与本次诊断严格区分。
+{source_lines}
+
+本实验仅把部署分支的 predicted target mask 替换为唯一映射的 GT target-instance mask；checkpoint、decoder、candidate budget、native order、冻结 R7 结果与 same-GT evaluator 均保持不变。G1/C1 复用既有已锁候选并独立复评，没有重新运行神经网络。
+
+## 为什么是 post-formal oracle diagnostic
+
+GT mask 在部署时不可用，且 G1/C1 Test outcome 在本锁之前已暴露。因此结果是诚实标注的 retrospective post-formal oracle diagnostic，不是 prospective preregistration 或可部署性能。
+
+## Primary 与 Top-K
+
+{topk_zh}
 
 ## Post-formal 已验证事实
 
 {fact_zh}
 
-## 操作性 taxonomy 与关联
+## 操作性 taxonomy
 
-T0–T7 和 R0–R5 是对已保存离线结果的互斥完备操作标签；路线差异仅作描述性关联。
+{taxonomy_zh}
+
+## 统计证据
+
+{statistics_zh}
+
+McNemar 为 sample-paired exact test；六个 primary tests 采用 Holm 校正；CI 为 325 个 scene cluster 的 10,000 次确定性 bootstrap，frame-cluster sensitivity 保留在冻结统计表中。
+
+## 分层分析
+
+{stratified_zh}
 
 ## Candidate-pool 机制证据
 
 {mechanism_zh}
 
 匹配只能支持 final-NMS-pool transition；没有明确冻结 lineage 时，crop、dense peak、raw sampling 与 filter stage 归因保持 unknown。
+
+## 定性案例、负结果与 regression
+
+案例先建立完整 eligible table，再用机制纯度、展示质量、medoid 和 SHA-256 tie-break 选择。GT-mask regression 与残余 no-positive pool 均完整报告，不因不支持原假设而删除。
 
 ## 必答研究问题
 
@@ -676,8 +900,10 @@ mask, while keeping each route's checkpoint, configuration, decoder, budget,
 selector, and offline evaluator frozen. The intervention is an oracle diagnostic
 and is not deployable. Taxonomies are operational definitions, not latent causal labels.
 """
-    if d1_blocker is not None:
-        methods += "\\paragraph{Partial scope} D1 primary raw-generation replay was unavailable; no filter-only result was substituted.\n"
+    if d1_pending:
+        methods += "\\paragraph{Secondary extension} D1 is pending until the complete core has passed independent acceptance.\n"
+    elif d1_blocker is not None:
+        methods += "\\paragraph{Secondary extension} D1 was blocked with evidence after the complete core; no filter-only result was substituted.\n"
     result_rows = "\n".join(
         f"{row['route']} & {int(row['pred_oracle_all'])}/{int(row['N'])} & "
         f"{int(row['gt_oracle_all'])}/{int(row['N'])} & {float(row['delta_oracle_all']):.4f} \\\\"
@@ -688,24 +914,30 @@ and is not deployable. Taxonomies are operational definitions, not latent causal
         "GT Oracle@All & $\\Delta$ \\\\ \\hline\n"
         f"{result_rows}\n\\end{{tabular}}\n"
     )
-    if d1_blocker is not None:
+    if d1_pending:
+        results += "\\paragraph{D1} The secondary extension is pending until after completion of the core reports and independent acceptance.\n"
+    elif d1_blocker is not None:
         results += "\\paragraph{D1} Primary GT-oracle result unavailable because the frozen raw-generation replay is blocked.\n"
     discussion = (
         "\\section{Discussion}\nObserved route-specific recovery and residual-generation "
         "counts support descriptive engineering prioritisation only. The oracle intervention "
         "does not establish physical or universal causal effects.\n"
     )
-    if d1_blocker is not None:
+    if d1_pending:
+        discussion += "D1 engineering prioritisation remains pending until the post-core secondary extension is run.\n"
+    elif d1_blocker is not None:
         discussion += "D1 engineering prioritisation remains unresolved; filter-only sensitivity is not primary evidence.\n"
     tables_tex = "% Hash-bound values are rendered in THESIS_READY_RESULTS.tex; no values are manually copied.\n"
     captions = (
         "\n".join(
             f"{index}. GT-mask oracle diagnostic figure; values are reproduced from the hash-bound table bundle."
-            for index in range(1, 12 if d1_blocker is not None else 13)
+            for index in range(1, 12 if d1_branches.empty else 13)
         )
         + "\n"
     )
-    if d1_blocker is not None:
+    if d1_pending:
+        captions += "12. Deferred: D1 is a post-core secondary extension; no counterfactual curve was fabricated.\n"
+    elif d1_blocker is not None:
         captions += "12. Omitted: D1 primary GT-oracle raw-generation replay is blocked; no counterfactual curve was fabricated.\n"
     shift = f"""# Bottleneck-shift conclusion
 
@@ -727,6 +959,92 @@ and is not deployable. Taxonomies are operational definitions, not latent causal
 - {boundary_en}
 {blocker_en}
 """
+    data_dictionary_lines = [
+        "# Results data dictionary",
+        "",
+        "Every publication value is derived from the hash-bound table bundle. "
+        "Counts retain the full 7,675-sample denominator, including no-output cases.",
+        "",
+    ]
+    for name, columns in TABLE_CONTRACTS.items():
+        data_dictionary_lines.extend(
+            [
+                f"## `{name}`",
+                "",
+                f"Required columns: {', '.join(f'`{column}`' for column in columns)}.",
+                f"Observed rows: {len(tables[name]):,}.",
+                "",
+            ]
+        )
+    data_dictionary = "\n".join(data_dictionary_lines)
+    exact_limits = f"""# Limitations and claims
+
+- This is a post-formal oracle diagnostic; the GT mask is unavailable at inference.
+- Evidence comes from one dataset and one frozen offline 4-DoF same-GT criterion.
+- Scene/frame dependence is handled by clustered sensitivity analysis but is not eliminated.
+- No physical robot trial was performed; offline pass labels are not physical success.
+- Candidate-pool matching identifies observable final-NMS transitions, not every upstream causal stage.
+- Regressions show that a perfect target boundary is not uniformly beneficial because context and candidate generation can change.
+- Unsupported claims include deployment gain, training benefit, universal causality, and physical grasp reliability.
+
+{boundary_en}
+{blocker_en}
+"""
+    reproducibility = f"""# Reproducibility checklist
+
+- [x] Isolated run namespace.
+- [x] 7,675 unique Test samples and no-output-in-denominator policy.
+- [x] Unique target-instance GT-mask mapping with forward-transform pixel closure.
+- [x] Predicted G1/C1 replay reconciled to immutable artifacts.
+- [x] G1/C1 retrospective source candidates hash-bound; no unnecessary model inference.
+- [x] Checkpoints, configs, decoder, budgets, selector, and evaluator frozen.
+- [x] Candidate IDs, ranks, geometry, scores, and same-GT labels saved.
+- [x] Top-(K), native taxonomy, post-R7 taxonomy, paired tests, cluster CIs, and strata derived from saved frames.
+- [x] Independent evaluator exact-match required before terminal acceptance.
+- [x] Case selection is anti-cherry-picking and gallery QA is separately bound.
+- [x] Source runs rehashed before and after; Formal Test count change must remain zero.
+
+Table-bundle content SHA-256: `{table_manifest['content_sha256']}`.
+"""
+
+    primary_table = _latex_table(
+        tables["branch_metrics.csv"],
+        ["route", "branch", "N", "native_correct", "oracle_at_5", "oracle_all", "no_output"],
+        ["Route", "Branch", "$N$", "Native", "Oracle@5", "Oracle@All", "No output"],
+        caption="Predicted-mask and GT-mask candidate coverage under frozen route contracts.",
+        label="tab:gtmask-primary",
+    )
+    taxonomy_table = _latex_table(
+        pd.concat(
+            [
+                tables["native_failure_taxonomy.csv"].assign(family="native"),
+                tables["post_r7_bottleneck_taxonomy.csv"].assign(family="post-R7"),
+            ],
+            ignore_index=True,
+        ),
+        ["route", "family", "taxonomy", "count", "N"],
+        ["Route", "Family", "Class", "Count", "$N$"],
+        caption="Mutually exclusive operational failure and post-R7 bottleneck taxonomies.",
+        label="tab:gtmask-taxonomy",
+    )
+    statistics_table = _latex_table(
+        tables["statistical_tests.csv"],
+        ["route", "metric", "delta", "ci_low", "ci_high", "holm_p"],
+        ["Route", "Metric", "$\\Delta$", "CI low", "CI high", "Holm $p$"],
+        caption="Paired counterfactual changes with scene-clustered confidence intervals.",
+        label="tab:gtmask-statistics",
+    )
+    compact_strata = tables["stratified_results.csv"]
+    compact_strata = compact_strata[
+        compact_strata["stratum_name"].isin(("query_type", "target_area_quartile"))
+    ]
+    stratified_table = _latex_table(
+        compact_strata,
+        ["route", "branch", "stratum_name", "stratum_value", "N", "branch_positive_rate", "delta"],
+        ["Route", "Branch", "Stratum", "Value", "$N$", "Positive rate", "$\\Delta$"],
+        caption="Compact query-type and target-area stratified summary; full strata remain in the bound CSV.",
+        label="tab:gtmask-stratified",
+    )
     report_dir = root / "15_reports"
     text_outputs = {
         REPORT_NAMES[0]: en,
@@ -738,13 +1056,24 @@ and is not deployable. Taxonomies are operational definitions, not latent causal
         REPORT_NAMES[6]: captions,
         REPORT_NAMES[7]: shift,
         REPORT_NAMES[8]: limits,
+        "RESULTS_DATA_DICTIONARY.md": data_dictionary,
+        "LIMITATIONS_AND_CLAIMS.md": exact_limits,
+        "REPRODUCIBILITY_CHECKLIST.md": reproducibility,
     }
     records: dict[str, dict[str, Any]] = {}
     for name, content in text_outputs.items():
         records[name] = artifact_record(atomic_text(report_dir / name, content))
     conclusion: dict[str, Any] = {
         "schema_version": 1,
-        "status": "PARTIAL" if d1_blocker is not None else "COMPLETE",
+        "status": "COMPLETE",
+        "core_status": "COMPLETE",
+        "d1_secondary_status": (
+            "PENDING_AFTER_CORE"
+            if d1_pending
+            else "BLOCKED_WITH_EVIDENCE"
+            if d1_blocker is not None
+            else "COMPLETE"
+        ),
         "experiment_kind": "post-formal GT-mask oracle diagnostic",
         "verified_facts": facts,
         "required_research_answers": answer_en.splitlines(),
@@ -766,15 +1095,56 @@ and is not deployable. Taxonomies are operational definitions, not latent causal
         "table_bundle_content_sha256": table_manifest["content_sha256"],
     }
     conclusion["content_sha256"] = canonical_sha256(conclusion)
-    conclusion_path = atomic_json(report_dir / REPORT_NAMES[9], conclusion)
-    records[REPORT_NAMES[9]] = artifact_record(conclusion_path)
+    conclusion_path = atomic_json(
+        report_dir / "EXPERIMENT_CONCLUSION.json", conclusion
+    )
+    records["EXPERIMENT_CONCLUSION.json"] = artifact_record(conclusion_path)
+    thesis_dir = root / "17_thesis_integration"
+    thesis_outputs = {
+        THESIS_INTEGRATION_NAMES[0]: methods + "\n" + results + "\n" + discussion,
+        THESIS_INTEGRATION_NAMES[1]: (
+            "\\section{GT-mask counterfactual appendix}\n"
+            "\\input{../13_figures/tables/gtmask_primary_results.tex}\n"
+            "\\input{../13_figures/tables/gtmask_failure_taxonomy.tex}\n"
+            "\\input{../13_figures/tables/gtmask_statistics.tex}\n"
+            "\\input{../13_figures/tables/gtmask_stratified_summary.tex}\n"
+        ),
+        THESIS_INTEGRATION_NAMES[2]: (
+            "% Captions are derived from the hash-bound table bundle.\n"
+            "\\newcommand{\\GTMASKSummaryCaption}{Predicted-mask versus GT-mask "
+            "oracle diagnostic under frozen downstream route contracts.}\n"
+            "\\newcommand{\\GTMASKCasesCaption}{Deterministically selected, "
+            "QA-checked counterfactual case boards; the GT mask is unavailable at deployment.}\n"
+        ),
+    }
+    thesis_records: dict[str, dict[str, Any]] = {}
+    for name, content in thesis_outputs.items():
+        thesis_records[name] = artifact_record(
+            atomic_text(thesis_dir / name, content)
+        )
+    table_dir = root / "13_figures/tables"
+    publication_outputs = {
+        PUBLICATION_TABLE_NAMES[0]: primary_table,
+        PUBLICATION_TABLE_NAMES[1]: taxonomy_table,
+        PUBLICATION_TABLE_NAMES[2]: statistics_table,
+        PUBLICATION_TABLE_NAMES[3]: stratified_table,
+    }
+    publication_records: dict[str, dict[str, Any]] = {}
+    for name, content in publication_outputs.items():
+        publication_records[name] = artifact_record(
+            atomic_text(table_dir / name, content)
+        )
     report_manifest: dict[str, Any] = {
         "schema_version": 1,
-        "status": "PARTIAL" if d1_blocker is not None else "COMPLETE",
+        "status": "COMPLETE",
+        "core_status": "COMPLETE",
+        "d1_secondary_status": conclusion["d1_secondary_status"],
         "oracle_diagnostic": True,
         "table_bundle": conclusion["table_bundle"],
         "table_bundle_content_sha256": table_manifest["content_sha256"],
         "reports": records,
+        "thesis_integration": thesis_records,
+        "publication_tables": publication_records,
     }
     report_manifest["content_sha256"] = canonical_sha256(report_manifest)
     return atomic_json(report_dir / "REPORTS_MANIFEST.json", report_manifest)
@@ -782,6 +1152,8 @@ and is not deployable. Taxonomies are operational definitions, not latent causal
 
 __all__ = [
     "REPORT_NAMES",
+    "THESIS_INTEGRATION_NAMES",
+    "PUBLICATION_TABLE_NAMES",
     "TABLE_CONTRACTS",
     "TABLE_MANIFEST_RELATIVE_PATH",
     "load_bound_tables",

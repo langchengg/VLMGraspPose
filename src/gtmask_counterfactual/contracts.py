@@ -16,8 +16,12 @@ class RunState(StrEnum):
     P1_BASELINE_REPLAY_PASS = "P1_BASELINE_REPLAY_PASS"
     P2_GT_MAPPING_PASS = "P2_GT_MAPPING_PASS"
     P3_PROTOCOL_LOCKED = "P3_PROTOCOL_LOCKED"
-    P4_G1_COUNTERFACTUAL_COMPLETE = "P4_G1_COUNTERFACTUAL_COMPLETE"
-    P5_C1_COUNTERFACTUAL_COMPLETE = "P5_C1_COUNTERFACTUAL_COMPLETE"
+    P4_C1_PILOT_PASS = "P4_C1_PILOT_PASS"
+    P5_C1_FULL_COMPLETE = "P5_C1_FULL_COMPLETE"
+    # P6 and every downstream state predate the corrected C1-before-G1 order.
+    # P5B inserts the required G1 closure without renumbering those public
+    # lifecycle values or invalidating existing D1/postprocess consumers.
+    P5B_G1_FULL_COMPLETE = "P5B_G1_FULL_COMPLETE"
     P6_D1_COUNTERFACTUAL_COMPLETE = "P6_D1_COUNTERFACTUAL_COMPLETE"
     P7_TAXONOMY_COMPLETE = "P7_TAXONOMY_COMPLETE"
     P8_STATISTICS_COMPLETE = "P8_STATISTICS_COMPLETE"
@@ -36,8 +40,9 @@ RUN_STATE_ORDER = {
             RunState.P1_BASELINE_REPLAY_PASS,
             RunState.P2_GT_MAPPING_PASS,
             RunState.P3_PROTOCOL_LOCKED,
-            RunState.P4_G1_COUNTERFACTUAL_COMPLETE,
-            RunState.P5_C1_COUNTERFACTUAL_COMPLETE,
+            RunState.P4_C1_PILOT_PASS,
+            RunState.P5_C1_FULL_COMPLETE,
+            RunState.P5B_G1_FULL_COMPLETE,
             RunState.P6_D1_COUNTERFACTUAL_COMPLETE,
             RunState.P7_TAXONOMY_COMPLETE,
             RunState.P8_STATISTICS_COMPLETE,
@@ -143,6 +148,7 @@ REQUIRED_PROTOCOL_BINDINGS = (
     "configs",
     "baseline_replay",
     "sample_manifest",
+    "gt_grasp_source",
     "gt_mask_registry",
     "mapping_qa",
     "route_contracts",

@@ -138,10 +138,16 @@ def main() -> int:
         visual_question,
         "target_instance_id",
         "gt_mask_path",
-        "gt_mask_sha256",
     ]
+    if "gt_mask_sha256" in pq.read_schema(
+        args.visual_paired_manifest.expanduser().resolve()
+    ).names:
+        visual_columns.append("gt_mask_sha256")
     prepared = _read_columns(args.prepared_label_manifest, prepared_columns)
     visual = _read_columns(args.visual_paired_manifest, visual_columns)
+    if "gt_mask_sha256" not in visual_columns:
+        for row in visual:
+            row["gt_mask_sha256"] = None
     for rows, question in (
         (prepared, prepared_question),
         (visual, visual_question),

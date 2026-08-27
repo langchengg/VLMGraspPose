@@ -11,6 +11,7 @@ from gtmask_counterfactual.native_replay import (
     assert_exact_native_replay,
     load_replay_sample,
     replay_label_free_samples,
+    write_canonical_replay_frames,
     write_replay_sample,
 )
 
@@ -109,4 +110,44 @@ def test_predicted_replay_shard_is_strictly_resumable(tmp_path: Path) -> None:
             sample_id="s1",
             sample=sample,
             candidates=changed,
+        )
+
+
+def test_canonical_replay_frames_preserve_full_denominator_and_resume(
+    tmp_path: Path,
+) -> None:
+    candidate_path, sample_path = write_canonical_replay_frames(
+        tmp_path,
+        route="g1",
+        sample_ids=["s1", "s2"],
+        candidates=pd.DataFrame([_candidate()]),
+    )
+    candidates = pd.read_parquet(candidate_path)
+    samples = pd.read_parquet(sample_path)
+    assert candidates[["route", "branch"]].drop_duplicates().to_dict("records") == [
+        {"route": "G1", "branch": "predicted"}
+    ]
+    assert samples.set_index("sample_id")["candidate_count"].to_dict() == {
+        "s1": 1,
+        "s2": 0,
+    }
+    assert samples.set_index("sample_id")["no_output"].to_dict() == {
+        "s1": False,
+        "s2": True,
+    }
+    write_canonical_replay_frames(
+        tmp_path,
+        route="g1",
+        sample_ids=["s1", "s2"],
+        candidates=pd.DataFrame([_candidate()]),
+    )
+    changed = candidates.copy()
+    changed.loc[0, "native_score"] = 0.1
+    changed.to_parquet(candidate_path, index=False)
+    with pytest.raises(NativeReplayError, match="differs"):
+        write_canonical_replay_frames(
+            tmp_path,
+            route="g1",
+            sample_ids=["s1", "s2"],
+            candidates=pd.DataFrame([_candidate()]),
         )

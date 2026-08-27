@@ -27,7 +27,7 @@ SUPPORT_FILES = {
     "scripts/gtmask_oracle_candidate_bootstrap.py": (
         REPOSITORY_ROOT
         / "tools/gtmask_counterfactual/d1_oracle_candidate_bootstrap.py",
-        "3412992989cf459c73f9d36f926d64356d95f0e1b52b42c56429c1bc66159fd6",
+        "4300544854c78fe42aee7458dc91e15030d09f460e4c17128dfd3296b1a0f9b1",
     ),
     "src/grasping/camera_geometry.py": (
         REPOSITORY_ROOT / "HiFi_reproduction/src/grasping/camera_geometry.py",
@@ -137,7 +137,10 @@ def _source_records(files: Mapping[str, Path]) -> dict[str, dict[str, Any]]:
 
 
 def verify_d1_source_view(path: str | Path) -> dict[str, Any]:
-    manifest_path = _regular(Path(path), label="D1 source-view manifest")
+    requested = Path(path).expanduser()
+    if requested.parent.is_symlink():
+        raise D1SourceViewError("D1 source-view root must not be a symlink")
+    manifest_path = _regular(requested, label="D1 source-view manifest")
     try:
         value = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -154,6 +157,34 @@ def verify_d1_source_view(path: str | Path) -> dict[str, Any]:
     files = value.get("files")
     if value.get("status") != "COMPLETE" or not isinstance(files, Mapping):
         raise D1SourceViewError("D1 source-view manifest is incomplete")
+    sources = value.get("sources")
+    identity_payload = {
+        "gqcnn_commit": value.get("gqcnn_commit"),
+        "files": sources,
+        "source_view_role": value.get("source_view_role"),
+    }
+    identity = canonical_sha256(identity_payload)
+    if (
+        not isinstance(sources, Mapping)
+        or value.get("source_identity_sha256") != identity
+        or root.name != identity[:24]
+    ):
+        raise D1SourceViewError("D1 source-view identity differs")
+    expected_members = {_safe_relative(str(relative)).as_posix() for relative in files}
+    if len(expected_members) != len(files):
+        raise D1SourceViewError("D1 source-view has duplicate normalized members")
+    observed_members: set[str] = set()
+    for member in root.rglob("*"):
+        if member.is_symlink():
+            raise D1SourceViewError(f"source-view member must not be a symlink: {member}")
+        if member.is_file():
+            relative = member.relative_to(root).as_posix()
+            if relative != manifest_path.name:
+                observed_members.add(relative)
+        elif not member.is_dir():
+            raise D1SourceViewError(f"source-view member is not regular: {member}")
+    if observed_members != expected_members:
+        raise D1SourceViewError("D1 source-view member inventory differs")
     for relative, record in files.items():
         if not isinstance(record, Mapping):
             raise D1SourceViewError(f"source-view record is malformed: {relative}")
@@ -164,6 +195,104 @@ def verify_d1_source_view(path: str | Path) -> dict[str, Any]:
     if int(value.get("file_count", -1)) != len(files):
         raise D1SourceViewError("D1 source-view file count differs")
     return value
+
+
+def d1_source_view_record(path: str | Path) -> dict[str, Any]:
+    """Return a portable, independently verifiable record of the whole view."""
+
+    manifest_path = Path(path).expanduser().resolve(strict=False)
+    value = verify_d1_source_view(manifest_path)
+    files = value["files"]
+    members = {
+        str(relative): {
+            "sha256": str(record["sha256"]),
+            "bytes": int(record["bytes"]),
+        }
+        for relative, record in sorted(files.items())
+    }
+    return {
+        "manifest": artifact_record(manifest_path),
+        "source_identity_sha256": value["source_identity_sha256"],
+        "manifest_content_sha256": value["content_sha256"],
+        "file_count": value["file_count"],
+        "members_sha256": canonical_sha256(members),
+        "members": members,
+    }
+
+
+def verify_d1_execution_binding(path: str | Path) -> dict[str, Any]:
+    """Verify a ledger/output receipt and every source/output byte it binds."""
+
+    binding_path = _regular(Path(path), label="D1 execution binding")
+    try:
+        value = json.loads(binding_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise D1SourceViewError("cannot parse D1 execution binding") from error
+    if not isinstance(value, dict):
+        raise D1SourceViewError("D1 execution binding is not an object")
+    unsigned = dict(value)
+    recorded = unsigned.pop("content_sha256", None)
+    if recorded != canonical_sha256(unsigned):
+        raise D1SourceViewError("D1 execution binding content hash differs")
+    source_view = value.get("source_view")
+    artifacts = value.get("artifacts")
+    if (
+        value.get("status") != "COMPLETE"
+        or not isinstance(value.get("stage"), str)
+        or not value["stage"]
+        or not isinstance(source_view, Mapping)
+        or not isinstance(artifacts, Mapping)
+        or not artifacts
+    ):
+        raise D1SourceViewError("D1 execution binding is incomplete")
+    manifest_record = source_view.get("manifest")
+    if not isinstance(manifest_record, Mapping):
+        raise D1SourceViewError("D1 execution binding source-view record is malformed")
+    manifest_path = Path(str(manifest_record.get("path", "")))
+    if d1_source_view_record(manifest_path) != source_view:
+        raise D1SourceViewError("D1 execution binding source-view record differs")
+    for label, record in artifacts.items():
+        if not isinstance(label, str) or not label or not isinstance(record, Mapping):
+            raise D1SourceViewError("D1 execution binding artifact record is malformed")
+        artifact = _regular(
+            Path(str(record.get("path", ""))), label=f"D1 bound artifact {label}"
+        )
+        if artifact_record(artifact) != record:
+            raise D1SourceViewError(f"D1 bound artifact differs: {label}")
+    return value
+
+
+def write_d1_execution_binding(
+    path: str | Path,
+    *,
+    stage: str,
+    source_view_manifest: str | Path,
+    artifacts: Mapping[str, str | Path],
+) -> Path:
+    """Atomically publish the artifact that a stage ledger should reference."""
+
+    if not stage or not artifacts:
+        raise D1SourceViewError("D1 execution binding requires a stage and artifacts")
+    destination = Path(path).expanduser().resolve(strict=False)
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "COMPLETE",
+        "stage": stage,
+        "source_view": d1_source_view_record(source_view_manifest),
+        "artifacts": {
+            label: artifact_record(_regular(Path(artifact), label=f"D1 output {label}"))
+            for label, artifact in sorted(artifacts.items())
+        },
+    }
+    payload["content_sha256"] = canonical_sha256(payload)
+    if destination.exists():
+        existing = verify_d1_execution_binding(destination)
+        if existing != payload:
+            raise D1SourceViewError("existing D1 execution binding differs")
+    else:
+        atomic_json(destination, payload)
+    verify_d1_execution_binding(destination)
+    return destination
 
 
 def build_d1_source_view(
@@ -227,6 +356,9 @@ def build_d1_source_view(
 __all__ = [
     "D1SourceViewError",
     "build_d1_source_view",
+    "d1_source_view_record",
     "production_source_files",
+    "verify_d1_execution_binding",
     "verify_d1_source_view",
+    "write_d1_execution_binding",
 ]

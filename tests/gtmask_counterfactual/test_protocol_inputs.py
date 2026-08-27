@@ -24,6 +24,9 @@ def _synthetic_execution_adapter(
     adapter = tmp_path / "synthetic-adapter/ADAPTER_MANIFEST.json"
     adapter.parent.mkdir(parents=True)
     adapter.write_text("{}\n", encoding="utf-8")
+    pilot = tmp_path / "synthetic-pilot/C1_PILOT_SOURCE_ADAPTER.json"
+    pilot.parent.mkdir(parents=True)
+    pilot.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(
         protocol_inputs_module,
         "build_g1_c1_source_adapter",
@@ -31,10 +34,18 @@ def _synthetic_execution_adapter(
     )
     monkeypatch.setattr(
         protocol_inputs_module,
+        "build_c1_pilot_source_adapter",
+        lambda **kwargs: pilot,
+    )
+    monkeypatch.setattr(
+        protocol_inputs_module,
         "canonical_route_contracts",
-        lambda adapter_manifest: {
+        lambda adapter_manifest, pilot_manifest: {
             "g1": {"synthetic_adapter": str(adapter_manifest)},
-            "c1": {"synthetic_adapter": str(adapter_manifest)},
+            "c1": {
+                "synthetic_adapter": str(adapter_manifest),
+                "synthetic_pilot": str(pilot_manifest),
+            },
             "d1": {"case": "B"},
         },
     )
@@ -57,11 +68,22 @@ def _run(tmp_path: Path) -> Path:
     (root / "03_gt_mask_registry").mkdir(parents=True)
     (root / "02_sample_manifest/counterfactual_manifest.parquet").write_bytes(b"sample")
     (root / "03_gt_mask_registry/gt_mask_registry.parquet").write_bytes(b"registry")
+    join: dict[str, object] = {
+        "status": "PASS",
+        "sources": {
+            "denominator": artifact_record(
+                root / "02_sample_manifest/counterfactual_manifest.parquet"
+            )
+        },
+    }
+    join["content_sha256"] = canonical_sha256(join)
+    join_path = _write_json(root / "02_sample_manifest/JOIN_AUDIT.json", join)
     mapping: dict[str, object] = {
         "status": "PASS",
         "stage": "P2_GT_MAPPING_PASS",
         "sample_count": 7_675,
         "mapping_qa_gt_mask_rows_read": 7_675,
+        "inputs": {"join_audit": artifact_record(join_path)},
     }
     mapping["content_sha256"] = canonical_sha256(mapping)
     _write_json(root / "03_gt_mask_registry/GT_MASK_MAPPING_AUDIT.json", mapping)

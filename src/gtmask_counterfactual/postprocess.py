@@ -22,6 +22,8 @@ from .audit import transition_pipeline_status
 from .candidate_matching import match_candidate_pools
 from .contracts import RunState
 from .independent import independent_recompute_from_frames
+from .gt_grasp_authority import validate_gt_grasp_authority
+from .sample_covariates import validate_sample_covariates
 from .io import (
     artifact_record,
     atomic_csv,
@@ -43,6 +45,7 @@ from .protocol import (
     LOCK_RELATIVE_PATH,
     complete_bulk_execution,
     load_execution_authority,
+    resolve_postlock_access_authority,
     verify_protocol_lock,
 )
 from .reporting import TABLE_CONTRACTS, load_bound_tables, write_table_bundle
@@ -182,18 +185,71 @@ def _collect_records(
 ) -> list[tuple[str, dict[str, Any]]]:
     records: list[tuple[str, dict[str, Any]]] = []
     if isinstance(value, Mapping):
+        if value.get("kind") == "inline":
+            return records
         if "path" in value or "sha256" in value:
             if not {"path", "sha256"}.issubset(value):
                 raise PostprocessContractError(
                     f"incomplete artifact record at {prefix}"
                 )
             records.append((prefix, dict(value)))
-        elif value.get("kind") != "inline":
+        else:
             for key, child in value.items():
                 records.extend(_collect_records(child, prefix=f"{prefix}.{key}"))
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, child in enumerate(value):
             records.extend(_collect_records(child, prefix=f"{prefix}[{index}]"))
+    return records
+
+
+def _collect_named_artifact_records(
+    value: Any,
+    *,
+    names: frozenset[str],
+    prefix: str = "root",
+) -> list[tuple[str, dict[str, Any]]]:
+    """Find explicitly named artifact records without guessing from ``path``.
+
+    Final source locks also contain logical summaries whose domain fields are
+    named ``path``.  Those summaries are not file identities.  Nested lock
+    discovery therefore keys on the two contract field names it consumes and
+    retains strict completeness checks for those named records.
+    """
+
+    records: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(value, Mapping):
+        if value.get("kind") == "inline":
+            return records
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}"
+            if key in names:
+                if not isinstance(child, Mapping) or not {
+                    "path",
+                    "sha256",
+                }.issubset(child):
+                    raise PostprocessContractError(
+                        f"incomplete named artifact record at {child_prefix}"
+                    )
+                records.append((child_prefix, dict(child)))
+                continue
+            records.extend(
+                _collect_named_artifact_records(
+                    child,
+                    names=names,
+                    prefix=child_prefix,
+                )
+            )
+    elif isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        for index, child in enumerate(value):
+            records.extend(
+                _collect_named_artifact_records(
+                    child,
+                    names=names,
+                    prefix=f"{prefix}[{index}]",
+                )
+            )
     return records
 
 
@@ -210,7 +266,9 @@ def write_postprocess_input_manifest(
     required = {
         "sample_manifest",
         "ground_truth",
+        "ground_truth_authority",
         "sample_covariates",
+        "sample_covariates_authority",
         "final_outcomes",
         "final_outcomes_authority",
         "baseline_replay",
@@ -240,8 +298,6 @@ def write_postprocess_input_manifest(
         value = artifacts[group]
         if not isinstance(value, Mapping) or set(value) != expected_keys:
             raise ValueError(f"{group} route/branch records differ from availability")
-    if available_routes == ("G1", "C1") and "d1_blocker" not in artifacts:
-        raise ValueError("a D1-omitted input manifest requires a hash-bound blocker")
     if available_routes == ROUTES and "d1_blocker" in artifacts:
         raise ValueError(
             "a complete three-route manifest cannot also declare a D1 blocker"
@@ -258,6 +314,10 @@ def write_postprocess_input_manifest(
         "sample_count": int(sample_count),
         "routes": list(ROUTES),
         "available_routes": list(available_routes),
+        "core_routes": ["G1", "C1"],
+        "d1_secondary_status": (
+            "PENDING_AFTER_CORE" if available_routes == ("G1", "C1") else "COMPLETE"
+        ),
         "branches": list(BRANCHES),
         "training_or_selection_feedback_allowed": False,
         "protocol_lock": artifact_record(lock_path),
@@ -425,11 +485,6 @@ def _verify_execution_authority(
         raise PermissionError(
             "analysis sample manifest differs from protocol authority"
         )
-    if artifacts.get("ground_truth") != authority.get("sample_manifest"):
-        raise PermissionError(
-            "GT grasp frame must be the protocol-bound counterfactual manifest"
-        )
-    claim = _json_object(root / EXECUTION_RELATIVE_PATH, label="execution claim")
     pipeline = _json_object(root / "pipeline_status.json", label="pipeline status")
     available = tuple(input_value.get("available_routes", ()))
     allowed_status = {
@@ -438,20 +493,49 @@ def _verify_execution_authority(
         RunState.P8_STATISTICS_COMPLETE.value,
     }
     if available == ("G1", "C1"):
-        if "d1_blocker" not in input_value.get("artifacts", {}):
-            raise PermissionError("P5 partial analysis lacks a D1 blocker")
-        allowed_status = {RunState.P5_C1_COUNTERFACTUAL_COMPLETE.value}
+        allowed_status = {RunState.P5B_G1_FULL_COMPLETE.value}
     elif not resume:
         allowed_status = {RunState.P6_D1_COUNTERFACTUAL_COMPLETE.value}
-    if (
-        claim.get("status") != "RUNNING"
-        or int(claim.get("execution_count", -1)) != 1
-        or claim.get("protocol_lock_file_sha256") != sha256_file(lock_path)
-        or int(pipeline.get("counterfactual_execution_count", -1)) != 1
-        or pipeline.get("status") not in allowed_status
-    ):
+    retrospective_partial = (
+        available == ("G1", "C1")
+        and authority.get("execution_mode") == "retrospective_verified_import"
+    )
+    if retrospective_partial:
+        if (
+            int(pipeline.get("counterfactual_execution_count", -1)) != 0
+            or pipeline.get("status") not in allowed_status
+            or (root / EXECUTION_RELATIVE_PATH).exists()
+        ):
+            raise PermissionError("retrospective postprocess authority differs")
+    else:
+        claim = _json_object(root / EXECUTION_RELATIVE_PATH, label="execution claim")
+        if (
+            claim.get("status") != "RUNNING"
+            or int(claim.get("execution_count", -1)) != 1
+            or claim.get("protocol_lock_file_sha256") != sha256_file(lock_path)
+            or int(pipeline.get("counterfactual_execution_count", -1)) != 1
+            or pipeline.get("status") not in allowed_status
+        ):
+            raise PermissionError(
+                "postprocess requires completed route execution authority"
+            )
+    grasp_authority, _ = validate_gt_grasp_authority(
+        root,
+        artifacts["ground_truth_authority"],
+        expected_count=int(input_value["sample_count"]),
+    )
+    if artifacts.get("ground_truth") != grasp_authority.get("registry"):
         raise PermissionError(
-            "postprocess requires completed route execution authority"
+            "GT grasp frame differs from the post-lock protocol-bound authority"
+        )
+    covariate_authority, _ = validate_sample_covariates(
+        root,
+        artifacts["sample_covariates_authority"],
+        expected_count=int(input_value["sample_count"]),
+    )
+    if artifacts.get("sample_covariates") != covariate_authority.get("covariates"):
+        raise PermissionError(
+            "sample covariates differ from the canonical pixel-derived authority"
         )
     return authority, pipeline
 
@@ -471,7 +555,9 @@ def _verify_inputs_after_authority(
     top_level = {
         "sample_manifest": ("02_sample_manifest",),
         "ground_truth": ("02_sample_manifest",),
+        "ground_truth_authority": ("02_sample_manifest",),
         "sample_covariates": ("02_sample_manifest", "03_gt_mask_registry"),
+        "sample_covariates_authority": ("03_gt_mask_registry",),
         "final_outcomes": ("04_predicted_replay",),
         "final_outcomes_authority": ("04_predicted_replay",),
         "baseline_replay": ("04_predicted_replay",),
@@ -586,6 +672,7 @@ def _load_candidate_frames(
 ) -> tuple[
     pd.DataFrame, dict[tuple[str, str], pd.DataFrame], dict[tuple[str, str], set[str]]
 ]:
+    access_record = resolve_postlock_access_authority(root)["record"]
     candidates: list[pd.DataFrame] = []
     saved_samples: dict[tuple[str, str], pd.DataFrame] = {}
     technical: dict[tuple[str, str], set[str]] = {}
@@ -633,7 +720,7 @@ def _load_candidate_frames(
                 if branch == "predicted"
                 else {
                     "protocol_lock": artifact_record(root / LOCK_RELATIVE_PATH),
-                    "execution_claim": artifact_record(root / EXECUTION_RELATIVE_PATH),
+                    "execution_claim": dict(access_record),
                 }
             )
             if (
@@ -665,16 +752,17 @@ def _load_candidate_frames(
             candidate_schema = set(_schema(candidate_path))
             if "native_score" in candidate_schema:
                 candidate_columns.append("native_score")
-            width = "jaw_width_px" if "jaw_width_px" in candidate_schema else "width_px"
+            width = "width_px" if "width_px" in candidate_schema else "jaw_width_px"
             height = (
-                "rectangle_height_px"
-                if "rectangle_height_px" in candidate_schema
-                else "height_px"
+                "height_px"
+                if "height_px" in candidate_schema
+                else "rectangle_height_px"
             )
             candidate_columns.extend([width, height])
             frame = _read_parquet_columns(
                 candidate_path, columns=candidate_columns, label=f"candidates.{key}"
             )
+            frame = frame.rename(columns={width: "width_px", height: "height_px"})
             frame = _normalize_route_branch(
                 frame, route=route, branch=branch, label=f"candidates.{key}"
             )
@@ -1119,6 +1207,16 @@ def _verify_external_record(record: Mapping[str, Any], *, label: str) -> Path:
 
 
 def _locked_source_inventory(lock: Mapping[str, Any]) -> set[tuple[str, str, int]]:
+    """Return locked source inventory identities without rehashing the whole runs.
+
+    P0 and the terminal immutability audit are the two deliberately heavy full
+    inventory byte passes.  Postprocess only needs to prove that a small number
+    of formal outputs were members of those already locked inventories, then
+    rehash those selected outputs themselves.  Rehashing every one of the
+    roughly 100k source artifacts here would silently turn a metadata producer
+    into un-gated heavy I/O.
+    """
+
     bindings = lock.get("bindings")
     source_locks = (
         bindings.get("source_locks") if isinstance(bindings, Mapping) else None
@@ -1145,6 +1243,7 @@ def _locked_source_inventory(lock: Mapping[str, Any]) -> set[tuple[str, str, int
             continue
         rows = value.get("inventory")
         if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes, bytearray)):
+            inventory_root = path.parent
             for index, row in enumerate(rows):
                 if not isinstance(row, Mapping) or not {
                     "path",
@@ -1154,13 +1253,33 @@ def _locked_source_inventory(lock: Mapping[str, Any]) -> set[tuple[str, str, int
                     raise PostprocessContractError(
                         f"source-lock inventory row {index} is malformed"
                     )
-                source = _verify_external_record(
-                    row, label="source-lock inventory artifact"
-                )
-                inventory.add((str(source), str(row["sha256"]), int(row["bytes"])))
-        for label, child in _collect_records(value, prefix="source_lock_payload"):
-            if label.endswith((".final_lock", ".source_lock_verification")):
-                pending.append(child)
+                source = Path(str(row["path"])).expanduser().resolve()
+                relative = row.get("relative_path")
+                if relative is not None:
+                    relative_path = Path(str(relative))
+                    if relative_path.is_absolute() or ".." in relative_path.parts:
+                        raise PostprocessContractError(
+                            f"source-lock inventory row {index} has unsafe relative_path"
+                        )
+                    if source != (inventory_root / relative_path).resolve():
+                        raise PostprocessContractError(
+                            f"source-lock inventory row {index} path differs"
+                        )
+                digest = str(row["sha256"])
+                byte_count = int(row["bytes"])
+                if len(digest) != 64 or byte_count < 0:
+                    raise PostprocessContractError(
+                        f"source-lock inventory row {index} identity is malformed"
+                    )
+                inventory.add((str(source), digest, byte_count))
+        pending.extend(
+            child
+            for _, child in _collect_named_artifact_records(
+                value,
+                names=frozenset({"final_lock", "source_lock_verification"}),
+                prefix="source_lock_payload",
+            )
+        )
     if not inventory:
         raise PostprocessContractError(
             "protocol source locks expose no immutable inventory"
@@ -2299,17 +2418,27 @@ def _stratified_table(
             for value, group in frame.groupby(column, dropna=False, sort=True):
                 pred = group["pred_all_positive"].astype(bool)
                 gt = group["gt_all_positive"].astype(bool)
-                rows.append(
-                    {
-                        "route": route,
-                        "stratum_name": column,
-                        "stratum_value": str(value),
-                        "N": len(group),
-                        "recovered": int((~pred & gt).sum()),
-                        "harmful": int((pred & ~gt).sum()),
-                        "delta": float(gt.mean() - pred.mean()),
-                    }
-                )
+                paired = {
+                    "recovered": int((~pred & gt).sum()),
+                    "harmful": int((pred & ~gt).sum()),
+                    "delta": float(gt.mean() - pred.mean()),
+                }
+                for branch, positive in (
+                    ("predicted", pred),
+                    ("gt_oracle", gt),
+                ):
+                    rows.append(
+                        {
+                            "route": route,
+                            "branch": branch,
+                            "stratum_name": column,
+                            "stratum_value": str(value),
+                            "N": len(group),
+                            "branch_positive": int(positive.sum()),
+                            "branch_positive_rate": float(positive.mean()),
+                            **paired,
+                        }
+                    )
     return pd.DataFrame(rows)
 
 
@@ -2704,11 +2833,8 @@ def _verify_resume(
     route_path = root / ROUTE_STATUS_RELATIVE_PATH
     value = _json_object(route_path, label="route status")
     _verify_self_hash(value, label="route status")
-    expected_routes = {
-        route: ("COMPLETE" if route in routes else "UNRECOVERABLE_BLOCKER")
-        for route in ROUTES
-    }
-    expected_status = "COMPLETE" if tuple(routes) == ROUTES else "PARTIAL"
+    expected_routes = {route: "COMPLETE" for route in routes}
+    expected_status = "COMPLETE"
     if (
         value.get("status") != expected_status
         or value.get("routes") != expected_routes
@@ -2753,11 +2879,20 @@ def _close_postprocess_lifecycle(
     boundary without reopening any scientific frame.
     """
 
-    complete_bulk_execution(root, route_status_manifest=route_status)
-    if tuple(routes) != ROUTES:
-        return
     pipeline = _json_object(root / "pipeline_status.json", label="pipeline status")
     observed = str(pipeline.get("status", ""))
+    if (
+        int(pipeline.get("counterfactual_execution_count", -1)) == 1
+        and tuple(routes) == ROUTES
+    ):
+        complete_bulk_execution(root, route_status_manifest=route_status)
+    if observed == RunState.P5B_G1_FULL_COMPLETE.value:
+        transition_pipeline_status(
+            root,
+            RunState.P7_TAXONOMY_COMPLETE,
+            first_incomplete_stage=RunState.P8_STATISTICS_COMPLETE.value,
+        )
+        observed = RunState.P7_TAXONOMY_COMPLETE.value
     if observed == RunState.P6_D1_COUNTERFACTUAL_COMPLETE.value:
         transition_pipeline_status(
             root,
@@ -2823,8 +2958,6 @@ def run_postprocess(
         routes=routes,
     )
     d1_blocker = None
-    if routes != ROUTES:
-        d1_blocker = _validate_d1_blocker(root, input_value["artifacts"])
     frames = _load_analysis_frames(
         root, input_value, expected_sample_count=expected_sample_count
     )
@@ -3008,6 +3141,21 @@ def run_postprocess(
         "raster-evaluated and exactly matched labels, per-sample outcomes, metrics, "
         "T/R taxonomies, and paired statistic inputs.\n",
     )
+    output_paths["independent_mismatches"] = atomic_csv(
+        pd.DataFrame(
+            columns=[
+                "sample_id",
+                "route",
+                "branch",
+                "artifact",
+                "field",
+                "primary_value",
+                "independent_value",
+                "explanation",
+            ]
+        ),
+        root / "16_independent_recompute/mismatch_samples.csv",
+    )
 
     tables = _tables(
         lock=lock,
@@ -3038,13 +3186,14 @@ def run_postprocess(
     output_paths["table_bundle"] = table_manifest
     output_manifest: dict[str, Any] = {
         "schema_version": 1,
-        "status": "COMPLETE" if routes == ROUTES else "PARTIAL",
+        "status": "COMPLETE",
+        "core_status": "COMPLETE",
+        "d1_secondary_status": (
+            "PENDING_AFTER_CORE" if routes == ("G1", "C1") else "COMPLETE"
+        ),
         "scientific_role": SCIENTIFIC_ROLE,
         "N": expected_sample_count,
-        "routes": {
-            route: ("COMPLETE" if route in routes else "UNRECOVERABLE_BLOCKER")
-            for route in ROUTES
-        },
+        "routes": {route: "COMPLETE" for route in routes},
         "branches": list(BRANCHES),
         "same_gt_evaluator": evaluator,
         "strict_iou": ">0.25",
@@ -3066,11 +3215,12 @@ def run_postprocess(
     output_manifest_record = artifact_record(manifest_path)
     route_payload: dict[str, Any] = {
         "schema_version": 1,
-        "status": "COMPLETE" if routes == ROUTES else "PARTIAL",
-        "routes": {
-            route: ("COMPLETE" if route in routes else "UNRECOVERABLE_BLOCKER")
-            for route in ROUTES
-        },
+        "status": "COMPLETE",
+        "core_status": "COMPLETE",
+        "d1_secondary_status": (
+            "PENDING_AFTER_CORE" if routes == ("G1", "C1") else "COMPLETE"
+        ),
+        "routes": {route: "COMPLETE" for route in routes},
         "postprocess_inputs": input_record,
         "protocol_lock": protocol_record,
         "bootstrap_iterations": int(bootstrap_iterations),

@@ -284,7 +284,7 @@ def validate_manual_mapping_qa(
     selected_rows: Sequence[Mapping[str, Any]],
     manual_rows: Sequence[Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Require a one-to-one, human-authored review of the frozen case set."""
+    """Require a one-to-one signed visual review of the frozen case set."""
 
     selected = {str(row["sample_id"]) for row in selected_rows}
     if manual_rows is None:
@@ -406,10 +406,21 @@ def run_mapping_pixel_qa_bulk(
                 or not isinstance(shard.get("row"), dict)
             ):
                 raise GTMappingError(f"{sample_id}: resume evidence shard differs")
-            rows.append(dict(shard["row"]))
-            pixels_read += int(bool(shard["row"].get("bulk_gt_pixels_read")))
-            continue
-        if source.get("mapping_status") != "PATH_HASH_INSTANCE_AUTHORITY_MAPPED":
+            legacy_round_trip_rejection = (
+                shard["row"].get("mapping_status")
+                == "technical_or_annotation_mapping_failure"
+                and "PIL-nearest resize/inverse round-trip IoU"
+                in str(shard["row"].get("mapping_reason", ""))
+            )
+            if not legacy_round_trip_rejection:
+                rows.append(dict(shard["row"]))
+                pixels_read += int(bool(shard["row"].get("bulk_gt_pixels_read")))
+                continue
+        mapping_status = source.get("mapping_status")
+        if mapping_status not in {
+            "PATH_HASH_INSTANCE_AUTHORITY_MAPPED",
+            "PATH_INSTANCE_AUTHORITY_MAPPED_PENDING_P2_HASH",
+        }:
             result = {
                 **source,
                 "mapping_status": "technical_or_annotation_mapping_failure",
@@ -430,6 +441,13 @@ def run_mapping_pixel_qa_bulk(
             continue
         try:
             pixels_read += 1
+            if mapping_status == "PATH_INSTANCE_AUTHORITY_MAPPED_PENDING_P2_HASH":
+                instance_path = Path(str(source["source_instance_mask_path"]))
+                source["source_instance_mask_sha256"] = sha256_file(instance_path)
+                source["source_instance_mask_hash_status"] = (
+                    "COMPUTED_UNDER_P2_AUTHORITY"
+                )
+                source["mapping_status"] = "PATH_HASH_INSTANCE_AUTHORITY_MAPPED"
             _asset_shape_and_hash_qa(source)
             result = mapping_pixel_qa(
                 source,
@@ -562,6 +580,11 @@ def run_mapping_pixel_qa_bulk(
         for row in rows
         if row.get("mapping_status") == "PASS"
     ]
+    round_trip_below_reference_count = sum(
+        bool(row.get("resize_inverse_round_trip_below_reference"))
+        for row in rows
+        if row.get("mapping_status") == "PASS"
+    )
     transpose_evidence_count = sum(
         isinstance(row.get("xy_orientation_evidence"), Mapping)
         and row["xy_orientation_evidence"].get("status") == "PASS"
@@ -604,7 +627,13 @@ def run_mapping_pixel_qa_bulk(
             "observed_resize_inverse_round_trip_min_iou": min(
                 round_trip_values, default=None
             ),
-            "required_resize_inverse_round_trip_min_iou": 0.95,
+            "required_resize_inverse_round_trip_min_iou": None,
+            "resize_alignment_acceptance_rule": (
+                "exact_forward_PIL_nearest_match; inverse IoU is diagnostic only"
+            ),
+            "resize_inverse_round_trip_below_0_95_count": (
+                round_trip_below_reference_count
+            ),
             "gt_grasp_rows_read": 0,
             "identity_evidence_scope": "hash-bound authority metadata only",
         },

@@ -24,7 +24,13 @@ from .d1_adapter import (
     candidate_inventory_from_summary,
 )
 from .d1_source_view import verify_d1_source_view
-from .io import artifact_record, atomic_json, canonical_sha256, sha256_file
+from .io import (
+    artifact_record,
+    atomic_json,
+    atomic_parquet,
+    canonical_sha256,
+    sha256_file,
+)
 
 
 EXPECTED_SAMPLES = 7_675
@@ -560,6 +566,53 @@ def _derived_oracle(path: Path) -> dict[str, int]:
     return result
 
 
+def _publish_exact_frame(path: Path, frame: pd.DataFrame, *, label: str) -> Path:
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise D1PredictedReplayError(f"existing {label} is unsafe")
+        try:
+            pd.testing.assert_frame_equal(
+                pd.read_parquet(path), frame, check_dtype=False, check_exact=True
+            )
+        except AssertionError as error:
+            raise D1PredictedReplayError(f"existing {label} differs") from error
+        return path
+    return atomic_parquet(frame, path)
+
+
+def _canonical_postprocess_frames(
+    output: Path,
+    *,
+    candidates: pd.DataFrame,
+    sample_ids: set[str],
+) -> tuple[Path, Path]:
+    frame = candidates.copy().sort_values(
+        ["sample_id", "native_rank", "candidate_id"], kind="mergesort"
+    ).reset_index(drop=True)
+    frame.insert(1, "route", "D1")
+    frame.insert(2, "branch", "predicted")
+    ordered_ids = sorted(sample_ids)
+    counts = frame.groupby("sample_id").size().reindex(ordered_ids, fill_value=0)
+    per_sample = pd.DataFrame(
+        {
+            "sample_id": ordered_ids,
+            "route": "D1",
+            "branch": "predicted",
+            "candidate_count": counts.to_numpy(dtype=int),
+            "no_output": counts.eq(0).to_numpy(dtype=bool),
+            "technical_failure": False,
+            "status": np.where(counts.eq(0), "NO_OUTPUT", "COMPLETE"),
+        }
+    )
+    candidate_path = _publish_exact_frame(
+        output / "per_candidate.parquet", frame, label="D1 predicted candidates"
+    )
+    sample_path = _publish_exact_frame(
+        output / "per_sample.parquet", per_sample, label="D1 predicted per-sample"
+    )
+    return candidate_path, sample_path
+
+
 def build_d1_predicted_replay_manifest(
     *,
     run_dir: Path,
@@ -639,6 +692,9 @@ def build_d1_predicted_replay_manifest(
             raise D1PredictedReplayError("existing D1 replay source inventory differs")
     else:
         atomic_json(inventory_path, source_inventory)
+    candidate_path, per_sample_path = _canonical_postprocess_frames(
+        output, candidates=actual, sample_ids=sample_ids
+    )
     payload: dict[str, Any] = {
         "schema_version": 3,
         "status": "PASS",
@@ -646,6 +702,8 @@ def build_d1_predicted_replay_manifest(
         "branch": "predicted",
         "sample_count": expected_samples,
         "candidate_count": expected_candidates,
+        "candidates": artifact_record(candidate_path),
+        "per_sample": artifact_record(per_sample_path),
         "no_output_count": expected_no_output,
         "no_output_sample_ids_sha256": stage_replay[
             "no_output_sample_ids_sha256"

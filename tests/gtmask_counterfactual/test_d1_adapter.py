@@ -18,6 +18,7 @@ from gtmask_counterfactual.d1_adapter import (
     CASE_B_MANIFEST_NAME,
     CandidateInventory,
     D1AdapterError,
+    FROZEN_MODEL_RUNTIME_SHA256,
     ORACLE_MASK_SOURCE,
     assemble_d1_scored_outputs,
     build_frozen_scorer_command,
@@ -30,6 +31,8 @@ from gtmask_counterfactual.d1_adapter import (
     verify_isolated_bundle_root,
 )
 from gtmask_counterfactual.execution import FROZEN_D1_CANDIDATE_SCRIPT
+from gtmask_counterfactual.execution import FROZEN_DOCKER_IMAGE_ID
+from gtmask_counterfactual.d1_source_view import D1SourceViewError, build_d1_source_view
 from gtmask_counterfactual.io import canonical_sha256, sha256_file
 
 _TOOL_PATH = (
@@ -127,6 +130,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
     }
     authority = {
         "gt_candidate_generation_authorized": True,
+        "d1_candidate_generation_authorized": True,
         "gt_mask_registry": {
             "path": str(registry.resolve()),
             "sha256": sha256_file(registry),
@@ -214,6 +218,35 @@ def test_isolated_bundle_replaces_only_mask_and_provenance(tmp_path: Path) -> No
     assert manifest["sample_count"] == 1
     assert manifest["hardlink_copy_fallback_allowed"] is False
     assert (output / CASE_B_MANIFEST_NAME).is_file()
+
+
+def test_isolated_bundle_resume_reuses_verified_sample_after_root_publish_crash(
+    tmp_path: Path,
+) -> None:
+    values = _fixture(tmp_path)
+    output = _build(tmp_path, values)
+    destination = output / SAMPLE_ID
+    inode_before = os.stat(destination / "color.png").st_ino
+    (output / CASE_B_MANIFEST_NAME).unlink()
+    (output / "manifest.jsonl").unlink()
+
+    build_isolated_gt_bundle_root(
+        predicted_root=values["predicted"],
+        output_root=output,
+        registry_path=values["registry"],
+        registry_rows=[values["registry_row"]],
+        authority=values["authority"],
+        expected_count=1,
+        frozen_loader_source=values["loader"],
+        expected_loader_sha256=sha256_file(values["loader"]),
+        resume=True,
+    )
+
+    assert os.stat(destination / "color.png").st_ino == inode_before
+    manifest = verify_isolated_bundle_root(
+        output, expected_loader_sha256=sha256_file(values["loader"])
+    )
+    assert manifest["sample_count"] == 1
 
 
 def test_isolated_bundle_executes_only_p2_pass_partition(tmp_path: Path) -> None:
@@ -402,9 +435,90 @@ def test_frozen_commands_keep_replay_and_gt_bulk_boundaries(tmp_path: Path) -> N
     )
     joined = " ".join(scorer)
     assert "--network none" in joined
+    assert "--pull never" in joined
+    assert set(FROZEN_MODEL_RUNTIME_SHA256) == {
+        "architecture.json",
+        "checkpoint",
+        "config.json",
+        "mean.npy",
+        "model.ckpt.data-00000-of-00001",
+        "model.ckpt.index",
+        "model.ckpt.meta",
+        "pose_mean.npy",
+        "pose_std.npy",
+        "std.npy",
+    }
+    assert FROZEN_DOCKER_IMAGE_ID in scorer
     assert ":/candidates:ro" in joined
     assert "scripts/run_full_gqcnn_scoring.py" in joined
     assert "--expected-candidates 3" in joined
+
+
+def test_source_view_is_rechecked_at_launch_and_container_command_rechecks_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "scorer.py"
+    source.write_text("SCORER = 1\n", encoding="utf-8")
+    manifest = build_d1_source_view(
+        tmp_path / "view",
+        source_files={"scripts/run_full_gqcnn_scoring.py": source},
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], *, check: bool, **kwargs: object) -> Namespace:
+        del kwargs
+        assert check is False
+        calls.append(command)
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(run_d1_case_b.subprocess, "run", fake_run)
+    run_d1_case_b._run_source_bound(
+        ["python", "scorer.py"], source_manifest=manifest
+    )
+    assert calls == [["python", "scorer.py"]]
+
+    manifest.parent.joinpath("scripts/run_full_gqcnn_scoring.py").write_text(
+        "SCORER = 2\n", encoding="utf-8"
+    )
+    with pytest.raises(D1SourceViewError, match="member differs"):
+        run_d1_case_b._run_source_bound(
+            ["python", "scorer.py"], source_manifest=manifest
+        )
+    assert calls == [["python", "scorer.py"]]
+
+
+def test_container_scorer_is_wrapped_by_runtime_source_verifier(tmp_path: Path) -> None:
+    source = tmp_path / "scorer.py"
+    source.write_text("SCORER = 1\n", encoding="utf-8")
+    manifest = build_d1_source_view(
+        tmp_path / "view",
+        source_files={"scripts/run_full_gqcnn_scoring.py": source},
+    )
+    command = [
+        "docker",
+        "run",
+        "image-id",
+        "python",
+        "scripts/run_full_gqcnn_scoring.py",
+        "--candidate-root",
+        "/candidates",
+    ]
+    wrapped = run_d1_case_b._container_source_verified_command(
+        command, source_manifest=manifest
+    )
+    assert wrapped[:3] == command[:3]
+    assert wrapped[3:6] == [
+        "python",
+        "scripts/gtmask_oracle_candidate_bootstrap.py",
+        "--source-view",
+    ]
+    assert "--source-view-manifest-sha256" in wrapped
+    assert "--allow-relocated-source-view" in wrapped
+    assert wrapped[wrapped.index("--exec-source-member") + 1] == (
+        "scripts/run_full_gqcnn_scoring.py"
+    )
+    separator = wrapped.index("--")
+    assert wrapped[separator + 1 :] == command[5:]
 
 
 def test_candidate_inventory_and_machine_blocker(tmp_path: Path) -> None:
@@ -498,7 +612,19 @@ def test_scored_assembler_preserves_denominator_and_q_order(tmp_path: Path) -> N
     claim = run / "01_protocol_lock/COUNTERFACTUAL_EXECUTION.json"
     protocol.parent.mkdir(parents=True)
     protocol.write_text("{}\n", encoding="utf-8")
-    claim.write_text("{}\n", encoding="utf-8")
+    claim.write_text(
+        json.dumps(
+            {
+                "scope": "d1_secondary",
+                "status": "RUNNING",
+                "execution_count": 1,
+                "protocol_lock_file_sha256": sha256_file(protocol),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     candidate_root = run / "logs/d1_case_b/gt_oracle/candidates"
     candidate_root.mkdir(parents=True)
     candidate_root.joinpath("summary.csv").write_text(
@@ -695,7 +821,7 @@ def test_heavy_entrypoints_lock_before_revalidating_gate(
     class GateStop(RuntimeError):
         pass
 
-    def stop_at_gate(path: Path) -> None:
+    def stop_at_gate(path: Path, **_: object) -> None:
         del path
         assert events == ["lock"]
         events.append("gate")

@@ -294,6 +294,7 @@ def _bindings(tmp_path: Path) -> dict[str, object]:
         "configs": {"route": record},
         "baseline_replay": record,
         "sample_manifest": artifact_record(sample_manifest),
+        "gt_grasp_source": artifact_record(sample_manifest),
         "gt_mask_registry": artifact_record(registry),
         "mapping_qa": artifact_record(mapping_qa),
         "route_contracts": inline_binding(routes),

@@ -36,9 +36,11 @@ from gtmask_counterfactual.native_replay import (  # noqa: E402
     load_replay_sample,
     load_frozen_native_module,
     replay_label_free_samples,
+    write_canonical_replay_frames,
     write_replay_sample,
 )
 from gtmask_counterfactual.resource import (  # noqa: E402
+    collect_fresh_three_by_five_gate,
     exclusive_d1_flock,
     validate_fresh_gate,
     validate_live_resources,
@@ -54,7 +56,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--source-run", type=Path, required=True)
     parser.add_argument("--unified-run", type=Path, required=True)
-    parser.add_argument("--resource-gate", type=Path, required=True)
+    gate = parser.add_mutually_exclusive_group(required=True)
+    gate.add_argument("--resource-gate", type=Path)
+    gate.add_argument("--collect-resource-gate", action="store_true")
     parser.add_argument("--route", choices=("g1", "c1"), required=True)
     parser.add_argument("--split", choices=("test",), default="test")
     parser.add_argument("--branch", choices=("predicted",), default="predicted")
@@ -71,10 +75,38 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_gate(path: Path) -> dict[str, object]:
-    value = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+    source = path.expanduser().resolve()
+    if path.expanduser().is_symlink() or not source.is_file():
+        raise ValueError(f"resource gate must be a regular non-symlink file: {source}")
+    value = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("resource gate must contain a JSON object")
     return value
+
+
+def _prepare_gate(
+    args: argparse.Namespace, *, run_dir: Path
+) -> tuple[dict[str, object], Path]:
+    """Collect or load a fresh gate while the global heavy lease is held."""
+
+    if args.collect_resource_gate:
+        value = collect_fresh_three_by_five_gate(
+            repo_root=ROOT,
+            rank1_run_dir=args.rank1_run_dir.expanduser().resolve(),
+        )
+        path = (
+            run_dir
+            / "00_audit/resource_gates"
+            / f"predicted_{args.route}_{value['content_sha256'][:20]}.json"
+        )
+        if path.exists():
+            raise FileExistsError(f"resource gate already exists: {path}")
+        atomic_json(path, value)
+    else:
+        path = args.resource_gate.expanduser().resolve()
+        value = _load_gate(path)
+    validate_fresh_gate(value)
+    return value, path
 
 
 def _load_locked_source_records(unified_run: Path) -> dict[str, dict[str, Any]]:
@@ -154,8 +186,7 @@ def main() -> int:
         command=command,
     ) as ledger:
         with exclusive_d1_flock(run, purpose=f"{args.route} predicted-mask replay"):
-            gate = _load_gate(args.resource_gate)
-            validate_fresh_gate(gate)
+            gate, gate_path = _prepare_gate(args, run_dir=run)
             validate_live_resources(
                 repo_root=ROOT,
                 rank1_run_dir=args.rank1_run_dir,
@@ -236,16 +267,25 @@ def main() -> int:
                 frozen_frame,
                 route=args.route,
             )
+            candidate_path, sample_path = write_canonical_replay_frames(
+                run,
+                route=args.route,
+                sample_ids=deployment_ids,
+                candidates=replay_frame,
+            )
             result.update(
                 {
+                    "branch": "predicted",
                     "sample_count": len(rows),
                     "no_output_count": 7675 - result["sample_count_with_output"],
+                    "candidates": artifact_record(candidate_path),
+                    "per_sample": artifact_record(sample_path),
                     "source_samples": artifact_record(samples_path),
                     "selected_config": artifact_record(selected_path),
                     "checkpoint": artifact_record(checkpoint),
                     "frozen_native_inference": artifact_record(module.__file__),
                     "frozen_candidates": artifact_record(frozen_path),
-                    "resource_gate": artifact_record(args.resource_gate),
+                    "resource_gate": artifact_record(gate_path),
                     "command": command,
                 }
             )

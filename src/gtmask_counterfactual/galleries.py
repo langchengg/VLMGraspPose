@@ -14,7 +14,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Polygon
+from matplotlib.text import Text
 
+from .independent import evaluate_same_gt_candidate
 from .io import (
     artifact_record,
     atomic_csv,
@@ -260,7 +262,8 @@ def render_case_board(
     required_assets = {
         "rgb", "gt_mask", "pred_probability", "pred_mask", "depth",
         "pred_all_candidates", "pred_top_candidates", "gt_all_candidates",
-        "gt_top_candidates", "gt_grasps",
+        "gt_top_candidates", "gt_grasps", "raw_gt_grasp_rectangles",
+        "matched_gt_grasps",
     }
     missing_assets = sorted(required_assets.difference(assets))
     if missing_assets:
@@ -340,6 +343,44 @@ def render_case_board(
     _show(flat[6], rgb)
     native = [record for record in pred_all if str(record["candidate_id"]) == str(case["native_candidate_id"])]
     final = [record for record in pred_all if str(record["candidate_id"]) == str(case["r7_candidate_id"])]
+    evaluated = final or native
+    matched = list(assets["matched_gt_grasps"])
+    if evaluated:
+        replay = evaluate_same_gt_candidate(
+            evaluated[0],
+            list(assets["raw_gt_grasp_rectangles"]),
+            shape=tuple(map(int, shapes[0])),
+        )
+        matched_index = replay["matched_gt_index"]
+        expected_matched = (
+            []
+            if matched_index is None
+            else [assets["gt_grasps"][int(matched_index)]]
+        )
+        recorded_index = evaluated[0].get("matched_gt_index")
+        numeric_pairs = (
+            (replay["best_same_gt_iou"], evaluated[0].get("best_same_gt_iou")),
+            (
+                replay["best_same_gt_angle_error_deg"],
+                evaluated[0].get("best_same_gt_angle_error_deg"),
+            ),
+        )
+        if (
+            recorded_index is None
+            or int(recorded_index) != int(matched_index)
+            or bool(replay["candidate_success"])
+            != bool(evaluated[0].get("candidate_success"))
+            or any(
+                not np.isclose(float(left), float(right), rtol=0.0, atol=1e-15)
+                for left, right in numeric_pairs
+            )
+            or matched != expected_matched
+        ):
+            raise ValueError(
+                "case-board same-GT metrics/highlight differ from recompute"
+            )
+    elif matched:
+        raise ValueError("case-board no-output selection declares a matched GT")
     _draw_candidates(flat[6], native, color=COLORS["pred_native"], linewidth=3.0)
     _draw_candidates(flat[6], final, color=COLORS["pred_final"], linewidth=3.0)
     _show(flat[7], rgb)
@@ -351,7 +392,6 @@ def render_case_board(
     _draw_candidates(flat[9], gt_selected, color=COLORS["gt_native"], linewidth=3.0)
     _show(flat[10], rgb)
     _draw_candidates(flat[10], list(assets["gt_grasps"]), color=COLORS["gt"], linewidth=1.8, linestyle="--")
-    matched = list(assets.get("matched_gt_grasps", assets["gt_grasps"]))
     _draw_candidates(flat[10], matched, color=COLORS["matched"], linewidth=3.0)
     flat[11].axis("off")
     native_q = "N/A" if pd.isna(case["native_q"]) else f"{float(case['native_q']):.4f}"
@@ -362,7 +402,13 @@ def render_case_board(
         f"candidate count: pred {case['candidate_count_pred']} | GT {case['candidate_count_gt']}\n"
         f"positive count: pred {case['positive_count_pred']} | GT {case['positive_count_gt']}\n"
         f"first positive rank: pred {case['first_positive_rank_pred']} | GT {case['first_positive_rank_gt']}\n"
-        f"IDs: native {case['native_candidate_id']} | R7 {case['r7_candidate_id']} | GT {case['gt_candidate_id']}\n"
+        "IDs:\n"
+        f"  native {case['native_candidate_id']}\n"
+        f"  R7 {case['r7_candidate_id']}\n"
+        f"  GT {case['gt_candidate_id']}\n"
+        f"ranks: native {native[0]['native_rank'] if native else 'N/A'} | "
+        f"R7 {final[0]['native_rank'] if final else 'N/A'} | "
+        f"GT {gt_selected[0]['native_rank'] if gt_selected else 'N/A'}\n"
         f"native q {native_q} | rerank {rerank_score}\n"
         f"same-GT rotated IoU {float(case['rotated_iou']):.4f}\n"
         f"periodic angle error {float(case['angle_error_deg']):.2f}° | {case['pass_fail']}\n"
@@ -378,7 +424,7 @@ def render_case_board(
     fig.text(
         0.5,
         0.015,
-        "All candidate labels, ranks, legends and exact values are outside image content. GT mask is oracle diagnostic.",
+        "Legend: grey=all · cyan=pred native · magenta=pred final · orange=GT native · blue dashed=all GT · thick blue=matched GT. Labels/ranks/values are outside image content.",
         ha="center",
         fontsize=8.5,
     )
@@ -387,9 +433,8 @@ def render_case_board(
     figure_box = fig.bbox
     text_boxes = [
         text.get_window_extent(renderer=fig.canvas.get_renderer())
-        for text in fig.findobj(match=lambda value: hasattr(value, "get_window_extent"))
-        if getattr(text, "get_visible", lambda: False)()
-        and getattr(text, "get_text", lambda: "")()
+        for text in fig.findobj(match=Text)
+        if text.get_visible() and text.get_text()
     ]
     no_clipped_text = all(
         box.x0 >= figure_box.x0 - 1

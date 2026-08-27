@@ -17,22 +17,14 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gtmask_counterfactual.execution import (  # noqa: E402
-    FROZEN_NATIVE_INFERENCE_SHA256,
-    NATIVE_INFERENCE,
     artifact_record,
     counterfactual_job,
-    run_g1_c1_oracle,
+    import_g1_c1_retrospective,
 )
 from gtmask_counterfactual.audit import transition_pipeline_status  # noqa: E402
 from gtmask_counterfactual.contracts import RunState  # noqa: E402
-from gtmask_counterfactual.resource import (  # noqa: E402
-    collect_fresh_three_by_five_gate,
-    exclusive_d1_flock,
-    validate_fresh_gate,
-    validate_live_resources,
-)
+from gtmask_counterfactual.resource import exclusive_d1_flock  # noqa: E402
 from gtmask_counterfactual.protocol import (  # noqa: E402
-    claim_bulk_execution,
     verify_protocol_lock,
 )
 from unified_reranking.hashing import sha256_file  # noqa: E402
@@ -43,6 +35,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--route", choices=("g1", "c1"), required=True)
+    parser.add_argument("--phase", choices=("pilot", "full"), default="full")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--start-index", type=int)
+    parser.add_argument("--end-index", type=int)
     parser.add_argument(
         "--split", choices=("train", "validation", "test"), default="test"
     )
@@ -122,102 +118,176 @@ def _assert_common(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
     return run_dir, route_contract
 
 
-def _prepare_gate(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
-    """Collect or load a gate while the caller holds the global heavy lease."""
+def _job_identity(args: argparse.Namespace, route_contract: dict[str, Any]) -> str:
+    """Return a scientific identity independent of resume/gate operations."""
 
-    if args.collect_resource_gate and args.resource_gate is not None:
-        raise ValueError("choose either --collect-resource-gate or --resource-gate")
-    if args.collect_resource_gate:
-        gate = collect_fresh_three_by_five_gate(
-            repo_root=ROOT,
-            rank1_run_dir=args.rank1_run_dir.expanduser().resolve(),
+    payload = {
+        "tool": str(Path(__file__).resolve()),
+        "route": args.route,
+        "phase": args.phase,
+        "split": args.split,
+        "branch": args.branch,
+        "pool": args.pool,
+        "workers": args.workers,
+        "protocol_lock_sha256": sha256_file(args.protocol_lock),
+        "gt_registry_sha256": sha256_file(args.gt_registry),
+        "retrospective_source_run": route_contract["retrospective_source_run"],
+        "selected_config_sha256": route_contract["selected_config"]["sha256"],
+        "execution_source_adapter_sha256": route_contract[
+            "c1_pilot_source_adapter"
+            if args.phase == "pilot"
+            else "execution_source_adapter"
+        ]["sha256"],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _assert_route_stage(
+    run_dir: Path, *, route: str, phase: str, resume: bool
+) -> None:
+    """Reject any order except C1 audit -> C1 full import -> G1 full import."""
+
+    pipeline = _load_json(run_dir / "pipeline_status.json")
+    observed = str(pipeline.get("status", ""))
+    execution_count = int(pipeline.get("counterfactual_execution_count", -1))
+    if route == "g1" and phase == "pilot":
+        raise ValueError("the preregistered audit pilot is C1-only")
+    prior, completed = {
+        ("c1", "pilot"): (
+            RunState.P3_PROTOCOL_LOCKED.value,
+            RunState.P4_C1_PILOT_PASS.value,
+        ),
+        ("c1", "full"): (
+            RunState.P4_C1_PILOT_PASS.value,
+            RunState.P5_C1_FULL_COMPLETE.value,
+        ),
+        ("g1", "full"): (
+            RunState.P5_C1_FULL_COMPLETE.value,
+            RunState.P5B_G1_FULL_COMPLETE.value,
+        ),
+    }[(route, phase)]
+    if observed == completed:
+        if not resume or execution_count != 0:
+            raise PermissionError(
+                f"{route} completed-stage observation requires --resume and zero "
+                "current-run model executions"
+            )
+        return
+    if observed != prior:
+        raise PermissionError(
+            f"{route} execution requires {prior}; observed {observed or '<missing>'}"
         )
-        gate_path = (
-            run_dir / "00_audit/resource_gates" / f"{gate['content_sha256'][:20]}.json"
+    allowed_counts = {0}
+    if execution_count not in allowed_counts:
+        raise PermissionError(
+            f"{route} execution count differs before launch: {execution_count}"
         )
-        if gate_path.exists():
-            raise FileExistsError(f"resource gate already exists: {gate_path}")
-        _atomic_json(gate_path, gate)
-    elif args.resource_gate is not None:
-        gate = _load_json(args.resource_gate.expanduser().resolve())
-    else:
-        raise ValueError("all GT routes require a fresh resource gate")
-    validate_fresh_gate(gate)
-    return gate
 
 
-def _ensure_bulk_claim(run_dir: Path, *, resume: bool) -> None:
-    claim = run_dir / "01_protocol_lock/COUNTERFACTUAL_EXECUTION.json"
-    claim_bulk_execution(run_dir, resume=resume or claim.exists())
+def _dry_run_plan(
+    args: argparse.Namespace, route_contract: dict[str, Any]
+) -> dict[str, Any]:
+    """Describe a bounded import without claiming or writing any run artifact."""
+
+    import pandas as pd
+
+    record = (
+        route_contract["c1_pilot_test_samples"]
+        if args.phase == "pilot"
+        else route_contract["execution_test_samples"]
+    )
+    ids = pd.read_parquet(record["path"], columns=["sample_id"])[
+        "sample_id"
+    ].astype(str).tolist()
+    start = 0 if args.start_index is None else args.start_index
+    end = len(ids) if args.end_index is None else args.end_index
+    if start < 0 or end < start or end > len(ids):
+        raise ValueError(
+            f"dry-run index window must satisfy 0 <= start <= end <= {len(ids)}"
+        )
+    window = ids[start:end]
+    from unified_reranking.hashing import canonical_sha256
+
+    return {
+        "status": "DRY_RUN",
+        "writes_performed": False,
+        "model_inference_performed": False,
+        "execution_mode": route_contract["execution_mode"],
+        "route": args.route,
+        "phase": args.phase,
+        "population_count": len(ids),
+        "start_index": start,
+        "end_index": end,
+        "window_count": len(window),
+        "ordered_window_ids_sha256": canonical_sha256(window),
+        "retrospective_source_run": route_contract["retrospective_source_run"],
+    }
 
 
 def main() -> int:
     args = parse_args()
     run_dir, route_contract = _assert_common(args)
-    if args.source_run is None:
-        raise ValueError("G1/C1 require --source-run")
-    if sha256_file(NATIVE_INFERENCE) != FROZEN_NATIVE_INFERENCE_SHA256:
-        raise ValueError("G1/C1 frozen native source hash differs")
-    if (
+    _assert_route_stage(
+        run_dir, route=args.route, phase=args.phase, resume=args.resume
+    )
+    if args.start_index is not None or args.end_index is not None:
+        if not args.dry_run:
+            raise ValueError(
+                "--start-index/--end-index are dry-run-only; retrospective imports "
+                "publish one exact atomic population"
+            )
+    if args.python is not None or args.resource_gate is not None or args.collect_resource_gate:
+        raise ValueError(
+            "--python and resource-gate options are invalid for retrospective import"
+        )
+    if args.source_run is not None and (
         args.source_run.expanduser().resolve()
-        != Path(str(route_contract.get("source_run", ""))).expanduser().resolve()
+        != Path(str(route_contract.get("retrospective_source_run", ""))).resolve()
     ):
-        raise ValueError("G1/C1 source run differs from protocol lock")
+        raise ValueError("--source-run differs from the locked retrospective source")
     if not isinstance(route_contract.get("native_manifest_fields"), dict):
         raise ValueError("G1/C1 route lock lacks native manifest fields")
-    label_path = args.source_run.expanduser().resolve() / "manifests/test_labels.parquet"
-    label_record = route_contract.get("oracle_label_manifest")
-    if (
-        not isinstance(label_record, dict)
-        or Path(str(label_record.get("path", ""))).expanduser().resolve()
-        != label_path
-        or str(label_record.get("sha256", "")) != sha256_file(label_path)
+    if args.dry_run:
+        print(json.dumps(_dry_run_plan(args, route_contract), indent=2, sort_keys=True))
+        return 0
+    with exclusive_d1_flock(
+        run_dir, purpose=f"GT-mask {args.route} retrospective {args.phase} import"
     ):
-        raise ValueError("G1/C1 oracle label manifest differs from protocol lock")
-    with exclusive_d1_flock(run_dir, purpose=f"GT-mask {args.route} bulk execution"):
-        # The same kernel lease spans resource observation, claim publication,
-        # and execution.  This closes the gate-to-launch race with every D1
-        # sibling run that uses the repository-global lock.
-        gate = _prepare_gate(args, run_dir)
-        validate_live_resources(
-            repo_root=ROOT,
-            rank1_run_dir=args.rank1_run_dir,
-            prefix=f"gtmask_{args.route}_launch",
-        )
-        _ensure_bulk_claim(run_dir, resume=args.resume)
-        validate_fresh_gate(gate)
         stage = {
-            "g1": "P4_G1_COUNTERFACTUAL_COMPLETE",
-            "c1": "P5_C1_COUNTERFACTUAL_COMPLETE",
-        }[args.route]
+            ("c1", "pilot"): "P4_C1_PILOT_PASS",
+            ("c1", "full"): "P5_C1_FULL_COMPLETE",
+            ("g1", "full"): "P5B_G1_FULL_COMPLETE",
+        }[(args.route, args.phase)]
         with counterfactual_job(
             run_dir,
             stage=stage,
             route=args.route,
             branch=args.branch,
-            command=" ".join(map(str, sys.argv)),
+            command=_job_identity(args, route_contract),
         ) as job:
-            manifest = run_g1_c1_oracle(
+            manifest = import_g1_c1_retrospective(
                 run_dir=run_dir,
                 route=args.route,
-                source_run=args.source_run,
+                scope=args.phase,
                 registry_path=args.gt_registry,
                 protocol_lock_path=args.protocol_lock,
-                resume=args.resume,
-                python=args.python,
             )
             job["artifact_path"] = str(manifest)
             job["artifact_sha256"] = sha256_file(manifest)
-            target = (
-                RunState.P4_G1_COUNTERFACTUAL_COMPLETE
-                if args.route == "g1"
-                else RunState.P5_C1_COUNTERFACTUAL_COMPLETE
-            )
-            next_stage = (
-                RunState.P5_C1_COUNTERFACTUAL_COMPLETE.value
-                if args.route == "g1"
-                else RunState.P6_D1_COUNTERFACTUAL_COMPLETE.value
-            )
+            target, next_stage = {
+                ("c1", "pilot"): (
+                    RunState.P4_C1_PILOT_PASS,
+                    RunState.P5_C1_FULL_COMPLETE.value,
+                ),
+                ("c1", "full"): (
+                    RunState.P5_C1_FULL_COMPLETE,
+                    RunState.P5B_G1_FULL_COMPLETE.value,
+                ),
+                ("g1", "full"): (
+                    RunState.P5B_G1_FULL_COMPLETE,
+                    RunState.P7_TAXONOMY_COMPLETE.value,
+                ),
+            }[(args.route, args.phase)]
             transition_pipeline_status(run_dir, target, first_incomplete_stage=next_stage)
             print(manifest)
             return 0

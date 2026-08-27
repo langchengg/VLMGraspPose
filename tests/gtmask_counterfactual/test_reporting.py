@@ -27,9 +27,15 @@ from gtmask_counterfactual.io import (
     atomic_json,
     canonical_sha256,
 )
+from gtmask_counterfactual.independent import (
+    canonical_corners,
+    evaluate_same_gt_candidate,
+)
 from gtmask_counterfactual.reporting import (
+    PUBLICATION_TABLE_NAMES,
     REPORT_NAMES,
     TABLE_CONTRACTS,
+    THESIS_INTEGRATION_NAMES,
     load_bound_tables,
     write_reports,
     write_table_bundle,
@@ -203,14 +209,18 @@ def _tables(*, include_d1: bool = True) -> dict[str, pd.DataFrame]:
             [
                 {
                     "route": route,
+                    "branch": branch,
                     "stratum_name": name,
                     "stratum_value": value,
                     "N": 5,
+                    "branch_positive": 3 if branch == "predicted" else 4,
+                    "branch_positive_rate": 0.6 if branch == "predicted" else 0.8,
                     "recovered": 2,
                     "harmful": 1,
                     "delta": 0.2,
                 }
                 for route in routes
+                for branch in ("predicted", "gt_oracle")
                 for name, value in (("mask_iou_bin", "low"), ("query_type", "spatial"))
             ]
         ),
@@ -269,15 +279,32 @@ def _bound_tables(root: Path, *, include_d1: bool = True) -> Path:
 
 
 def _candidate(candidate_id: str, cx: float, native_rank: int = 1) -> dict[str, Any]:
-    return {
+    candidate = {
         "candidate_id": candidate_id,
         "native_rank": native_rank,
         "cx_px": cx,
         "cy_px": 4.0,
         "width_px": 3.0,
-        "height_px": 1.5,
+        "height_px": 20.0,
         "theta_deg": 10.0,
     }
+    evaluated = evaluate_same_gt_candidate(
+        candidate,
+        [
+            canonical_corners(
+                {
+                    "cx_px": 4.0,
+                    "cy_px": 4.0,
+                    "theta_deg": 10.0,
+                    "width_px": 3.0,
+                    "height_px": 20.0,
+                }
+            ).tolist()
+        ],
+        shape=(8, 8),
+    )
+    evaluated.pop("pairwise")
+    return {**candidate, **evaluated}
 
 
 def test_table_bundle_figures_and_reports_are_hash_bound(tmp_path: Path) -> None:
@@ -294,8 +321,12 @@ def test_table_bundle_figures_and_reports_are_hash_bound(tmp_path: Path) -> None
         for value in figure_value["figures"].values()
     )
     report_manifest = write_reports(root, table_manifest)
-    reports = json.loads(report_manifest.read_text())["reports"]
+    report_value = json.loads(report_manifest.read_text())
+    reports = report_value["reports"]
     assert set(reports) == set(REPORT_NAMES)
+    assert set(report_value["thesis_integration"]) == set(THESIS_INTEGRATION_NAMES)
+    assert set(report_value["publication_tables"]) == set(PUBLICATION_TABLE_NAMES)
+    assert (root / "13_figures/gtmask_counterfactual_summary.pdf").is_file()
     assert "not proof" in (root / "15_reports" / REPORT_NAMES[0]).read_text().lower()
     table_path = Path(manifest["tables"]["branch_metrics.csv"]["path"])
     table_path.write_text(table_path.read_text() + "\n", encoding="utf-8")
@@ -303,7 +334,7 @@ def test_table_bundle_figures_and_reports_are_hash_bound(tmp_path: Path) -> None
         load_bound_tables(root)
 
 
-def test_blocked_d1_omits_curve_and_reports_partial_scope(tmp_path: Path) -> None:
+def test_blocked_d1_is_secondary_and_core_reports_complete(tmp_path: Path) -> None:
     root = _run(tmp_path)
     table_manifest = _bound_tables(root, include_d1=False)
     blocker = {
@@ -317,15 +348,36 @@ def test_blocked_d1_omits_curve_and_reports_partial_scope(tmp_path: Path) -> Non
             root, table_manifest, allow_missing_d1_primary=True
         ).read_text()
     )
-    assert figures["status"] == "PARTIAL"
+    assert figures["status"] == "COMPLETE"
+    assert figures["d1_secondary_status"] == "PENDING_AFTER_CORE"
     assert len(figures["figures"]) == 11
     assert not any(name.startswith("12_") for name in figures["figures"])
     reports = json.loads(
         write_reports(root, table_manifest, d1_blocker=blocker).read_text()
     )
-    assert reports["status"] == "PARTIAL"
+    assert reports["status"] == "COMPLETE"
+    assert reports["d1_secondary_status"] == "BLOCKED_WITH_EVIDENCE"
     report = (root / "15_reports" / REPORT_NAMES[0]).read_text()
-    assert "D1 primary was not fabricated" in report
+    assert "completed G1/C1 core is unaffected" in report
+
+
+def test_pending_d1_is_deferred_until_after_core_reports(tmp_path: Path) -> None:
+    root = _run(tmp_path)
+    table_manifest = _bound_tables(root, include_d1=False)
+    figures = json.loads(
+        render_all_figures(
+            root, table_manifest, allow_missing_d1_primary=True
+        ).read_text()
+    )
+    reports = json.loads(write_reports(root, table_manifest).read_text())
+    assert figures["d1_secondary_status"] == "PENDING_AFTER_CORE"
+    assert reports["d1_secondary_status"] == "PENDING_AFTER_CORE"
+    conclusion = json.loads(
+        (root / "15_reports" / "EXPERIMENT_CONCLUSION.json").read_text()
+    )
+    assert conclusion["d1_secondary_status"] == "PENDING_AFTER_CORE"
+    captions = (root / "15_reports" / REPORT_NAMES[6]).read_text()
+    assert "12. Deferred" in captions
 
 
 def test_deterministic_medoid_is_order_invariant_and_sha_breaks_tie() -> None:
@@ -352,14 +404,20 @@ def test_deterministic_medoid_is_order_invariant_and_sha_breaks_tie() -> None:
 
 def test_case_board_identity_and_all_panels(tmp_path: Path) -> None:
     shape = (8, 8)
-    pred_all = [_candidate("p1", 3.0), _candidate("p2", 5.0, native_rank=2)]
-    gt_all = [_candidate("g1", 4.0)]
+    native_id = "G1::predicted::native_peak_000::0123456789abcdef"
+    final_id = "G1::predicted::native_peak_001::fedcba9876543210"
+    gt_id = "G1::gt_oracle::native_peak_000::0011223344556677"
+    pred_all = [
+        _candidate(native_id, 3.0),
+        _candidate(final_id, 5.0, native_rank=2),
+    ]
+    gt_all = [_candidate(gt_id, 4.0)]
     asset_hash = canonical_sha256(
         {
             "sample_id": "s1",
             "route": "G1",
-            "pred_ids": ["p1", "p2"],
-            "gt_ids": ["g1"],
+            "pred_ids": [native_id, final_id],
+            "gt_ids": [gt_id],
             "shape": [8, 8],
         }
     )
@@ -374,14 +432,14 @@ def test_case_board_identity_and_all_panels(tmp_path: Path) -> None:
         "positive_count_gt": 1,
         "first_positive_rank_pred": "none",
         "first_positive_rank_gt": 1,
-        "native_candidate_id": "p1",
-        "r7_candidate_id": "p2",
-        "gt_candidate_id": "g1",
+        "native_candidate_id": native_id,
+        "r7_candidate_id": final_id,
+        "gt_candidate_id": gt_id,
         "native_q": 0.2,
         "rerank_score": 0.3,
-        "rotated_iou": 0.5,
-        "angle_error_deg": 5.0,
-        "pass_fail": "PASS",
+        "rotated_iou": pred_all[1]["best_same_gt_iou"],
+        "angle_error_deg": pred_all[1]["best_same_gt_angle_error_deg"],
+        "pass_fail": "PASS" if pred_all[1]["candidate_success"] else "FAIL",
         "earliest_observable_issue": "visual grounding",
         "asset_bundle_sha256": asset_hash,
     }
@@ -389,13 +447,25 @@ def test_case_board_identity_and_all_panels(tmp_path: Path) -> None:
         "rgb": np.zeros((*shape, 3), dtype=np.uint8),
         "gt_mask": np.ones(shape),
         "pred_probability": np.zeros(shape),
-        "pred_mask": np.zeros(shape),
+        "pred_mask": np.pad(np.ones((2, 2)), 3),
         "depth": np.ones(shape),
         "pred_all_candidates": pred_all,
         "pred_top_candidates": pred_all,
         "gt_all_candidates": gt_all,
         "gt_top_candidates": gt_all,
         "gt_grasps": gt_all,
+        "raw_gt_grasp_rectangles": [
+            canonical_corners(
+                {
+                    "cx_px": 4.0,
+                    "cy_px": 4.0,
+                    "theta_deg": 10.0,
+                    "width_px": 3.0,
+                    "height_px": 20.0,
+                }
+            ).tolist()
+        ],
+        "matched_gt_grasps": gt_all,
         "qa_evidence": {
             "same_crop_pass": True,
             "same_gt_metrics_recompute_pass": True,
@@ -452,7 +522,7 @@ def _source_audit(root: Path) -> None:
 
 def _terminal_prerequisites(
     root: Path, *, d1_status: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+) -> dict[str, Any] | None:
     _source_audit(root)
     _self_hashed(
         root / "04_predicted_replay" / "BASELINE_REPLAY_MANIFEST.json",
@@ -480,11 +550,7 @@ def _terminal_prerequisites(
     atomic_json(
         root / "pipeline_status.json",
         {
-            "status": (
-                "P5_C1_COUNTERFACTUAL_COMPLETE"
-                if d1_status == "UNRECOVERABLE_BLOCKER"
-                else "P10_INDEPENDENT_RECOMPUTE_PASS"
-            ),
+            "status": "P10_INDEPENDENT_RECOMPUTE_PASS",
             "counterfactual_execution_count": 1,
         },
     )
@@ -496,14 +562,45 @@ def _terminal_prerequisites(
             "source_formal_test_execution_modified": False,
         },
     )
+    blocker = None
+    input_artifacts: dict[str, Any] = {}
+    if d1_status == "UNRECOVERABLE_BLOCKER":
+        blocker = {
+            "status": "UNRECOVERABLE_BLOCKER",
+            "blocker_class": "IRRECOVERABLE_FROZEN_SOURCE_EVIDENCE",
+            "raw_candidate_regeneration_required": True,
+            "missing_evidence": "frozen scorer dependency",
+            "search_paths": ["/repo"],
+            "stack_trace": "RuntimeError: unavailable",
+            "resume_command": "python -m tools.gtmask_counterfactual.run_route --route d1 --resume",
+            "filter_only_primary_allowed": False,
+        }
+        blocker_path = root / "00_audit" / "machine_blockers" / "D1_BLOCKER.json"
+        _self_hashed(blocker_path, blocker)
+        input_artifacts["d1_blocker"] = artifact_record(blocker_path)
+    inputs_path = root / "07_candidate_tables" / "POSTPROCESS_INPUTS.json"
+    _self_hashed(inputs_path, {"status": "LOCKED", "artifacts": input_artifacts})
     postprocess_path = root / "08_metrics" / "POSTPROCESS_MANIFEST.json"
-    _self_hashed(postprocess_path, {"status": "COMPLETE"})
+    postprocess_payload: dict[str, Any] = {
+        "status": "COMPLETE",
+        "core_status": "COMPLETE",
+        "postprocess_inputs": artifact_record(inputs_path),
+    }
+    if blocker is not None:
+        postprocess_payload["d1_blocker"] = input_artifacts["d1_blocker"]
+    _self_hashed(postprocess_path, postprocess_payload)
     route_status_path = root / "08_metrics" / "ROUTE_STATUS.json"
     _self_hashed(
         route_status_path,
         {
-            "status": "PARTIAL" if d1_status == "UNRECOVERABLE_BLOCKER" else "COMPLETE",
-            "routes": {"G1": "COMPLETE", "C1": "COMPLETE", "D1": d1_status},
+            "status": "COMPLETE",
+            "core_status": "COMPLETE",
+            "d1_secondary_status": (
+                "BLOCKED_WITH_EVIDENCE"
+                if d1_status == "UNRECOVERABLE_BLOCKER"
+                else "COMPLETE"
+            ),
+            "routes": {"G1": "COMPLETE", "C1": "COMPLETE"},
             "protocol_lock": artifact_record(protocol_path),
             "artifacts": {"postprocess_manifest": artifact_record(postprocess_path)},
         },
@@ -536,10 +633,18 @@ def _terminal_prerequisites(
             formats[suffix] = artifact_record(path)
         figures[f"{index:02d}_synthetic"] = formats
     figure_manifest = {
-        "status": "PARTIAL" if d1_status == "UNRECOVERABLE_BLOCKER" else "COMPLETE",
+        "status": "COMPLETE",
+        "d1_secondary_status": (
+            "PENDING_AFTER_CORE"
+            if d1_status == "UNRECOVERABLE_BLOCKER"
+            else "COMPLETE"
+        ),
         "palette": "Okabe-Ito",
         "figures": figures,
     }
+    summary_path = root / "13_figures" / "gtmask_counterfactual_summary.pdf"
+    summary_path.write_bytes(b"summary")
+    figure_manifest["core_summary_figure"] = artifact_record(summary_path)
     _self_hashed(root / "13_figures" / "FIGURES_MANIFEST.json", figure_manifest)
     reports = {}
     for name in REPORT_NAMES:
@@ -550,9 +655,28 @@ def _terminal_prerequisites(
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("synthetic", encoding="utf-8")
         reports[name] = artifact_record(path)
+    thesis_records = {}
+    for name in THESIS_INTEGRATION_NAMES:
+        path = root / "17_thesis_integration" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic", encoding="utf-8")
+        thesis_records[name] = artifact_record(path)
+    publication_records = {}
+    for name in PUBLICATION_TABLE_NAMES:
+        path = root / "13_figures" / "tables" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic", encoding="utf-8")
+        publication_records[name] = artifact_record(path)
     report_manifest = {
-        "status": "PARTIAL" if d1_status == "UNRECOVERABLE_BLOCKER" else "COMPLETE",
+        "status": "COMPLETE",
+        "d1_secondary_status": (
+            "BLOCKED_WITH_EVIDENCE"
+            if d1_status == "UNRECOVERABLE_BLOCKER"
+            else "COMPLETE"
+        ),
         "reports": reports,
+        "thesis_integration": thesis_records,
+        "publication_tables": publication_records,
         "table_bundle_content_sha256": table_manifest["content_sha256"],
     }
     _self_hashed(root / "15_reports" / "REPORTS_MANIFEST.json", report_manifest)
@@ -561,6 +685,17 @@ def _terminal_prerequisites(
     eligible.parent.mkdir(parents=True, exist_ok=True)
     eligible.write_text("sample_id\ns1\n")
     selected.write_text("sample_id\ns1\n")
+    gallery_extras = {}
+    for name in (
+        "selected_csv",
+        "selection_rules",
+        "selection_audit",
+        "case_selection_audit",
+        "core_cases_figure",
+    ):
+        path = root / "14_galleries" / f"{name}.artifact"
+        path.write_bytes(b"artifact")
+        gallery_extras[name] = artifact_record(path)
     board_records = {}
     for suffix in ("png", "svg"):
         path = root / "14_galleries" / f"board.{suffix}"
@@ -574,6 +709,7 @@ def _terminal_prerequisites(
         "postprocess_manifest": artifact_record(postprocess_path),
         "eligible": artifact_record(eligible),
         "selected": artifact_record(selected),
+        **gallery_extras,
         "boards": [{"status": "AUTO_QA_PASS", **board_records}],
     }
     gallery_path = root / "14_galleries" / "GALLERY_MANIFEST.json"
@@ -589,6 +725,7 @@ def _terminal_prerequisites(
     _self_hashed(
         gallery_acceptance_path,
         {
+            "schema_version": 2,
             "status": "PASS",
             "gallery_manifest": artifact_record(gallery_path),
             "postprocess_manifest": artifact_record(postprocess_path),
@@ -608,12 +745,32 @@ def _terminal_prerequisites(
             "source_candidate_geometry": artifact_record(candidate_geometry),
         },
     )
+    pd.DataFrame(
+        columns=[
+            "sample_id",
+            "route",
+            "branch",
+            "artifact",
+            "field",
+            "primary_value",
+            "independent_value",
+            "explanation",
+        ]
+    ).to_csv(
+        root / "16_independent_recompute" / "mismatch_samples.csv", index=False
+    )
     _self_hashed(
         root / "16_independent_recompute" / "INDEPENDENT_VALIDATION.json",
         {
+            "schema_version": 2,
             "status": "PASS",
             "process_role": "standalone saved-frame independent recompute",
             "forbidden_modules_imported": False,
+            "forbidden_import_audit": {
+                "status": "PASS",
+                "forbidden_module_prefixes": [],
+                "observed_forbidden_modules": [],
+            },
             "postprocess_manifest": artifact_record(postprocess_path),
             "gallery_acceptance": artifact_record(gallery_acceptance_path),
             "source_candidate_geometry": artifact_record(candidate_geometry),
@@ -623,29 +780,21 @@ def _terminal_prerequisites(
             "paired_inputs_exact_match": True,
         },
     )
+    return blocker
 
 
-def test_d1_blocker_is_partial_and_never_complete(
+def test_d1_blocker_is_secondary_and_core_stays_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _run(tmp_path)
-    _terminal_prerequisites(
+    blocker = _terminal_prerequisites(
         root, d1_status="UNRECOVERABLE_BLOCKER", monkeypatch=monkeypatch
     )
-    blocker = {
-        "status": "UNRECOVERABLE_BLOCKER",
-        "blocker_class": "IRRECOVERABLE_FROZEN_SOURCE_EVIDENCE",
-        "raw_candidate_regeneration_required": True,
-        "missing_evidence": "frozen scorer dependency",
-        "search_paths": ["/repo"],
-        "stack_trace": "RuntimeError: unavailable",
-        "resume_command": "python -m tools.gtmask_counterfactual.run_route --route d1 --resume",
-        "filter_only_sensitivity_used_as_primary": False,
-    }
+    assert blocker is not None
     result = finalize_run(root, d1_blocker=blocker)
-    assert result["status"] == "PARTIAL"
-    assert (root / "PARTIAL").is_file()
-    assert not (root / "COMPLETE").exists()
+    assert result["status"] == "COMPLETE"
+    assert (root / "COMPLETE").is_file()
+    assert not (root / "PARTIAL").exists()
 
 
 def test_full_three_route_run_is_only_path_to_complete(
@@ -681,6 +830,33 @@ def test_terminal_sidecars_are_repaired_after_post_lock_crash(
     repaired = finalize_run(root)
     assert repaired["status"] == "COMPLETE"
     assert repaired["repaired"] is True
+    assert (root / "COMPLETE").is_file()
+
+
+def test_terminal_lock_is_recoverable_after_pre_lock_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _run(tmp_path)
+    _terminal_prerequisites(root, d1_status="COMPLETE", monkeypatch=monkeypatch)
+    original = finalize_module.exclusive_json
+
+    def fail_lock(path: str | Path, value: dict[str, Any]) -> Path:
+        if Path(path).name == finalize_module.FINAL_LOCK_NAME:
+            raise OSError("synthetic crash before final lock publication")
+        return original(path, value)
+
+    monkeypatch.setattr(finalize_module, "exclusive_json", fail_lock)
+    with pytest.raises(OSError, match="synthetic crash"):
+        finalize_run(root)
+    assert not (root / finalize_module.FINAL_LOCK_NAME).exists()
+    pipeline = json.loads((root / "pipeline_status.json").read_text())
+    assert pipeline["status"] == "COMPLETE"
+    assert pipeline["previous_status"] == "P10_INDEPENDENT_RECOMPUTE_PASS"
+
+    monkeypatch.setattr(finalize_module, "exclusive_json", original)
+    recovered = finalize_run(root)
+    assert recovered["status"] == "COMPLETE"
+    assert (root / finalize_module.FINAL_LOCK_NAME).is_file()
     assert (root / "COMPLETE").is_file()
 
 

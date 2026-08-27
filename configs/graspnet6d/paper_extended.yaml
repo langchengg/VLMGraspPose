@@ -1,0 +1,21 @@
+schema_version: 1
+profile: paper-extended
+extends: configs/graspnet6d/paper_lite.yaml
+formal_results: true
+dataset:
+  archives:
+    - train_1.zip
+    - train_2.zip
+    - train_3.zip
+    - train_4.zip
+    - grasp_label.zip
+    - collision_label.zip
+    - models.zip
+  optional_archives: [dex_models.zip, test_seen.zip, test_novel.zip]
+  scene_policy: all_available_training_scenes
+  official_test_tracks_reported_separately: true
+execution_guard:
+  require_disk_preflight: true
+  min_post_run_free_fraction: 0.20
+  require_runtime_estimate: true
+

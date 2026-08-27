@@ -1,0 +1,20 @@
+schema_version: 1
+provenance: derived_not_official_graspnet_annotation
+coordinate_frames:
+  horizontal_image_relations: image_pixel
+  front_rear_relations: depth_camera
+  table_relations: table
+templates:
+  catalog_name: "Pick the {catalog_name}."
+  leftmost: "Grasp the leftmost {catalog_name}."
+  rightmost: "Grasp the rightmost {catalog_name}."
+  nearest: "Pick the {catalog_name} closest to the camera."
+  farthest: "Pick the {catalog_name} farthest from the camera."
+  frontmost: "Grasp the frontmost {catalog_name}."
+  rearmost: "Grasp the rearmost {catalog_name}."
+rules:
+  require_exactly_one_resolver_match: true
+  allow_target_id_disambiguation: false
+  allow_subjective_attributes: false
+  allow_colour_without_reliable_metadata: false
+

@@ -1,0 +1,18 @@
+{
+  "schema_version": "6d_v1",
+  "units": {"metric_3d_distance": "metre", "angle": "radian", "projected_distance": "fraction_of_image_diagonal", "coverage_and_ratios": "dimensionless"},
+  "groups": {
+    "native_confidence": ["native_score", "native_rank", "score_to_top1", "score_to_previous", "score_to_next", "score_zscore_within_group", "score_percentile"],
+    "target_support_2d": ["center_in_mask", "center_mask_probability", "distance_to_mask_boundary", "normalised_distance_to_mask_centroid", "closing_region_mask_coverage", "left_finger_projected_mask_coverage", "right_finger_projected_mask_coverage", "approach_region_mask_coverage"],
+    "target_support_3d": ["target_point_fraction_inside_closing_volume", "target_points_between_fingers", "left_contact_target_support", "right_contact_target_support", "target_support_symmetry", "candidate_center_to_target_centroid", "candidate_center_relative_to_target_bbox_x", "candidate_center_relative_to_target_bbox_y", "candidate_center_relative_to_target_bbox_z"],
+    "grounding_quality": ["mask_area_fraction", "mask_entropy", "mean_mask_confidence", "boundary_uncertainty", "mask_depth_valid_fraction", "number_of_mask_components", "largest_component_fraction"],
+    "width": ["gripper_width_m", "width_over_target_bbox_x", "width_over_target_bbox_y", "width_over_target_bbox_diagonal", "estimated_closing_margin", "width_feasibility_flag"],
+    "rotation_6d_only": ["rotation_6d_0", "rotation_6d_1", "rotation_6d_2", "rotation_6d_3", "rotation_6d_4", "rotation_6d_5"],
+    "orientation": ["rotation_6d_0", "rotation_6d_1", "rotation_6d_2", "rotation_6d_3", "rotation_6d_4", "rotation_6d_5", "approach_vs_gravity_angle", "approach_vs_table_normal_angle", "closing_axis_vs_target_pca_axis_0", "closing_axis_vs_target_pca_axis_1", "closing_axis_vs_target_pca_axis_2", "approach_vs_local_surface_normal", "roll_consistency"],
+    "collision_risk": ["left_finger_occupancy", "right_finger_occupancy", "palm_occupancy", "closing_volume_obstacle_fraction", "approach_swept_volume_occupancy", "table_clearance_m", "nearest_obstacle_distance_m", "collision_proxy_flag"],
+    "local_geometry": ["local_point_density", "target_point_density", "depth_variance", "normal_consistency", "surface_curvature", "contact_region_planarity", "left_right_contact_balance", "valid_depth_fraction_near_grasp"]
+  },
+  "identifiers_not_features": ["group_id", "candidate_id", "scene_id", "camera", "frame_id"],
+  "supervision_not_features": ["target_object_id", "associated_object_id", "friction_score", "official_collision", "relevance", "target_success"],
+  "gt_mask_exception": "Mask-derived runtime features are allowed only in the explicitly named oracle_gt_mask condition; no other ground truth becomes a feature."
+}

@@ -56,6 +56,21 @@ FROZEN_MODEL_DIR = REPOSITORY_ROOT / "HiFi_reproduction/models/gqcnn-official/GQ
 FROZEN_MODEL_CONFIG_SHA256 = (
     "eb5bc17089a39bd8fe6c801010c25a6a79a898d64181180feb5cf69aa630ff6f"
 )
+# Every byte consumed by the pinned GQ-CNN inference loader.  Locking only
+# ``config.json`` would leave the TensorFlow checkpoint and normalisation
+# arrays mutable after the protocol was assembled.
+FROZEN_MODEL_RUNTIME_SHA256 = {
+    "architecture.json": "bf8214e1285be28879291184e86a84f56076c4ca612cdad3a874d2e1414122e2",
+    "checkpoint": "5684f3a7bb9f2d1b34f771e425138f3d2d268e3cf2c12637c60163d5c18a297d",
+    "config.json": FROZEN_MODEL_CONFIG_SHA256,
+    "mean.npy": "3072110cde105c8a14c293935e372e7224f3ff3a4064e3f02b332853bcc37acd",
+    "model.ckpt.data-00000-of-00001": "f36db44416664db0dc46174db69166db3398ebd7c08f07a5d7c813a9ebd04313",
+    "model.ckpt.index": "38a00428b0a0471056904bf02abcaed825aac2a59c8de168b598d0b1d6aad28e",
+    "model.ckpt.meta": "a567ea53cfe21ae3988230e1a6473f3d01d82b0f5315d9b4a21bc235d54a1cf9",
+    "pose_mean.npy": "496dedb4cc1477932abb1a40dc0aa9a9611af31385df289dcb59ac0fdf1c7668",
+    "pose_std.npy": "d947aa65e2b20775dddc4db2ef72842fd1082fdf9b57b9a341d8502628343223",
+    "std.npy": "5edc600f83347a911b7e6e0b320bb3b90338464029bcbff4d83decd81bafdf3e",
+}
 CASE_B_MANIFEST_NAME = "D1_CASE_B_BUNDLE_MANIFEST.json"
 ORACLE_MASK_SOURCE = "locked_gt_mask_original_resolution"
 PREDICTED_MASK_SOURCE = "predicted_mask_original_resolution"
@@ -206,12 +221,20 @@ def verify_frozen_d1_sources() -> dict[str, dict[str, Any]]:
         "scorer_script": (FROZEN_D1_SCORER_SCRIPT, FROZEN_D1_SCORER_SCRIPT_SHA256),
         "config": (FROZEN_D1_CONFIG, FROZEN_D1_CONFIG_SHA256),
         "loader": (FROZEN_D1_LOADER, FROZEN_D1_LOADER_SHA256),
-        "model_config": (FROZEN_MODEL_DIR / "config.json", FROZEN_MODEL_CONFIG_SHA256),
     }
     result: dict[str, dict[str, Any]] = {}
     for label, (path, expected) in sources.items():
         result[label] = artifact_record(
             _verify_frozen_file(path, expected, label=f"frozen D1 {label}")
+        )
+    for name, expected in FROZEN_MODEL_RUNTIME_SHA256.items():
+        label = f"model_runtime/{name}"
+        result[label] = artifact_record(
+            _verify_frozen_file(
+                FROZEN_MODEL_DIR / name,
+                expected,
+                label=f"frozen D1 {label}",
+            )
         )
     return result
 
@@ -221,9 +244,9 @@ def assert_gt_bulk_authority(
 ) -> dict[str, Any]:
     """Validate an already-claimed P4 authority before any GT pixel read."""
 
-    if authority.get("gt_candidate_generation_authorized") is not True:
+    if authority.get("d1_candidate_generation_authorized") is not True:
         raise PermissionError(
-            "locked authority does not permit GT candidate generation"
+            "locked authority does not permit D1 GT candidate generation"
         )
     registry = authority.get("gt_mask_registry")
     if not isinstance(registry, Mapping):
@@ -288,6 +311,29 @@ def _link_verified(
         or sha256_file(destination) != expected_sha256
     ):
         raise D1AdapterError(f"hardlink bytes changed during materialisation: {source}")
+    return {
+        "source": str(source),
+        "source_sha256": expected_sha256,
+        "output_sha256": expected_sha256,
+        "storage": "hardlink",
+        "same_device_inode_verified": True,
+    }
+
+
+def _verify_linked_member(
+    source: Path, destination: Path, *, expected_sha256: str
+) -> dict[str, Any]:
+    """Rebuild the immutable hardlink receipt for one resumed member."""
+
+    source = _regular_file(source, label="resumed hardlink source")
+    output = _regular_file(destination, label="resumed hardlink output")
+    if (
+        sha256_file(source) != expected_sha256
+        or sha256_file(output) != expected_sha256
+        or (source.stat().st_dev, source.stat().st_ino)
+        != (output.stat().st_dev, output.stat().st_ino)
+    ):
+        raise D1AdapterError(f"resumed hardlink invariant differs: {destination}")
     return {
         "source": str(source),
         "source_sha256": expected_sha256,
@@ -366,6 +412,68 @@ def _checksum_text(hashes: Mapping[str, str]) -> str:
     return "".join(f"{hashes[name]}  {name}\n" for name in REQUIRED_BUNDLE_MEMBERS[:-1])
 
 
+def _verify_resumed_oracle_sample(
+    *,
+    destination: Path,
+    source_bundle: Path,
+    predicted_hashes: Mapping[str, str],
+    gt_mask: Path,
+    gt_sha256: str,
+    sample_id: str,
+    registry_path: Path,
+    adapter_sha256: str,
+    loader_sha256: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Verify a sample published before a root-manifest crash, without rewriting it."""
+
+    if destination.is_symlink() or not destination.is_dir():
+        raise D1AdapterError(
+            f"resumed oracle sample is missing or unsafe: {destination}"
+        )
+    members = {
+        name: _verify_linked_member(
+            source_bundle / name,
+            destination / name,
+            expected_sha256=predicted_hashes[name],
+        )
+        for name in BYTE_IDENTICAL_MEMBERS
+    }
+    members["target_mask.png"] = _verify_linked_member(
+        gt_mask,
+        destination / "target_mask.png",
+        expected_sha256=gt_sha256,
+    )
+    expected_metadata = _oracle_metadata(
+        _load_json(source_bundle / "metadata.json", label="predicted metadata"),
+        sample_id=sample_id,
+        destination=destination,
+        gt_mask=gt_mask,
+        gt_sha256=gt_sha256,
+        predicted_mask_sha256=predicted_hashes["target_mask.png"],
+        registry_path=registry_path,
+        adapter_sha256=adapter_sha256,
+        loader_sha256=loader_sha256,
+    )
+    observed_metadata = _load_json(
+        destination / "metadata.json", label="resumed oracle metadata"
+    )
+    if observed_metadata != expected_metadata:
+        raise D1AdapterError(f"resumed oracle metadata differs: {sample_id}")
+    output_hashes = {
+        **{name: predicted_hashes[name] for name in BYTE_IDENTICAL_MEMBERS},
+        "target_mask.png": gt_sha256,
+        "metadata.json": sha256_file(destination / "metadata.json"),
+    }
+    if _checksum_map(destination) != output_hashes:
+        raise D1AdapterError(f"resumed oracle checksum closure differs: {sample_id}")
+    expected_checksum_text = _checksum_text(output_hashes)
+    if (destination / "checksums.sha256").read_text(
+        encoding="utf-8"
+    ) != expected_checksum_text:
+        raise D1AdapterError(f"resumed checksum serialization differs: {sample_id}")
+    return members, output_hashes
+
+
 def _verify_existing_root(
     output_root: Path, *, registry_path: Path, expected_denominator_count: int
 ) -> dict[str, Any]:
@@ -400,6 +508,7 @@ def build_isolated_gt_bundle_root(
     frozen_loader_source: Path = FROZEN_D1_LOADER,
     expected_loader_sha256: str = FROZEN_D1_LOADER_SHA256,
     adapter_source: Path | None = None,
+    resume: bool = False,
 ) -> Path:
     """Materialise the canonical D1 oracle root without copying large members.
 
@@ -447,6 +556,10 @@ def build_isolated_gt_bundle_root(
     ]
     unresolved_ids = sorted(set(predicted_rows).difference(evaluable_ids))
     if (output / CASE_B_MANIFEST_NAME).exists():
+        if not resume:
+            raise FileExistsError(
+                f"D1 oracle bundle exists; pass --resume: {output / CASE_B_MANIFEST_NAME}"
+            )
         _verify_existing_root(
             output,
             registry_path=registry,
@@ -465,6 +578,10 @@ def build_isolated_gt_bundle_root(
     )
     adapter_sha256 = sha256_file(adapter)
     output.mkdir(parents=True, exist_ok=True)
+    if not resume and any(output.iterdir()):
+        raise FileExistsError(
+            f"partial D1 oracle bundle exists; pass --resume: {output}"
+        )
     manifest_rows: list[dict[str, Any]] = []
     sample_records: list[dict[str, Any]] = []
     for manifest_index, sample_id in enumerate(evaluable_ids):
@@ -494,47 +611,67 @@ def build_isolated_gt_bundle_root(
             raise D1AdapterError(f"locked GT mask hash differs: {sample_id}")
         destination = output / sample_id
         staging = output / f".{sample_id}.{os.getpid()}.staging"
+        members: dict[str, dict[str, Any]]
+        output_hashes: dict[str, str]
         if destination.exists():
-            raise D1AdapterError(
-                f"partial existing bundle requires a new root or verified resume: {destination}"
-            )
-        staging.mkdir(mode=0o700)
-        try:
-            members: dict[str, dict[str, Any]] = {}
-            for name in BYTE_IDENTICAL_MEMBERS:
-                members[name] = _link_verified(
-                    source_bundle / name,
-                    staging / name,
-                    expected_sha256=predicted_hashes[name],
+            if not resume:
+                raise FileExistsError(
+                    f"partial oracle sample exists; pass --resume: {destination}"
                 )
-            members["target_mask.png"] = _link_verified(
-                gt_mask, staging / "target_mask.png", expected_sha256=gt_sha256
-            )
-            metadata = _oracle_metadata(
-                _load_json(source_bundle / "metadata.json", label="predicted metadata"),
-                sample_id=sample_id,
+            members, output_hashes = _verify_resumed_oracle_sample(
                 destination=destination,
+                source_bundle=source_bundle,
+                predicted_hashes=predicted_hashes,
                 gt_mask=gt_mask,
                 gt_sha256=gt_sha256,
-                predicted_mask_sha256=predicted_hashes["target_mask.png"],
+                sample_id=sample_id,
                 registry_path=registry,
                 adapter_sha256=adapter_sha256,
                 loader_sha256=expected_loader_sha256,
             )
-            exclusive_json(staging / "metadata.json", metadata)
-            output_hashes = {
-                **{name: predicted_hashes[name] for name in BYTE_IDENTICAL_MEMBERS},
-                "target_mask.png": gt_sha256,
-                "metadata.json": sha256_file(staging / "metadata.json"),
-            }
-            exclusive_text(staging / "checksums.sha256", _checksum_text(output_hashes))
-            _checksum_map(staging)
-            os.replace(staging, destination)
-        finally:
-            if staging.exists():
-                for child in staging.iterdir():
-                    child.unlink()
-                staging.rmdir()
+        else:
+            staging.mkdir(mode=0o700)
+            try:
+                members = {}
+                for name in BYTE_IDENTICAL_MEMBERS:
+                    members[name] = _link_verified(
+                        source_bundle / name,
+                        staging / name,
+                        expected_sha256=predicted_hashes[name],
+                    )
+                members["target_mask.png"] = _link_verified(
+                    gt_mask, staging / "target_mask.png", expected_sha256=gt_sha256
+                )
+                metadata = _oracle_metadata(
+                    _load_json(source_bundle / "metadata.json", label="predicted metadata"),
+                    sample_id=sample_id,
+                    destination=destination,
+                    gt_mask=gt_mask,
+                    gt_sha256=gt_sha256,
+                    predicted_mask_sha256=predicted_hashes["target_mask.png"],
+                    registry_path=registry,
+                    adapter_sha256=adapter_sha256,
+                    loader_sha256=expected_loader_sha256,
+                )
+                exclusive_json(staging / "metadata.json", metadata)
+                output_hashes = {
+                    **{
+                        name: predicted_hashes[name]
+                        for name in BYTE_IDENTICAL_MEMBERS
+                    },
+                    "target_mask.png": gt_sha256,
+                    "metadata.json": sha256_file(staging / "metadata.json"),
+                }
+                exclusive_text(
+                    staging / "checksums.sha256", _checksum_text(output_hashes)
+                )
+                _checksum_map(staging)
+                os.replace(staging, destination)
+            finally:
+                if staging.exists():
+                    for child in staging.iterdir():
+                        child.unlink()
+                    staging.rmdir()
 
         row = dict(source_row)
         row.update(
@@ -1041,6 +1178,14 @@ def assemble_d1_scored_outputs(
         claim != root / "01_protocol_lock/COUNTERFACTUAL_EXECUTION.json"
     ):
         raise D1AdapterError("D1 protocol/claim paths differ from the new run")
+    claim_value = _load_json(claim, label="D1 secondary execution claim")
+    if (
+        claim_value.get("scope") != "d1_secondary"
+        or claim_value.get("status") != "RUNNING"
+        or int(claim_value.get("execution_count", -1)) != 1
+        or claim_value.get("protocol_lock_file_sha256") != sha256_file(protocol)
+    ):
+        raise D1AdapterError("D1 secondary execution claim differs")
     bundle = verify_isolated_bundle_root(
         bundle_path, expected_loader_sha256=expected_loader_sha256
     )
@@ -1467,13 +1612,18 @@ def build_frozen_scorer_command(
         label="D1 source-view scorer script",
     )
     model = model_dir.expanduser().resolve()
-    _verify_frozen_file(
-        model / "config.json", FROZEN_MODEL_CONFIG_SHA256, label="GQ-CNN model config"
-    )
+    for name, expected in FROZEN_MODEL_RUNTIME_SHA256.items():
+        _verify_frozen_file(
+            model / name,
+            expected,
+            label=f"GQ-CNN model runtime member {name}",
+        )
     command = [
         str(_executable_file(docker, label="Docker CLI")),
         "run",
         "--rm",
+        "--pull",
+        "never",
         "--platform",
         "linux/amd64",
         "--network",
@@ -1489,7 +1639,10 @@ def build_frozen_scorer_command(
         f"{output_root.expanduser().resolve()}:/scored:rw",
         "-w",
         "/workspace",
-        FROZEN_DOCKER_IMAGE,
+        # Run the immutable content identity, not the mutable convenience tag
+        # inspected by the preflight.  ``--pull=never`` also prevents the
+        # daemon from contacting a registry between inspect and run.
+        FROZEN_DOCKER_IMAGE_ID,
         "python",
         "scripts/run_full_gqcnn_scoring.py",
         "--candidate-root",

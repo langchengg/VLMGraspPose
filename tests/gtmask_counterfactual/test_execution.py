@@ -10,6 +10,8 @@ import pandas as pd
 import pytest
 from PIL import Image
 
+import gtmask_counterfactual.protocol as protocol_module
+
 from d1_reranking.resource_gate import host_contract, resource_thresholds
 from gtmask_counterfactual.candidate_matching import (
     match_candidate_pools,
@@ -30,6 +32,7 @@ from gtmask_counterfactual.mapping import (
     join_real_authority_rows,
     mapping_pixel_qa,
 )
+from gtmask_counterfactual.io import artifact_record as canonical_artifact_record
 from gtmask_counterfactual.audit import (
     bootstrap_run,
     initialize_counterfactual_ledger,
@@ -164,6 +167,7 @@ def _core_protocol(tmp_path: Path, *, claim: bool) -> tuple[Path, Path]:
         "configs": {"synthetic": record},
         "baseline_replay": record,
         "sample_manifest": artifact_record(sample_manifest),
+        "gt_grasp_source": artifact_record(sample_manifest),
         "gt_mask_registry": artifact_record(registry),
         "mapping_qa": artifact_record(mapping_qa),
         "route_contracts": inline_binding(routes),
@@ -189,6 +193,57 @@ def _core_protocol(tmp_path: Path, *, claim: bool) -> tuple[Path, Path]:
     if claim:
         claim_bulk_execution(run)
     return lock, registry
+
+
+def test_retrospective_d1_claim_is_scoped_and_preserves_p10(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = tmp_path / "run"
+    lock_path = run / "01_protocol_lock/COUNTERFACTUAL_PROTOCOL_LOCK.json"
+    lock_path.parent.mkdir(parents=True)
+    lock = {
+        "execution_mode": "retrospective_verified_import",
+        "d1_candidate_generation_authorized": True,
+        "self_sha256": "synthetic-self-hash",
+    }
+    lock_path.write_text(json.dumps(lock) + "\n", encoding="utf-8")
+    pipeline_path = run / "pipeline_status.json"
+    manifest_path = run / "manifest.json"
+    pipeline_path.write_text(
+        json.dumps(
+            {
+                "status": RunState.P5B_G1_FULL_COMPLETE.value,
+                "counterfactual_execution_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest_path.write_text(
+        json.dumps({"counterfactual_execution_count": 0}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(protocol_module, "verify_protocol_lock", lambda root: lock)
+    with pytest.raises(PermissionError, match="completed P10 core"):
+        claim_bulk_execution(run)
+
+    pipeline_path.write_text(
+        json.dumps(
+            {
+                "status": RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value,
+                "counterfactual_execution_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    claim_path = claim_bulk_execution(run)
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    assert claim["scope"] == "d1_secondary"
+    assert claim["execution_count"] == 1
+    assert pipeline["status"] == RunState.P10_INDEPENDENT_RECOMPUTE_PASS.value
+    assert pipeline["counterfactual_execution_count"] == 1
 
 
 def _gate() -> dict[str, object]:
@@ -442,6 +497,7 @@ def test_native_adapter_executes_pass_subset_and_adds_technical_complement(
     pd.DataFrame(
         [
             {"sample_id": "s-pass", "status": "success", "candidate_count": 1},
+            {"sample_id": "s-outside", "status": "success", "candidate_count": 1},
         ]
     ).to_parquet(native / "per_sample.parquet", index=False)
     pd.DataFrame(
@@ -455,7 +511,17 @@ def test_native_adapter_executes_pass_subset_and_adds_technical_complement(
                 "theta_deg": 10.0,
                 "width_px": 40.0,
                 "height_px": 20.0,
-            }
+            },
+            {
+                "sample_id": "s-outside",
+                "candidate_id": "native-1",
+                "native_rank": 1,
+                "cx_px": 50.0,
+                "cy_px": 60.0,
+                "theta_deg": 20.0,
+                "width_px": 30.0,
+                "height_px": 15.0,
+            },
         ]
     ).to_parquet(native / "candidates.parquet", index=False)
     (native / "run_manifest.json").write_text(
@@ -474,13 +540,23 @@ def test_native_adapter_executes_pass_subset_and_adds_technical_complement(
         expected_executed_sample_ids={"s-pass"},
         technical_complement_ids={"s-unresolved"},
         source_adapter_manifest=source_adapter,
+        allow_source_superset=True,
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     samples = pd.read_parquet(manifest["per_sample"]["path"])
     candidates = pd.read_parquet(manifest["candidates"]["path"])
+    assert manifest["per_sample"] == canonical_artifact_record(
+        run / "06_gtmask_predictions/g1/gt_oracle/per_sample.parquet"
+    )
+    assert manifest["per_candidate"] == canonical_artifact_record(
+        run / "06_gtmask_predictions/g1/gt_oracle/per_candidate.parquet"
+    )
+    assert manifest["candidates"] == manifest["per_candidate"]
     assert manifest["sample_count"] == 2
     assert manifest["executed_sample_count"] == 1
     assert manifest["technical_complement_count"] == 1
+    assert manifest["source_sample_count"] == 2
+    assert manifest["source_subset_import"] is True
     assert set(samples["sample_id"]) == {"s-pass", "s-unresolved"}
     unresolved = samples.loc[samples["sample_id"].eq("s-unresolved")].iloc[0]
     assert unresolved["technical_failure"]

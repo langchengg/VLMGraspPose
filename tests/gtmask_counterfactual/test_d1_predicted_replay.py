@@ -378,6 +378,15 @@ def test_d1_predicted_replay_rebuilds_every_candidate_and_rejects_tamper(
         "oracle_top10": 1,
         "oracle_all": 1,
     }
+    candidate_frame = pd.read_parquet(value["candidates"]["path"])
+    sample_frame = pd.read_parquet(value["per_sample"]["path"])
+    assert candidate_frame[["route", "branch"]].drop_duplicates().to_dict(
+        "records"
+    ) == [{"route": "D1", "branch": "predicted"}]
+    assert sample_frame.set_index("sample_id")["candidate_count"].to_dict() == {
+        "s1": 2,
+        "s2": 0,
+    }
 
     payload = json.loads(fixture["payload"].read_text(encoding="utf-8"))
     payload["candidates"][0]["gqcnn_q_value"] = 0.85

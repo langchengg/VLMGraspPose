@@ -11,10 +11,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .execution import FROZEN_NATIVE_INFERENCE_SHA256, NATIVE_INFERENCE
-from .io import atomic_json, canonical_sha256, sha256_file
+from .io import artifact_record, atomic_json, atomic_parquet, canonical_sha256, sha256_file
 
 
 class NativeReplayError(RuntimeError):
@@ -153,6 +154,64 @@ def assert_exact_native_replay(
     }
 
 
+def _publish_exact_frame(path: Path, frame: pd.DataFrame) -> Path:
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise NativeReplayError(f"predicted replay frame is unsafe: {path}")
+        try:
+            pd.testing.assert_frame_equal(
+                pd.read_parquet(path), frame, check_dtype=False, check_exact=True
+            )
+        except AssertionError as error:
+            raise NativeReplayError(
+                f"existing predicted replay frame differs: {path}"
+            ) from error
+        return path
+    return atomic_parquet(frame, path)
+
+
+def write_canonical_replay_frames(
+    run_dir: str | Path,
+    *,
+    route: str,
+    sample_ids: Sequence[str],
+    candidates: pd.DataFrame,
+) -> tuple[Path, Path]:
+    """Publish the exact label-free frames consumed by postprocess assembly."""
+
+    route_name = route.lower()
+    canonical = canonical_replay_candidates(candidates, route=route_name)
+    canonical.insert(1, "route", route_name.upper())
+    canonical.insert(2, "branch", "predicted")
+    identities = [str(value) for value in sample_ids]
+    if (
+        len(identities) != len(set(identities))
+        or any(not value for value in identities)
+        or not set(canonical["sample_id"]).issubset(identities)
+    ):
+        raise NativeReplayError("canonical predicted replay denominator differs")
+    counts = canonical.groupby("sample_id").size().reindex(identities, fill_value=0)
+    per_sample = pd.DataFrame(
+        {
+            "sample_id": identities,
+            "route": route_name.upper(),
+            "branch": "predicted",
+            "candidate_count": counts.to_numpy(dtype=int),
+            "no_output": counts.eq(0).to_numpy(dtype=bool),
+            "technical_failure": False,
+            "status": np.where(counts.eq(0), "NO_OUTPUT", "COMPLETE"),
+        }
+    )
+    output = Path(run_dir).expanduser().resolve() / "04_predicted_replay" / route_name
+    candidate_path = _publish_exact_frame(output / "per_candidate.parquet", canonical)
+    sample_path = _publish_exact_frame(output / "per_sample.parquet", per_sample)
+    # Force both records now so callers cannot publish a manifest before bytes
+    # are durably present.
+    artifact_record(candidate_path)
+    artifact_record(sample_path)
+    return candidate_path, sample_path
+
+
 def replay_label_free_samples(
     deployment_rows: Sequence[Mapping[str, Any]],
     *,
@@ -288,5 +347,6 @@ __all__ = [
     "load_replay_sample",
     "load_frozen_native_module",
     "replay_label_free_samples",
+    "write_canonical_replay_frames",
     "write_replay_sample",
 ]

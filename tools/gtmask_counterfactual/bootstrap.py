@@ -82,6 +82,27 @@ def main() -> int:
             if args.collect_resource_gate
             else _load_gate(args.resource_gate)
         )
+        if gate.get("status") != "PASS":
+            gate_digest = str(gate.get("content_sha256", "unhashed"))[:20]
+            failed_path = atomic_json(
+                run_dir
+                / "00_audit"
+                / "resource_gates"
+                / f"SOURCE_REHASH_GATE_FAILED_{gate_digest}.json",
+                dict(gate),
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": "BLOCKED",
+                        "run_dir": str(run_dir),
+                        "resource_gate": str(failed_path),
+                        "failure_reasons": gate.get("failure_reasons", []),
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
         validate_fresh_gate(gate)
         validate_live_resources(
             repo_root=ROOT,

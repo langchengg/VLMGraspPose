@@ -15,6 +15,10 @@ FROZEN_G1_C1_SOURCE = (
     REPOSITORY_ROOT
     / "HiFi_reproduction/runs/modular_repeatedfilm_4dof_backends_v1_r0corrected_20260803_163500"
 )
+RETROSPECTIVE_G1_C1_SOURCE = (
+    REPOSITORY_ROOT
+    / "runs/fair_crog_hifics_g1_c1_no_rerank_20260807_091523"
+)
 FROZEN_D1_SOURCE = (
     REPOSITORY_ROOT
     / "HiFi_reproduction/runs/modular_hierfilm_standard_dexnet_gqcnn_20260728_094528"
@@ -54,7 +58,10 @@ CANONICAL_EVALUATOR_SHA256 = (
 
 
 def _selected_route_contract(
-    route: str, *, adapter_manifest: Path | None = None
+    route: str,
+    *,
+    adapter_manifest: Path | None = None,
+    c1_pilot_adapter_manifest: Path | None = None,
 ) -> dict[str, Any]:
     selected_path = FROZEN_G1_C1_SOURCE / f"selected_configs/{route.upper()}.json"
     selected = json.loads(selected_path.read_text(encoding="utf-8"))
@@ -62,6 +69,7 @@ def _selected_route_contract(
     checkpoint_sha = str(selected["finetuned_checkpoint_sha256"])
     result: dict[str, Any] = {
         "allowed_gt_branches": ["gt_oracle", "gt_shape_only"],
+        "execution_mode": "retrospective_verified_import",
         "source_run": str(FROZEN_G1_C1_SOURCE.resolve()),
         "native_inference": artifact_record(NATIVE_INFERENCE),
         "test_samples": artifact_record(
@@ -94,6 +102,36 @@ def _selected_route_contract(
         "post_peak_nms": False,
         "mask_intervention_source": "prepared_352_binary_pil_nearest_to_native",
         "prepared_to_original_roundtrip_required": True,
+        "retrospective_source_run": str(RETROSPECTIVE_G1_C1_SOURCE.resolve()),
+        "retrospective_source_lock": artifact_record(
+            RETROSPECTIVE_G1_C1_SOURCE / ".EXPERIMENT_LOCKED"
+        ),
+        "retrospective_finalization": artifact_record(
+            RETROSPECTIVE_G1_C1_SOURCE / "FINALIZATION_COMPLETE.json"
+        ),
+        "retrospective_result_hashes": artifact_record(
+            RETROSPECTIVE_G1_C1_SOURCE / "09_reports/result_hashes.json"
+        ),
+        "retrospective_canonical_candidates": artifact_record(
+            RETROSPECTIVE_G1_C1_SOURCE
+            / "03_canonical/canonical_candidates.parquet"
+        ),
+        "retrospective_native_inference": artifact_record(
+            RETROSPECTIVE_G1_C1_SOURCE / "source_snapshot/native_inference.py"
+        ),
+        "retrospective_native_output": {
+            name: artifact_record(
+                RETROSPECTIVE_G1_C1_SOURCE
+                / "02_predictions/native_work"
+                / f"{route}_gtmask_oracle"
+                / filename
+            )
+            for name, filename in (
+                ("run_manifest", "run_manifest.json"),
+                ("per_sample", "per_sample.parquet"),
+                ("candidates", "candidates.parquet"),
+            )
+        },
     }
     if adapter_manifest is not None:
         from .g1_c1_adapter import verify_g1_c1_source_adapter
@@ -119,18 +157,27 @@ def _selected_route_contract(
                 "sorted_unresolved_ids_sha256": adapter[
                     "sorted_unresolved_ids_sha256"
                 ],
-                "native_manifest_fields": {
-                    **result["native_manifest_fields"],
-                    "sample_count": int(adapter["evaluable_sample_count"]),
-                    "selected_config": str(
-                        Path(str(execution_config["path"])).resolve()
-                    ),
-                    "selected_config_sha256": execution_config["sha256"],
-                    "source_samples_sha256": adapter["test_samples"]["sha256"],
-                    "source_labels_sha256": adapter["test_labels_projection"][
-                        "sha256"
-                    ],
-                },
+            }
+        )
+    if route == "c1" and c1_pilot_adapter_manifest is not None:
+        from .pilot import verify_c1_pilot_source_adapter
+
+        pilot = verify_c1_pilot_source_adapter(c1_pilot_adapter_manifest)
+        result.update(
+            {
+                "c1_pilot_source_adapter": artifact_record(
+                    c1_pilot_adapter_manifest
+                ),
+                "c1_pilot_test_samples": dict(pilot["test_samples"]),
+                "c1_pilot_label_projection": dict(
+                    pilot["test_labels_projection"]
+                ),
+                "c1_pilot_selected_config": dict(pilot["selected_config"]),
+                "c1_pilot_selection": dict(pilot["selection"]),
+                "c1_pilot_size": int(pilot["pilot_size"]),
+                "c1_pilot_ordered_ids_sha256": pilot[
+                    "ordered_selected_ids_sha256"
+                ],
             }
         )
     return result
@@ -138,12 +185,17 @@ def _selected_route_contract(
 
 def canonical_route_contracts(
     adapter_manifest: Path | None = None,
+    c1_pilot_adapter_manifest: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build the only production route contract from current frozen bytes."""
 
     return {
         "g1": _selected_route_contract("g1", adapter_manifest=adapter_manifest),
-        "c1": _selected_route_contract("c1", adapter_manifest=adapter_manifest),
+        "c1": _selected_route_contract(
+            "c1",
+            adapter_manifest=adapter_manifest,
+            c1_pilot_adapter_manifest=c1_pilot_adapter_manifest,
+        ),
         "d1": {
             "allowed_gt_branches": ["gt_oracle", "gt_shape_only"],
             "case": "B",
@@ -217,7 +269,7 @@ def canonical_semantic_contracts() -> dict[str, dict[str, Any]]:
             "tie_break": "sha256(sample_id+route+category)",
             "quota_per_route_category": 2,
             "manual_qa_exact_selected_coverage": True,
-            "predicate_version": "gtmask_case_predicates_v1",
+            "predicate_version": "gtmask_case_predicates_v2",
             "technical_rows_ineligible": True,
             "category_predicates": {
                 "clear_grounding_limited": "native_taxonomy == T4_grounding_limited",
@@ -227,7 +279,10 @@ def canonical_semantic_contracts() -> dict[str, dict[str, Any]]:
                 "gt_mask_regression": "GT_mask_regression or gt_first_positive_rank > pred_first_positive_rank",
                 "no_output_recovered_by_gt_mask": "pred_no_output and not gt_no_output",
                 "no_change_success": "pred_native_correct and gt_native_correct and cross_branch_native_geometry_match",
-                "borderline_annotation_sensitive": "annotation_suspect",
+                "borderline_annotation_sensitive": (
+                    "annotation_suspect or "
+                    "resize_inverse_round_trip_below_reference"
+                ),
             },
             "feature_vector_schema": [
                 "pred_candidate_count",
@@ -249,6 +304,12 @@ def canonical_semantic_contracts() -> dict[str, dict[str, Any]]:
                 "all image coordinate frames equal rgb_native",
                 "non-empty language prompt",
             ],
+            "board_asset_transforms": {
+                "pred_probability": (
+                    "resize_probability_to_native_cv2_inter_linear_float32"
+                ),
+                "rgb_gt_mask_pred_mask_depth": "identity_rgb_native",
+            },
         },
     }
 
@@ -258,20 +319,35 @@ def canonical_source_code_inventory() -> dict[str, dict[str, Any]]:
 
     paths = sorted((REPOSITORY_ROOT / "src/gtmask_counterfactual").glob("*.py"))
     paths += sorted((REPOSITORY_ROOT / "tools/gtmask_counterfactual").glob("*.py"))
+    # The frozen G1/C1 entry point imports these live modules.  They therefore
+    # belong to the protocol's code closure even though they live outside the
+    # new namespace.
+    paths += sorted(
+        (REPOSITORY_ROOT / "HiFi_reproduction/src/grasping/backends").glob("*.py")
+    )
+    paths += sorted(
+        (REPOSITORY_ROOT / "HiFi_reproduction/src/grasping/common").glob("*.py")
+    )
     return {
         str(path.relative_to(REPOSITORY_ROOT)): artifact_record(path) for path in paths
     }
 
 
 def canonical_config_inventory() -> dict[str, dict[str, Any]]:
+    from .d1_adapter import FROZEN_MODEL_DIR, FROZEN_MODEL_RUNTIME_SHA256
+
     paths = (
         FROZEN_G1_C1_SOURCE / "selected_configs/G1.json",
         FROZEN_G1_C1_SOURCE / "selected_configs/C1.json",
         FROZEN_D1_CONFIG,
     )
-    return {
+    inventory = {
         str(path.relative_to(REPOSITORY_ROOT)): artifact_record(path) for path in paths
     }
+    for name in FROZEN_MODEL_RUNTIME_SHA256:
+        path = FROZEN_MODEL_DIR / name
+        inventory[str(path.relative_to(REPOSITORY_ROOT))] = artifact_record(path)
+    return inventory
 
 
 def _inline_payload(value: Any, *, name: str) -> Any:
@@ -334,6 +410,15 @@ def validate_route_contracts(routes: Mapping[str, Mapping[str, Any]]) -> None:
     adapter = verify_g1_c1_source_adapter(adapter_path)
     if dict(adapter_record) != artifact_record(adapter_path):
         raise ValueError("G1/C1 execution source adapter record differs")
+    pilot_record = routes.get("c1", {}).get("c1_pilot_source_adapter")
+    if not isinstance(pilot_record, Mapping):
+        raise ValueError("C1 route lacks its pre-lock audit pilot adapter")
+    pilot_path = Path(str(pilot_record.get("path", ""))).expanduser().resolve()
+    from .pilot import verify_c1_pilot_source_adapter
+
+    pilot = verify_c1_pilot_source_adapter(pilot_path)
+    if dict(pilot_record) != artifact_record(pilot_path):
+        raise ValueError("C1 pilot execution source adapter record differs")
     for route in ("g1", "c1"):
         value = routes[route]
         if (
@@ -376,18 +461,9 @@ def validate_route_contracts(routes: Mapping[str, Mapping[str, Any]]) -> None:
             expected_sha=checkpoint_sha,
         )
         execution_config = adapter["selected_configs"][route]
-        expected_manifest_fields = {
-            "status": "COMPLETE",
-            "variant": f"{route}_gtmask_oracle",
-            "sample_count": int(adapter["evaluable_sample_count"]),
-            "checkpoint": str(checkpoint),
-            "checkpoint_sha256": checkpoint_sha,
-            "selected_config": str(Path(str(execution_config["path"])).resolve()),
-            "selected_config_sha256": execution_config["sha256"],
-            "raw_maps_saved": False,
-            "source_samples_sha256": adapter["test_samples"]["sha256"],
-            "source_labels_sha256": adapter["test_labels_projection"]["sha256"],
-        }
+        expected_manifest_fields = _selected_route_contract(route)[
+            "native_manifest_fields"
+        ]
         if value.get("native_manifest_fields") != expected_manifest_fields:
             raise ValueError(f"{route} native manifest contract differs")
         expected_dynamic = {
@@ -403,6 +479,8 @@ def validate_route_contracts(routes: Mapping[str, Mapping[str, Any]]) -> None:
         }
         if any(value.get(key) != expected for key, expected in expected_dynamic.items()):
             raise ValueError(f"{route} execution partition contract differs")
+        if value.get("execution_mode") != "retrospective_verified_import":
+            raise ValueError(f"{route} may only import immutable stored outputs")
         if (
             value.get("candidate_budget") != 100
             or value.get("quality_threshold") != 0.2
@@ -413,6 +491,17 @@ def validate_route_contracts(routes: Mapping[str, Mapping[str, Any]]) -> None:
             or value.get("prepared_to_original_roundtrip_required") is not True
         ):
             raise ValueError(f"{route} frozen decoder/intervention contract differs")
+    expected_pilot = {
+        "c1_pilot_source_adapter": artifact_record(pilot_path),
+        "c1_pilot_test_samples": dict(pilot["test_samples"]),
+        "c1_pilot_label_projection": dict(pilot["test_labels_projection"]),
+        "c1_pilot_selected_config": dict(pilot["selected_config"]),
+        "c1_pilot_selection": dict(pilot["selection"]),
+        "c1_pilot_size": int(pilot["pilot_size"]),
+        "c1_pilot_ordered_ids_sha256": pilot["ordered_selected_ids_sha256"],
+    }
+    if any(routes["c1"].get(key) != value for key, value in expected_pilot.items()):
+        raise ValueError("C1 pilot route contract differs")
     d1 = routes["d1"]
     for label, expected, digest in (
         (
@@ -433,13 +522,14 @@ def validate_route_contracts(routes: Mapping[str, Mapping[str, Any]]) -> None:
     ):
         raise ValueError("D1 frozen budget/pool contract differs")
 
-    if dict(routes) != canonical_route_contracts(adapter_path):
+    if dict(routes) != canonical_route_contracts(adapter_path, pilot_path):
         raise ValueError("route contracts differ from the canonical frozen contract")
 
 
 __all__ = [
     "CANONICAL_EVALUATOR",
     "CANONICAL_EVALUATOR_SHA256",
+    "RETROSPECTIVE_G1_C1_SOURCE",
     "canonical_config_inventory",
     "canonical_route_contracts",
     "canonical_semantic_contracts",

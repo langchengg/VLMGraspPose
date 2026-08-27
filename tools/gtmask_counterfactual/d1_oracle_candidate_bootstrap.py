@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import shutil
 import sys
 import tempfile
@@ -33,7 +34,12 @@ REQUIRED_MEMBERS = (
     "metadata.json",
     "checksums.sha256",
 )
-ORACLE_MASK_SOURCE = "locked_original_binary_gt_mask"
+# Keep this value byte-for-byte aligned with
+# ``gtmask_counterfactual.d1_adapter.ORACLE_MASK_SOURCE``.  The bootstrap runs
+# in the dependency-minimal sampler environment and therefore cannot import
+# the parent adapter module, but it must accept the metadata that adapter
+# materialises and verifies.
+ORACLE_MASK_SOURCE = "locked_gt_mask_original_resolution"
 PREDICTED_MASK_SOURCE = "predicted_mask_original_resolution"
 
 
@@ -66,6 +72,92 @@ def load_object(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OracleBootstrapError(f"{label} must contain one object")
     return value
+
+
+def verify_source_view(
+    root: Path,
+    *,
+    manifest_sha256: str,
+    allow_relocated_source_view: bool = False,
+) -> dict[str, Any]:
+    """Rehash the complete content-addressed view immediately before import."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise OracleBootstrapError("source-view root must be a regular directory")
+    manifest_path = root / "SOURCE_VIEW_MANIFEST.json"
+    if sha256_file(manifest_path) != manifest_sha256:
+        raise OracleBootstrapError("source-view manifest differs from parent authority")
+    value = load_object(manifest_path, label="source-view manifest")
+    unsigned = dict(value)
+    recorded = unsigned.pop("content_sha256", None)
+    if recorded != canonical_sha256(unsigned):
+        raise OracleBootstrapError("source-view manifest self hash differs")
+    files = value.get("files")
+    if value.get("status") != "COMPLETE" or not isinstance(files, dict):
+        raise OracleBootstrapError("source-view manifest is incomplete")
+    if int(value.get("file_count", -1)) != len(files):
+        raise OracleBootstrapError("source-view file count differs")
+    sources = value.get("sources")
+    identity = canonical_sha256(
+        {
+            "gqcnn_commit": value.get("gqcnn_commit"),
+            "files": sources,
+            "source_view_role": value.get("source_view_role"),
+        }
+    )
+    if (
+        not isinstance(sources, dict)
+        or value.get("source_identity_sha256") != identity
+        or (not allow_relocated_source_view and root.name != identity[:24])
+    ):
+        raise OracleBootstrapError("source-view identity differs")
+    expected_members: set[str] = set()
+    for relative, record in files.items():
+        pure = PurePosixPath(str(relative))
+        if (
+            pure.is_absolute()
+            or not pure.parts
+            or any(part in {"", ".", ".."} for part in pure.parts)
+            or not isinstance(record, dict)
+        ):
+            raise OracleBootstrapError(f"unsafe source-view member: {relative!r}")
+        normalized = pure.as_posix()
+        if normalized in expected_members:
+            raise OracleBootstrapError(f"duplicate source-view member: {relative!r}")
+        expected_members.add(normalized)
+        relative_path = Path(*pure.parts)
+        member = root / relative_path
+        if (
+            sha256_file(member) != record.get("sha256")
+            or int(record.get("bytes", -1)) != member.stat().st_size
+        ):
+            raise OracleBootstrapError(f"source-view member differs: {relative}")
+    observed_members: set[str] = set()
+    for member in root.rglob("*"):
+        if member.is_symlink():
+            raise OracleBootstrapError(f"source-view member is a symlink: {member}")
+        if member.is_file():
+            relative = member.relative_to(root).as_posix()
+            if relative != manifest_path.name:
+                observed_members.add(relative)
+        elif not member.is_dir():
+            raise OracleBootstrapError(f"source-view member is not regular: {member}")
+    if observed_members != expected_members:
+        raise OracleBootstrapError("source-view member inventory differs")
+    return value
+
+
+def source_member(root: Path, relative: Path) -> Path:
+    pure = PurePosixPath(relative.as_posix())
+    if (
+        pure.is_absolute()
+        or not pure.parts
+        or any(part in {"", ".", ".."} for part in pure.parts)
+    ):
+        raise OracleBootstrapError(f"unsafe executable source member: {relative}")
+    member = root.joinpath(*pure.parts)
+    sha256_file(member)
+    return member
 
 
 def checksum_map(directory: Path) -> dict[str, str]:
@@ -222,22 +314,41 @@ def verified_bundle_index(
     return OracleBundleIndex
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-view", type=Path, required=True)
     parser.add_argument("--source-view-manifest-sha256", required=True)
-    parser.add_argument("--bundle-root", type=Path, required=True)
-    parser.add_argument("--bundle-manifest-sha256", required=True)
+    parser.add_argument("--allow-relocated-source-view", action="store_true")
+    parser.add_argument("--bundle-root", type=Path)
+    parser.add_argument("--bundle-manifest-sha256")
+    parser.add_argument("--exec-source-member", type=Path)
     parser.add_argument("candidate_arguments", nargs=argparse.REMAINDER)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> int:
     args = parse_args()
+    if args.source_view.expanduser().is_symlink():
+        raise OracleBootstrapError("source-view root must not be a symlink")
     source_view = args.source_view.resolve()
-    source_manifest = source_view / "SOURCE_VIEW_MANIFEST.json"
-    if sha256_file(source_manifest) != args.source_view_manifest_sha256:
-        raise OracleBootstrapError("source-view manifest differs from parent authority")
+    verify_source_view(
+        source_view,
+        manifest_sha256=args.source_view_manifest_sha256,
+        allow_relocated_source_view=args.allow_relocated_source_view,
+    )
+    candidate_arguments = list(args.candidate_arguments)
+    if candidate_arguments and candidate_arguments[0] == "--":
+        candidate_arguments = candidate_arguments[1:]
+    if args.exec_source_member is not None:
+        if args.bundle_root is not None or args.bundle_manifest_sha256 is not None:
+            raise OracleBootstrapError(
+                "generic source execution cannot receive an oracle bundle"
+            )
+        executable = source_member(source_view, args.exec_source_member)
+        os.execv(sys.executable, [sys.executable, str(executable), *candidate_arguments])
+        raise OracleBootstrapError("verified source execution unexpectedly returned")
+    if args.bundle_root is None or args.bundle_manifest_sha256 is None:
+        raise OracleBootstrapError("oracle candidate execution requires its bundle")
     candidate_script = source_view / "scripts/run_hifics_dexnet_candidates.py"
     sys.path.insert(0, str(source_view))
     specification = importlib.util.spec_from_file_location(
@@ -256,9 +367,6 @@ def main() -> int:
         bundle_root=args.bundle_root.resolve(),
         bundle_manifest_sha256=args.bundle_manifest_sha256,
     )
-    candidate_arguments = list(args.candidate_arguments)
-    if candidate_arguments and candidate_arguments[0] == "--":
-        candidate_arguments = candidate_arguments[1:]
     previous = sys.argv
     try:
         sys.argv = [str(candidate_script), *candidate_arguments]

@@ -1,4 +1,4 @@
-"""Independent NumPy/Pandas recomputation from saved counterfactual frames.
+"""Independent OpenCV/NumPy/Pandas recomputation from saved frames.
 
 This module intentionally imports no candidate generator, ranker, gate, report
 builder, evaluator adapter, metrics implementation, or taxonomy producer.
@@ -10,6 +10,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import cv2
 import numpy as np
 import pandas as pd
 
@@ -62,7 +63,16 @@ def _value(item: Any, *names: str) -> Any:
 
 
 def canonical_corners(item: Any) -> np.ndarray:
-    """Reproduce OpenCV boxPoints geometry using only NumPy."""
+    """Materialize the frozen OpenCV ``RotatedRect`` corner convention.
+
+    ``boxPoints`` stores the centre, size, and angle as float32 before forming
+    the corners.  Recomputing those corners in float64 is not equivalent at an
+    integer raster boundary: a value immediately below an integer can round to
+    that integer under the frozen float32 path and change the strict-IoU
+    verdict.  The independent evaluator therefore shares only this canonical
+    low-level geometry primitive with the frozen contract; polygon filling,
+    matching, metrics, taxonomies, and statistical inputs remain independent.
+    """
 
     cx = float(_value(item, "cx_px"))
     cy = float(_value(item, "cy_px"))
@@ -73,23 +83,7 @@ def canonical_corners(item: Any) -> np.ndarray:
         raise ValueError("canonical rectangle values must be finite")
     if width <= 0.0 or height <= 0.0:
         raise ValueError("canonical rectangle dimensions must be positive")
-    angle = math.radians(-theta)
-    along = np.asarray(
-        [math.cos(angle) * width / 2.0, math.sin(angle) * width / 2.0]
-    )
-    across = np.asarray(
-        [-math.sin(angle) * height / 2.0, math.cos(angle) * height / 2.0]
-    )
-    centre = np.asarray([cx, cy])
-    return np.asarray(
-        [
-            centre - along + across,
-            centre - along - across,
-            centre + along - across,
-            centre + along + across,
-        ],
-        dtype=np.float64,
-    )
+    return cv2.boxPoints(((cx, cy), (width, height), -theta)).astype(np.float64)
 
 
 def gt_corners_to_canonical(values: Any) -> dict[str, float]:

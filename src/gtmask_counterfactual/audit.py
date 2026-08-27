@@ -630,10 +630,23 @@ def transition_pipeline_status(
             raise PermissionError(
                 f"terminal status cannot transition: {observed} -> {target_value}"
             )
+        # A terminal transition is an idempotent observation, not a new
+        # transition.  Rewriting it would replace the original pre-terminal
+        # provenance with ``COMPLETE -> COMPLETE`` and make a crash before
+        # final-lock publication impossible to reconcile safely.
+        return current
     elif target_value in {RunState.PARTIAL.value, RunState.FAILED.value}:
         pass
     elif target_value not in RUN_STATE_ORDER or observed not in RUN_STATE_ORDER:
         raise ValueError(f"unknown lifecycle transition: {observed} -> {target_value}")
+    elif (
+        observed == RunState.P5B_G1_FULL_COMPLETE.value
+        and target_value == RunState.P7_TAXONOMY_COMPLETE.value
+    ):
+        # D1 is a secondary extension attempted only after the complete core
+        # report/recompute chain.  The historical P6 label must not force D1
+        # into the G1/C1 critical path.
+        pass
     elif RUN_STATE_ORDER[target_value] not in {
         RUN_STATE_ORDER[observed],
         RUN_STATE_ORDER[observed] + 1,

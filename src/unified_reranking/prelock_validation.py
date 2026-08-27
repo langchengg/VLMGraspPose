@@ -1304,7 +1304,7 @@ def validate_matrix_phase_execution(
     benchmark_path = (
         run_dir / "07_validation/telemetry/feature_extraction_benchmark.json"
     )
-    benchmark = validate_feature_extraction_benchmark(benchmark_path)
+    validate_feature_extraction_benchmark(benchmark_path)
     benchmark_record = _record(benchmark_path)
     for index, (cell, _path) in enumerate(cells):
         _validate_telemetry(cell, f"matrix {phase} cell {index}")
@@ -1697,7 +1697,7 @@ def validate_scalar_selection(path: Path) -> dict[str, Any]:
     benchmark_path = (
         run_dir / "07_validation/telemetry/feature_extraction_benchmark.json"
     )
-    benchmark = validate_feature_extraction_benchmark(benchmark_path)
+    validate_feature_extraction_benchmark(benchmark_path)
     benchmark_record = _record(benchmark_path)
     if (
         selection.get("primary_track") != PRIMARY_TRACK
