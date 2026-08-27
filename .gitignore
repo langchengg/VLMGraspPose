@@ -58,8 +58,6 @@
 /HiFi_reproduction/scripts/status_hifics_hierfilm.sh
 /HiFi_reproduction/src/grasping/api_only_gemini_rerank/stages.py
 /HiFi_reproduction/tests/test_api_only_gemini_rerank.py
-/HiFi_reproduction/tests/test_grasp4dof_third_party_audit.py
-/HiFi_reproduction/tools/grasp4dof/audit_third_party.py
 /HiFi_reproduction/tools/selective_sam3_vg/audit_baseline.py
 /HiFi_reproduction/tools/selective_sam3_vg/diagnose_baseline.py
 /tools/unified_reranking/run_case_visuals_v2.py
