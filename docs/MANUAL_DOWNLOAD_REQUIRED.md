@@ -84,6 +84,6 @@ Downloads are recorded in `downloads/graspnet/download_manifest.json`,
 after verified extraction and downstream loading, and every removal is added
 to `disk_cleanup_log.csv` and `disk_cleanup_report.md`.
 
-Read `DATA_LICENSES.md` and the official dataset terms before redistribution.
+Read `docs/DATA_LICENSES.md` and the official dataset terms before redistribution.
 The compact subset is derived from GraspNet training scenes; it is not the
 complete benchmark and not an official test-server result.

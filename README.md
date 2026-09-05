@@ -95,8 +95,8 @@ The current local checkout contains these relevant areas:
 ├── ranking_baseline/               # Local VL-Grasp clone-time dependency
 ├── scripts/                        # Fixed-version external repository bootstrap
 ├── graphify-out/                   # Generated graph output; ignored for Git upload
-├── THIRD_PARTY_NOTICES.md          # Upstream SHAs and license boundaries
-├── CLEANUP_REPORT.md               # Prior cleanup and active-tree notes
+├── docs/THIRD_PARTY_NOTICES.md     # Upstream SHAs and license boundaries
+├── docs/CLEANUP_REPORT.md          # Prior cleanup and active-tree notes
 ├── LICENSE                         # Repository license
 ├── README.md                       # This file
 └── .gitignore                      # Upload safety rules
@@ -230,7 +230,7 @@ Additional reproducibility entrypoints are grouped by experiment family:
 | Post-formal GT-mask counterfactual diagnostic | `tools/gtmask_counterfactual/bootstrap.py` | `src/gtmask_counterfactual/`, `tests/gtmask_counterfactual/` |
 | Post-formal case analysis | `tools/unified_reranking/run_case_analysis.py` | `src/unified_reranking/case_analysis.py`, `case_visuals.py` |
 | Post-lock R1-R6 Test comparison | `tools/unified_reranking/run_postlock_r1_r6_test_comparison.py` | Frozen unified-reranking run artifacts |
-| GraspNet + frozen VGN 6-DoF route | `python -m graspnet6d.cli` | `configs/graspnet6d/`, `DATA_LICENSES.md`, `MANUAL_DOWNLOAD_REQUIRED.md` |
+| GraspNet + frozen VGN 6-DoF route | `python -m graspnet6d.cli` | `configs/graspnet6d/`, `docs/DATA_LICENSES.md`, `docs/MANUAL_DOWNLOAD_REQUIRED.md` |
 | Robustness and sensitivity suite | `python -m robustness_suite.cli` | `src/robustness_suite/`, `tests/robustness_suite/` |
 | Robustness completion analyses | `python -m robustness_completion.cli` | `src/robustness_completion/`, `tests/robustness_completion/` |
 | Controlled CROG/HiFi/G1/C1 comparison without reranking | `experiments/fair_crog_hifics_g1_c1_no_rerank/prepare_run.py` | Package-local scripts and tests |
@@ -354,4 +354,4 @@ Downloaded third-party paper PDFs should stay outside Git. Add BibTeX entries he
 
 This repository is released under the MIT License. See `LICENSE`.
 
-Third-party baselines, datasets, and model checkpoints keep their own licenses and terms. See `THIRD_PARTY_NOTICES.md` for exact upstream commits, included components, and clone-time dependencies.
+Third-party baselines, datasets, and model checkpoints keep their own licenses and terms. See `docs/THIRD_PARTY_NOTICES.md` for exact upstream commits, included components, and clone-time dependencies.
