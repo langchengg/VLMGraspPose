@@ -1991,7 +1991,7 @@ unexecuted or incomplete for this run.
 
 ## Resume
 
-Follow `MANUAL_DOWNLOAD_REQUIRED.md`, then run:
+Follow `docs/MANUAL_DOWNLOAD_REQUIRED.md`, then run:
 
 ```bash
 PYTHONPATH=src .venv-graspnet6d/bin/python -m graspnet6d.cli all --profile paper-lite --resume --run-id {run_dir.name}
@@ -2000,7 +2000,7 @@ PYTHONPATH=src .venv-graspnet6d/bin/python -m graspnet6d.cli all --profile paper
     atomic_text(run_dir / "FINAL_STATUS.md", text)
     atomic_text(
         run_dir / "REPRODUCE.md",
-        "# Reproduce / resume\n\nSee the repository-root `MANUAL_DOWNLOAD_REQUIRED.md`.\n\n"
+        "# Reproduce / resume\n\nSee `docs/MANUAL_DOWNLOAD_REQUIRED.md`.\n\n"
         f"`PYTHONPATH=src .venv-graspnet6d/bin/python -m graspnet6d.cli all --profile paper-lite --resume --run-id {run_dir.name}`\n",
     )
     atomic_text(

@@ -299,11 +299,11 @@ These manifests are ignored in a fresh public clone. They must be restored from 
 
 ### 7.1 Third-party Source Code
 
-Read `THIRD_PARTY_NOTICES.md` before running the pinned-commit retrieval script:
+Read `docs/THIRD_PARTY_NOTICES.md` before running the pinned-commit retrieval script:
 
 ```bash
 cd "${VLMGP_ROOT}"
-sed -n '1,260p' THIRD_PARTY_NOTICES.md
+sed -n '1,260p' docs/THIRD_PARTY_NOTICES.md
 bash scripts/fetch_external_repositories.sh
 ```
 
@@ -1524,7 +1524,7 @@ PYTHONPATH=src .venv-graspnet6d/bin/python -m graspnet6d.cli all \
 
 After interruption, use the documented `--resume` only for the same run. A new experiment requires a new run ID. The project uses a `src/` layout and is not installed as a site package; omitting `PYTHONPATH=src` in a clean shell produces `ModuleNotFoundError`.
 
-Read `MANUAL_DOWNLOAD_REQUIRED.md` and `src/graspnet6d/compact_download.py` first. The current local 30/3-scene subset can support development checks only. It is not the official GraspNet benchmark and cannot support a claim of physical grasp success.
+Read `docs/MANUAL_DOWNLOAD_REQUIRED.md` and `src/graspnet6d/compact_download.py` first. The current local 30/3-scene subset can support development checks only. It is not the official GraspNet benchmark and cannot support a claim of physical grasp success.
 
 ### 19.3 VGN/LAVT/VL-Grasp/AnyGrasp
 
@@ -1560,7 +1560,7 @@ This reproduction prioritises formal repository code, locks, and ledgers. Extern
 ### Acquisition and Identity
 
 - [ ] Pin the VLMGraspPose commit and preserve the dirty diff
-- [ ] Read `THIRD_PARTY_NOTICES.md`
+- [ ] Read `docs/THIRD_PARTY_NOTICES.md`
 - [ ] Pin every upstream commit
 - [ ] Download OCID-VLG and preserve the locally recorded ZIP SHA-256
 - [ ] Verify the `unique` manifest counts and hashes

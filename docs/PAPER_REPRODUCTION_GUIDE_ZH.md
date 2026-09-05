@@ -299,11 +299,11 @@ shasum -a 256 \
 
 ### 7.1 第三方源码
 
-先阅读 `THIRD_PARTY_NOTICES.md`，再执行固定提交抓取脚本：
+先阅读 `docs/THIRD_PARTY_NOTICES.md`，再执行固定提交抓取脚本：
 
 ```bash
 cd "${VLMGP_ROOT}"
-sed -n '1,260p' THIRD_PARTY_NOTICES.md
+sed -n '1,260p' docs/THIRD_PARTY_NOTICES.md
 bash scripts/fetch_external_repositories.sh
 ```
 
@@ -1524,7 +1524,7 @@ PYTHONPATH=src .venv-graspnet6d/bin/python -m graspnet6d.cli all \
 
 中断后只对同一 run 使用文档声明的 `--resume`；全新实验必须换新 run ID。该项目采用 `src/` 布局且未安装为 site package，从 clean shell 省略 `PYTHONPATH=src` 会报 `ModuleNotFoundError`。
 
-先阅读 `MANUAL_DOWNLOAD_REQUIRED.md` 和 `src/graspnet6d/compact_download.py`。当前本机的 30/3 场景子集只可做开发验证，不是 GraspNet 官方 benchmark，也不能支持实体成功率结论。
+先阅读 `docs/MANUAL_DOWNLOAD_REQUIRED.md` 和 `src/graspnet6d/compact_download.py`。当前本机的 30/3 场景子集只可做开发验证，不是 GraspNet 官方 benchmark，也不能支持实体成功率结论。
 
 ### 19.3 VGN/LAVT/VL-Grasp/AnyGrasp
 
@@ -1560,7 +1560,7 @@ PYTHONPATH=src .venv-graspnet6d/bin/python -m graspnet6d.cli all \
 ### 获取与身份
 
 - [ ] 固定 VLMGraspPose 提交并保存 dirty diff
-- [ ] 阅读 `THIRD_PARTY_NOTICES.md`
+- [ ] 阅读 `docs/THIRD_PARTY_NOTICES.md`
 - [ ] 固定所有上游提交
 - [ ] 下载 OCID-VLG 并保存自记录 ZIP SHA-256
 - [ ] 核对 unique manifest 数量与哈希
